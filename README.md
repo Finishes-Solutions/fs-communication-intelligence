@@ -10,7 +10,7 @@ Shared communication intelligence platform for **email, Teams, Fireflies and Dia
 |---|---|
 | [Email Layers and PDF Scope](docs/EMAIL_PIPELINE_AND_PDF_SCOPE.md) | End-to-end flow; email text plus PDF attachments only in the first release |
 | [Azure and Graph Setup](docs/AZURE_AND_GRAPH_SETUP.md) | Resource inventory, GitHub/Azure authentication, scoped mailbox permissions and runtime access tests |
-| [Azure Bootstrap](scripts/bootstrap-azure.sh) | Cloud Shell script for the resource group, identities, federation and deployment roles |
+| [Azure Bootstrap](scripts/bootstrap-azure.sh) | Cloud Shell script to create identities, federation and deployment roles in your existing resource group |
 | [Platform Plan](docs/PLATFORM_PLAN.md) | Architecture, common data model, source boundaries, access, lifecycle, repository layout and deployment strategy |
 | [Email Deduplication](docs/EMAIL_DEDUPLICATION.md) | Native message IDs, exact attachment fingerprints, reusable processing and duplicate-action prevention |
 | [Email Release Backlog](docs/EMAIL_RELEASE_BACKLOG.md) | Ordered implementation tasks and acceptance criteria for the first release |
@@ -63,4 +63,4 @@ This is the authoritative repository: `Finishes-Solutions/fs-communication-intel
 
 It was empty when inspected on September 25, 2026. The earlier email prototype in `mattsinitiere/fs-outlook-email-ingestion-tool` remains reference material. Its PR was closed as superseded; its code and passing tests have not been imported or represented as validation of this platform.
 
-Committing these files does not create source permissions, ingest company communications, configure monday boards or deploy cloud services. Running the bootstrap yourself creates only the resource group, managed identities, GitHub federation and deployment role assignments described in the setup runbook.
+Committing these files does not create source permissions, ingest company communications, configure monday boards or deploy cloud services. The existing Azure resource group is `fs-communication-intelligence`. Running the bootstrap yourself creates managed identities, GitHub federation and deployment role assignments inside that group as described in the setup runbook.

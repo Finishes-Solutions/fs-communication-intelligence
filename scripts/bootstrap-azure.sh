@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # Run in Azure Cloud Shell (Bash) with a signed-in administrator.
-# Creates only the resource group, identities, GitHub federation and deployment roles.
+# Uses an existing resource group; creates identities, federation and deployment roles.
 # Does not create data services, Function Apps, Graph grants or ingestion code.
 set -euo pipefail
 
-if [[ $# -ne 4 ]]; then
-  echo 'Usage: bash scripts/bootstrap-azure.sh SUBSCRIPTION_ID TENANT_ID LOCATION development|production' >&2
+if [[ $# -ne 5 ]]; then
+  echo 'Usage: bash scripts/bootstrap-azure.sh SUBSCRIPTION_ID TENANT_ID LOCATION development|production RESOURCE_GROUP' >&2
   exit 2
 fi
 ci_subscription_id="$1"
 ci_tenant_id="$2"
 ci_location="$3"
 ci_environment="$4"
+ci_rg="$5"
 case "$ci_environment" in development) ci_suffix=dev ;; production) ci_suffix=prod ;; *) echo 'Use development or production.' >&2; exit 2 ;; esac
 
 az account set --subscription "$ci_subscription_id"
@@ -21,14 +22,15 @@ if [[ "${ci_actual_tenant,,}" != "${ci_tenant_id,,}" ]]; then
   exit 1
 fi
 
-ci_rg="rg-fs-communication-intelligence-${ci_suffix}"
-ci_scope="/subscriptions/${ci_subscription_id}/resourceGroups/${ci_rg}"
+# Read-only preflight: fail before creating identities if the target group is absent.
+ci_scope=$(az group show --name "$ci_rg" --query id --output tsv)
+if [[ -z "$ci_scope" ]]; then
+  echo 'Existing resource group could not be resolved. No resources created.' >&2
+  exit 1
+fi
 ci_issuer='https://token.actions.githubusercontent.com'
 ci_subject="repo:Finishes-Solutions/fs-communication-intelligence:environment:${ci_environment}"
 ci_deploy_name="id-fs-ci-github-${ci_suffix}"
-
-az group create --name "$ci_rg" --location "$ci_location" \
-  --tags application=communication-intelligence environment="$ci_environment" --output none
 
 for ci_identity_name in "$ci_deploy_name" "id-fs-ci-ingestion-${ci_suffix}" "id-fs-ci-search-${ci_suffix}" "id-fs-ci-maintenance-${ci_suffix}"; do
   az identity create --name "$ci_identity_name" --resource-group "$ci_rg" --location "$ci_location" --output none

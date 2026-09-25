@@ -4,7 +4,7 @@ Status: setup runbook and executable identity bootstrap. Azure infrastructure te
 
 The first release processes email body text and PDF attachments only, including OCR for scanned PDFs. All other file formats remain disabled; see [Email Layers and PDF Scope](EMAIL_PIPELINE_AND_PDF_SCOPE.md).
 
-Start with a development resource group and a few approved mailboxes. The steps below distinguish what can be configured now from what depends on the application build. Never assume that permission to read email means the ingestion/search service exists.
+Use the existing resource group **`fs-communication-intelligence`**, created by Matthew, and a few approved mailboxes. The bootstrap verifies that group exists in the selected subscription; it does not create another group or alter its tags. The initial GitHub environment remains `development`. The steps below distinguish what can be configured now from what depends on the application build. Never assume that permission to read email means the ingestion/search service exists.
 
 ## 1. Information to Collect
 
@@ -32,10 +32,10 @@ From the repository directory, run after replacing the first three arguments:
 
 ```bash
 bash scripts/bootstrap-azure.sh \
-  YOUR-SUBSCRIPTION-ID YOUR-TENANT-ID YOUR-AZURE-REGION development
+  YOUR-SUBSCRIPTION-ID YOUR-TENANT-ID YOUR-AZURE-REGION development fs-communication-intelligence
 ```
 
-The script creates the resource group, four managed identities, GitHub federation and resource-group-scoped deployment roles. It does **not** provision PostgreSQL, storage, AI services or Function Apps, grant Graph access, or start ingestion. It uses no client secret. Re-running checks existing federation and reuses role assignments; it stops on a federation mismatch. A failed run can leave already-created resources in place and should be reviewed before retrying.
+The script uses your existing resource group and creates four managed identities, GitHub federation and deployment roles scoped to that group. It does **not** provision PostgreSQL, storage, AI services or Function Apps, grant Graph access, or start ingestion. It uses no client secret. Re-running checks existing federation and reuses role assignments; it stops on a federation mismatch. A failed run can leave already-created resources in place and should be reviewed before retrying.
 
 Save the ingestion identity's **client ID**, **principal/object ID** and **Azure resource ID**. These are different identifiers. Exchange needs the service principal's object ID, not an app-registration object ID.
 
@@ -56,12 +56,12 @@ Create these **environment variables**, not secrets:
 | `AZURE_CLIENT_ID` | GitHub deployment managed identity client ID |
 | `AZURE_TENANT_ID` | Microsoft 365/Entra tenant ID |
 | `AZURE_SUBSCRIPTION_ID` | Selected Azure subscription |
-| `AZURE_RESOURCE_GROUP` | `rg-fs-communication-intelligence-dev` |
+| `AZURE_RESOURCE_GROUP` | `fs-communication-intelligence` |
 | `AZURE_LOCATION` | Selected supported region |
 
 These IDs are not credentials. Future workflows need `id-token: write`, must reference the `development` environment, and use `azure/login` with these IDs. Separate infrastructure and code release workflows as planned. No workflow currently exists to run; this step prepares authentication for the build.
 
-The bootstrap grants Contributor and Role Based Access Control Administrator only at the new resource group. The latter allows the deployment to assign runtime roles; remove it when the release workflow no longer needs that operation, or use a separate privileged provisioning identity. Do not grant GitHub mailbox permissions.
+The bootstrap grants Contributor and Role Based Access Control Administrator only at the specified existing resource group. The latter allows the deployment to assign runtime roles; remove it when the release workflow no longer needs that operation, or use a separate privileged provisioning identity. Do not grant GitHub mailbox permissions.
 
 ## 4. Azure Resource Inventory
 
@@ -69,7 +69,7 @@ Provision these resources through reviewed Bicep/workflows during the infrastruc
 
 | Resource | Suggested Name Pattern | Required Setup |
 |---|---|---|
-| Resource group | `rg-fs-communication-intelligence-dev` | Created by bootstrap; cost tags and budget/alerts |
+| Resource group | `fs-communication-intelligence` | Already created by Matthew; bootstrap verifies existence; configure cost tags and budget/alerts separately |
 | Virtual network and subnets | `vnet-fs-ci-dev` | Separate Function integration and PostgreSQL delegated subnets; private DNS for database |
 | Function hosts | `func-fs-ci-ingestion-dev-<suffix>`, `func-fs-ci-search-dev-<suffix>`, `func-fs-ci-maintenance-dev-<suffix>` | Supported Python runtime, managed identities, HTTPS, host storage, appropriate timeouts/network integration; do not enable ingestion before acceptance |
 | Function host storage | Globally unique account names per isolation boundary | Identity-based host connections with the roles required by the chosen triggers/hosting plan; separate from evidence access |
@@ -220,7 +220,7 @@ Company-wide access means the approved mailbox inventory, including intentionall
 
 ## 10. Setup Completion Checklist
 
-- Azure subscription/tenant/region and development resource group confirmed.
+- Azure subscription/tenant/region and existing `fs-communication-intelligence` resource group confirmed.
 - GitHub deployment federation and environment variables configured.
 - Runtime client/principal/resource IDs recorded without credentials.
 - Data services, Function hosts, networking, monitoring and roles provisioned through the implementation workflow.
