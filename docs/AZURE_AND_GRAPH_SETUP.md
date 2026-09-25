@@ -67,23 +67,23 @@ The bootstrap grants Contributor and Role Based Access Control Administrator onl
 
 Provision these resources through reviewed Bicep/workflows during the infrastructure implementation task. This table is a build checklist, not a statement that resources exist. Reuse suitable approved existing AI resources when their boundaries, quotas and permissions permit it.
 
-| Resource | Suggested Name Pattern | Required Setup |
-|---|---|---|
-| Resource group | `fs-communication-intelligence` | Already created by Matthew; bootstrap verifies existence; configure cost tags and budget/alerts separately |
-| Virtual network and subnets | `vnet-fs-ci-dev` | Separate Function integration and PostgreSQL delegated subnets; private DNS for database |
-| Function hosts | `func-fs-ci-ingestion-dev-<suffix>`, `func-fs-ci-search-dev-<suffix>`, `func-fs-ci-maintenance-dev-<suffix>` | Supported Python runtime, managed identities, HTTPS, host storage, appropriate timeouts/network integration; do not enable ingestion before acceptance |
-| Function host storage | Globally unique account names per isolation boundary | Identity-based host connections with the roles required by the chosen triggers/hosting plan; separate from evidence access |
-| Evidence Blob Storage | `stfscieviddev<suffix>` | No anonymous blobs; separate quarantine/approved and test/production namespaces; retention rules and malware result handling |
-| Defender for Storage | On evidence account | On-upload malware scanning, scan result integration, limits/cost monitoring and failed/unknown scan handling |
-| PostgreSQL Flexible Server | `pg-fs-ci-dev-<suffix>` | Database `communications`; private connectivity; backup policy; separate runtime/migration principals and versioned schema |
-| Azure AI Search | `srch-fs-ci-dev-<suffix>` | Separate test/production indexes; matching embedding dimensions; authenticated access |
-| Document Intelligence | `doc-fs-ci-dev-<suffix>` | OCR endpoint and managed-identity access; supported region/quota |
-| Azure AI Language | `lang-fs-ci-dev-<suffix>` | Sensitive-information detection and validated policy configuration |
-| Azure AI Content Safety | `safe-fs-ci-dev-<suffix>` | Prompt-attack screening endpoint and runtime permissions |
-| Azure OpenAI embedding deployment | Approved resource plus embedding deployment | Model/version/dimensions consistent with the search schema; quota verified |
-| Key Vault | `kv-fs-ci-dev-<suffix>` | RBAC; store only credentials actually required; runtime can read only its required secrets |
-| Azure App Configuration | `appcs-fs-ci-dev-<suffix>` | Shared mode and versioned scope controls; scoped read/operator permissions |
-| Application Insights and Log Analytics | `appi-fs-ci-dev`, `log-fs-ci-dev` | Content-free logs, alerts, retention and operational dashboards |
+| Resource | Suggested Name Pattern | Why It’s Needed / Purpose | Required Setup |
+|---|---|---|---|
+| Resource group | `fs-communication-intelligence` | Keeps this project's Azure resources together so you can manage access, deployments and costs in one place. | Already created by Matthew; bootstrap verifies existence; configure cost tags and budget/alerts separately |
+| Virtual network and subnets | `vnet-fs-ci-dev` | Provides the private network path between the application and PostgreSQL, keeping the database off the public internet. | Separate Function integration and PostgreSQL delegated subnets; private DNS for database |
+| Function hosts | `func-fs-ci-ingestion-dev-<suffix>`, `func-fs-ci-search-dev-<suffix>`, `func-fs-ci-maintenance-dev-<suffix>` | Run the application code: collect email, process PDFs, answer authorized search requests and handle retention/deletion jobs. | Supported Python runtime, managed identities, HTTPS, host storage, appropriate timeouts/network integration; do not enable ingestion before acceptance |
+| Function host storage | Globally unique account names per isolation boundary | Stores the operational data the Functions runtime needs, such as host coordination and timer state. This serves a different purpose from storing email evidence. | Identity-based host connections with the roles required by the chosen triggers/hosting plan; separate from evidence access |
+| Evidence Blob Storage | `stfscieviddev<suffix>` | Stores protected source artifacts, PDF attachments and extracted text so the application can retain evidence and cite its source without putting large files in database rows. | No anonymous blobs; separate quarantine/approved and test/production namespaces; retention rules and malware result handling |
+| Defender for Storage | On evidence account | Checks uploaded files for malware before PDF extraction. Unknown or failed scan results must not be treated as clean. | On-upload malware scanning, scan result integration, limits/cost monitoring and failed/unknown scan handling |
+| PostgreSQL Flexible Server | `pg-fs-ci-dev-<suffix>` | Acts as the authoritative database for communications, source copies, duplicate checks, permissions, classifications, processing jobs and audit history. | Database `communications`; private connectivity; backup policy; separate runtime/migration principals and versioned schema |
+| Azure AI Search | `srch-fs-ci-dev-<suffix>` | Finds approved evidence using both keywords and vector similarity, supplying relevant passages to the executive search API and Copilot agent. | Separate test/production indexes; matching embedding dimensions; authenticated access |
+| Document Intelligence | `doc-fs-ci-dev-<suffix>` | Reads text from scanned PDF pages using OCR so image-based PDFs can become searchable. Standalone image attachments remain outside the first release. | OCR endpoint and managed-identity access; supported region/quota |
+| Azure AI Language | `lang-fs-ci-dev-<suffix>` | Provides sensitive-information detection signals for the publication policy, helping keep restricted text out of search. These signals still require validation and policy decisions. | Sensitive-information detection and validated policy configuration |
+| Azure AI Content Safety | `safe-fs-ci-dev-<suffix>` | Helps identify embedded prompt attacks in source content before that content reaches AI workflows; it does not replace malware scanning or access controls. | Prompt-attack screening endpoint and runtime permissions |
+| Azure OpenAI embedding deployment | Approved resource plus embedding deployment | Converts approved text and search questions into numerical vectors so the system can find similar meaning even when the wording differs. | Model/version/dimensions consistent with the search schema; quota verified |
+| Key Vault | `kv-fs-ci-dev-<suffix>` | Protects any secrets or certificates the application actually needs. Managed identities should eliminate credentials where possible; this is not a store for email content. | RBAC; store only credentials actually required; runtime can read only its required secrets |
+| Azure App Configuration | `appcs-fs-ci-dev-<suffix>` | Gives the separate applications one shared place to read runtime settings, including test/production/paused mode and approved scope configuration. | Shared mode and versioned scope controls; scoped read/operator permissions |
+| Application Insights and Log Analytics | `appi-fs-ci-dev`, `log-fs-ci-dev` | Show failures, processing delays and operational health so the team can investigate problems and receive alerts without logging email bodies. | Content-free logs, alerts, retention and operational dashboards |
 
 Add cost monitoring before large backfill. Determine SKU/capacity from the pilot; company-wide history must not be sized from a few synthetic emails. Provisioning these hosts does not deploy application code.
 
