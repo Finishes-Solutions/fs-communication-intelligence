@@ -25,7 +25,8 @@ Suggested responsibility: Technology owns implementation; tenant administrators 
 | CI-008 | Folder delta capture and reconciliation | CI-005, CI-007 | Initial/delta paging, immutable IDs, moves, edits, removals, cursor expiry and throttling are replayable with no checkpoint loss |
 | CI-009 | Threat/spam policy and historical coverage strategy | CI-001, CI-007 | Actual tenant verdicts validated; known threats excluded; unknown/old verdicts held; decision recorded for historical email coverage |
 | CI-010 | Private originals and malware-gated attachments | CI-004, CI-008, CI-009 | Hash-addressed/versioned evidence is protected; only verified clean files reach parsers; scan delay/failure/cap conditions do not pass |
-| CI-011 | Native extraction and OCR | CI-010 | PDF/image cases preserve page provenance; mixed text/scans do not duplicate evidence; unsupported/encrypted/corrupt/oversized files have explicit held states |
+| CI-023 | Cross-mailbox email/artifact deduplication and action idempotency | CI-005, CI-008, CI-010 | Identical eligible content shares durable processing results; simultaneous mailbox copies cannot create duplicate results/actions; divergent copies, revised files and permissions remain distinct; see [deduplication design](EMAIL_DEDUPLICATION.md) |
+| CI-011 | Native extraction and OCR | CI-010, CI-023 | PDF/image cases preserve page provenance; mixed text/scans do not duplicate evidence; unsupported/encrypted/corrupt/oversized files have explicit held states |
 | CI-012 | Sensitivity and prompt screening | CI-001, CI-011 | Representative policy samples and dependency failures are handled; restricted text does not reach embeddings or destination projections |
 | CI-013 | Normalization, classification and evidence links | CI-002, CI-012 | Participants, UTC dates, source links and revisions are correct; AI/rules outputs retain provenance and do not become approvals |
 
@@ -38,7 +39,7 @@ PDF/images are the initial extraction requirement. CI-001 must decide whether DO
 | CI-014 | Chunking, embeddings and hybrid index | CI-013 | Citation-preserving chunks are published by version; partial uploads remain inaccessible; reindex is idempotent and model versions are tracked |
 | CI-015 | Authorized retrieval API | CI-006, CI-014 | Valid delegated users receive only current authorized evidence; wrong identity, revoked access, stale source state and caller-forged filters fail |
 | CI-016 | Executive Copilot agent | CI-015 | Each executive authenticates as themselves; answers cite evidence and indicate incomplete coverage; text from sources is treated as untrusted evidence |
-| CI-017 | Pilot evaluation | CI-008 through CI-016 | Synthetic and selected live mailbox acceptance passes; held-content and no-result behavior is understandable; relevance evaluated against expected evidence |
+| CI-017 | Pilot evaluation | CI-008 through CI-016, CI-023 | Synthetic and selected live mailbox acceptance passes; held-content and no-result behavior is understandable; relevance evaluated against expected evidence |
 
 Optional email-launch integration: CI-018, controlled monday projection. Confirm board capabilities and audience; map internal IDs to stable item IDs; sync approved summaries/links and withdrawals through the outbox. If projection is not part of the email launch, keep it disabled and scheduled explicitly. Existing Dialpad zaps are not altered by this email release.
 
@@ -62,7 +63,7 @@ After email launch, choose Teams, Fireflies or Dialpad by business priority. For
 1. **Contracts and package scaffold:** CI-002/003 with synthetic fixtures; no live cloud resources.
 2. **Infrastructure and migrations:** CI-004/005; development environment only.
 3. **Scope and capture:** CI-006/007/008 with explicit test mailboxes.
-4. **Screening and extraction:** CI-009 through CI-013 with tenant security tests.
+4. **Screening and extraction:** CI-009 through CI-013 plus CI-023 deduplication, with tenant security and concurrent-copy tests.
 5. **Search and agent:** CI-014 through CI-017.
 6. **Lifecycle and operations:** CI-019 through CI-021, developed alongside the pilot and complete before CI-022.
 

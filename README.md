@@ -11,6 +11,7 @@ Shared communication intelligence platform for **email, Teams, Fireflies and Dia
 | [Azure and Graph Setup](docs/AZURE_AND_GRAPH_SETUP.md) | Resource inventory, GitHub/Azure authentication, scoped mailbox permissions and runtime access tests |
 | [Azure Bootstrap](scripts/bootstrap-azure.sh) | Cloud Shell script for the resource group, identities, federation and deployment roles |
 | [Platform Plan](docs/PLATFORM_PLAN.md) | Architecture, common data model, source boundaries, access, lifecycle, repository layout and deployment strategy |
+| [Email Deduplication](docs/EMAIL_DEDUPLICATION.md) | Native message IDs, exact attachment fingerprints, reusable processing and duplicate-action prevention |
 | [Email Release Backlog](docs/EMAIL_RELEASE_BACKLOG.md) | Ordered implementation tasks and acceptance criteria for the first release |
 | [Architecture Decisions](docs/ARCHITECTURE_DECISIONS.md) | Proposed technology and behavior decisions, including the shared mode switch |
 | [Email Acceptance Plan](docs/EMAIL_ACCEPTANCE_PLAN.md) | Pilot scenarios and production release evidence |
