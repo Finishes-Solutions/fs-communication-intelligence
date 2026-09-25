@@ -2,6 +2,8 @@
 
 Status: setup runbook and executable identity bootstrap. Azure infrastructure templates, Function Apps, ingestion code and deployment workflows are not yet implemented in this repository. No tenant changes were performed by preparing these files.
 
+The first release processes email body text and PDF attachments only, including OCR for scanned PDFs. All other file formats remain disabled; see [Email Layers and PDF Scope](EMAIL_PIPELINE_AND_PDF_SCOPE.md).
+
 Start with a development resource group and a few approved mailboxes. The steps below distinguish what can be configured now from what depends on the application build. Never assume that permission to read email means the ingestion/search service exists.
 
 ## 1. Information to Collect

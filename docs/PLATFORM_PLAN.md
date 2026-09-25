@@ -94,7 +94,7 @@ Use the following sequence:
 1. Validate connector authentication, configured source enablement and approved scope before reading content. Admit a minimal event to the durable queue.
 2. Fetch the current source version and permissions; reject excluded folders/scopes and known threats/spam. A deletion or revocation takes the withdrawal path immediately.
 3. Stage required originals privately under quarantine controls. Record hashes and provenance; never put message bodies in queue payloads or operational logs.
-4. Scan attachments before parsing. Extract native text; use OCR for scanned PDFs/images. Treat links, encrypted/corrupt files and unsupported formats explicitly. No automatic remote-link fetching or archive expansion.
+4. Admit only PDF file attachments in the first release; scan before parsing. Extract native text or OCR scanned pages inside PDFs. Standalone images and all other formats are unsupported. Preserve whole-message holds for unevaluated attachments, including inline images; see [PDF scope](EMAIL_PIPELINE_AND_PDF_SCOPE.md). No automatic conversion, remote-link fetching or archive expansion.
 5. Apply sensitivity and prompt-attack checks to message content and every extracted artifact before embedding or publication. A failed dependency is pending/held, never an automatic pass. OCR is extraction, not a malware or PHI filter.
 6. Normalize, classify and associate candidate business entities. Store AI outputs separately from source evidence, with confidence, policy/model version and evidence references.
 7. Chunk by useful boundaries: email body/attachment, Teams message/reply context, transcript speaker/time and document page. Preserve citations. Embed only eligible content.
@@ -166,7 +166,7 @@ Repository inspection is complete. Estimate implementation dates after source AP
 - Selected user and shared mailboxes; sent and received mail; folders and nested folders; excluded Junk/Deleted/Drafts/Outbox.
 - Empty/malformed scope, unapproved mailbox, invalid mode and production-to-test switching without cross-dataset retrieval.
 - Repeat events, partial worker failure, source edits/deletions/moves, expired cursors, throttling and retry/dead-letter replay.
-- Native, scanned and mixed PDFs; common images; blank/low-confidence OCR; large, encrypted, corrupt and unsupported attachments.
+- Native, scanned and mixed PDFs; blank/low-confidence OCR; large/encrypted/corrupt PDFs; rejected standalone images, Office files, archives and mislabeled file types.
 - Spam/threat evidence, absent/expired threat verdict, attachment scan delay/failure, sensitive content and prompt injection.
 - Revoked reader/source grants, wrong-tenant/audience tokens, forged caller filters, stale chunks and partial index writes.
 - Thread/BCC boundaries, distinct mailbox copies, UTC timestamps and correct source/page citations.
@@ -194,7 +194,7 @@ The old draft PR was closed as superseded on September 25, 2026. Its branch is p
 
 GitHub access is resolved. Azure resource configuration, source permissions and live tenant acceptance remain future implementation steps. No secrets should be supplied in chat.
 
-During implementation setup, confirm: pilot mailbox IDs; approved executive corpus and exclusions; backfill boundary; security-service availability; supported attachment formats; retention rules; production scale/cost budget; and whether monday projection is required for email launch. These do not block adopting the shared-platform plan. Future-source ordering can remain undecided until email passes acceptance.
+During implementation setup, confirm: pilot mailbox IDs; approved executive corpus and exclusions; backfill boundary; security-service availability; PDF validation and unsupported-attachment policy (PDF-only scope is confirmed); retention rules; production scale/cost budget; and whether monday projection is required for email launch. These do not block adopting the shared-platform plan. Future-source ordering can remain undecided until email passes acceptance.
 
 ## Reference Documentation
 

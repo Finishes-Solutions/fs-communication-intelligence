@@ -8,7 +8,7 @@ The first release is a working, mailbox-scoped Email Intelligence Tool with auth
 
 | ID | Deliverable | Depends On | Done When |
 |---|---|---|---|
-| CI-001 | Confirm email coverage, reader corpus, restricted exclusions, backfill boundary and file formats | Business/security decisions | Versioned coverage matrix identifies user/shared mailboxes, ordinary folders, archive exclusions, known gaps and approved audience |
+| CI-001 | Confirm email coverage, reader corpus, restricted exclusions, backfill boundary and PDF-only file policy | Business/security decisions | Versioned coverage matrix identifies user/shared mailboxes, ordinary folders, archive exclusions, known gaps and approved audience |
 | CI-002 | Common communication/event/artifact contracts and connector interface | CI-001 | Versioned schemas distinguish provider/account/scope, source revision, operation and permissions; synthetic future-source examples validate without email-only required fields |
 | CI-003 | Monorepo Python packaging and CI | CI-002 | Shared packages are present in each built artifact; contract/unit/DB checks run in GitHub; no deployment on a planning-only change |
 | CI-004 | Azure infrastructure, identities, Key Vault and configuration | CI-003 | Development stack provisions through GitHub OIDC; ingestion/retrieval permissions are separate; resource inventory and cloud costs reviewed |
@@ -26,11 +26,11 @@ Suggested responsibility: Technology owns implementation; tenant administrators 
 | CI-009 | Threat/spam policy and historical coverage strategy | CI-001, CI-007 | Actual tenant verdicts validated; known threats excluded; unknown/old verdicts held; decision recorded for historical email coverage |
 | CI-010 | Private originals and malware-gated attachments | CI-004, CI-008, CI-009 | Hash-addressed/versioned evidence is protected; only verified clean files reach parsers; scan delay/failure/cap conditions do not pass |
 | CI-023 | Cross-mailbox email/artifact deduplication and action idempotency | CI-005, CI-008, CI-010 | Identical eligible content shares durable processing results; simultaneous mailbox copies cannot create duplicate results/actions; divergent copies, revised files and permissions remain distinct; see [deduplication design](EMAIL_DEDUPLICATION.md) |
-| CI-011 | Native extraction and OCR | CI-010, CI-023 | PDF/image cases preserve page provenance; mixed text/scans do not duplicate evidence; unsupported/encrypted/corrupt/oversized files have explicit held states |
+| CI-011 | PDF-only extraction and OCR | CI-010, CI-023 | Text/scanned/mixed PDFs preserve page provenance without duplication; standalone images and other formats never enter extraction; type mismatch, embedded payload, unsupported/encrypted/corrupt/oversized cases have explicit held states |
 | CI-012 | Sensitivity and prompt screening | CI-001, CI-011 | Representative policy samples and dependency failures are handled; restricted text does not reach embeddings or destination projections |
 | CI-013 | Normalization, classification and evidence links | CI-002, CI-012 | Participants, UTC dates, source links and revisions are correct; AI/rules outputs retain provenance and do not become approvals |
 
-PDF/images are the initial extraction requirement. CI-001 must decide whether DOCX/XLSX extraction is necessary for email launch. If deferred, report unsupported attachments as a measured coverage gap; do not market the result as complete company-email search.
+Matthew confirmed PDF-only attachment processing for the first release. Email body text remains in scope; scanned PDFs use OCR. DOCX/XLSX, standalone images, archives and all other formats roll out later. The existing whole-message hold policy includes unsupported inline image attachments; measure and report that coverage gap. See [Email Layers and PDF Scope](EMAIL_PIPELINE_AND_PDF_SCOPE.md).
 
 ## C. Search and Executive Pilot
 

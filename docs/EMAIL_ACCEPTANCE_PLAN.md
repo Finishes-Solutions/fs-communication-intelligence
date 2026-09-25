@@ -12,7 +12,9 @@ Use synthetic mail first, then approved user/shared mailboxes. Fixtures, logs an
 | Ordinary nested folders; excluded folder descendants | Eligible folders reconcile; excluded content is not published |
 | Repeated events or re-run capture | No duplicate occurrence or active chunk version; cursor and job counts reconcile |
 | Move, edit, delete, folder removal or expired cursor | Fresh source state governs; bounded recovery; removed evidence is not returned |
-| Native PDF, scanned PDF, mixed PDF and images | Searchable extracted text with correct source/page references and no native/OCR double counting |
+| Native PDF, scanned PDF and mixed PDF | Searchable extracted text with correct source/page references and no native/OCR double counting |
+| Standalone image, Office file, archive or linked attachment | No extraction, conversion, OCR, embedding or document classification; occurrence held under the unsupported-file policy, including inline-image cases |
+| Mislabeled non-PDF or PDF with embedded payloads/unsupported active features | Type validation/inspection holds the file; no active execution or recursive extraction |
 | Corrupt, encrypted, unsupported or over-limit file | Explicit held/review state, meaningful coverage reporting and no silent claim of complete extraction |
 | Same email in two mailboxes or BCC variant | Distinct occurrences; no permission or recipient-field leakage through deduplication |
 

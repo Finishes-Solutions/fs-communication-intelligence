@@ -1,6 +1,6 @@
 # Email and Attachment Deduplication
 
-Status: required design for the email release, not implemented code. This refines the common model: preserve source occurrences while reusing verified content processing.
+Status: required design for the email release, not implemented code. This refines the common model: preserve source occurrences while reusing verified content processing. The first release processes email text and PDF attachments only; other attachment metadata may be recorded, but those files are not extracted or embedded.
 
 ## Required Outcome
 
@@ -21,7 +21,7 @@ Shared inboxes can simplify intake, but the platform must deduplicate across app
 
 Use tenant + dataset + Internet Message-ID to find candidates, then verify a conservative content fingerprint. Preserve the raw Message-ID and use standards-aware parsing; do not blindly lowercase the entire identifier. If unavailable or unreliable, retain separate logical emails and reuse only independently verified identical artifacts. Near-duplicate matches can be flagged for review.
 
-Fingerprint a versioned, unambiguous structured serialization of sender/from, sent time, subject, conservatively normalized body and the complete attachment manifest. Include artifact hashes, MIME types and attachment roles; preserve duplicate attachment counts. Keep delivery-specific headers, mailbox timestamps, read state and recipient/BCC visibility in occurrence metadata. Do not strip disclaimers, signatures, quoted decisions or amounts merely to force a match. Preserve full original content for provenance.
+Fingerprint a versioned, unambiguous structured serialization of sender/from, sent time, subject, conservatively normalized body and the complete attachment manifest. Include artifact hashes, MIME types and attachment roles; preserve duplicate attachment counts. Keep delivery-specific headers, mailbox timestamps, read state and recipient/BCC visibility in occurrence metadata. Do not strip disclaimers, signatures, quoted decisions or amounts merely to force a match. Preserve authorized originals under the staging/retention policy. If unsupported attachments have metadata only, do not assert a complete message fingerprint from missing bytes; hold that occurrence under the PDF-only policy. Independently eligible exact PDFs may still reuse processing.
 
 ## Three Separate Uniqueness Rules
 

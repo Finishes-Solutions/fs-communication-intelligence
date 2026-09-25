@@ -54,9 +54,9 @@ Every summary, chunk, citation and destination projection must satisfy its evide
 
 ## ADR-006: Screening and Extraction Before Publication
 
-Reject known spam/threats and excluded scopes as early as practical. Stage only authorized material needed for processing. Attachments must pass malware checks before extraction. Extract native text first where reliable; OCR scanned/image content with source/page attribution. Evaluate extracted content for sensitive information and prompt attacks before embedding.
+Reject known spam/threats and excluded scopes as early as practical. Stage only authorized material needed for processing. Attachments must pass malware checks before extraction. The first release accepts only PDF attachments. Extract native PDF text first where reliable; OCR scanned pages within PDFs with source/page attribution. Standalone images and other files remain unsupported even if the OCR service supports them. Evaluate extracted content for sensitive information and prompt attacks before embedding.
 
-Unknown malware/threat state, unavailable policy services, low-quality extraction and unsupported/encrypted files remain pending or held. Document whether the whole message or only a supported derivative can be released; the initial conservative rule is whole-message hold when an attachment cannot be evaluated. Do not silently index incomplete evidence as complete.
+Unknown malware/threat state, unavailable policy services, low-quality extraction and unsupported/encrypted files remain pending or held. The initial conservative rule is whole-message hold when an attachment cannot be evaluated, including unsupported inline images. This coverage consequence and the PDF-only rollout contract are documented in [Email Layers and PDF Scope](EMAIL_PIPELINE_AND_PDF_SCOPE.md). Do not silently index incomplete evidence as complete.
 
 OCR does not resolve access control, encryption, malicious files or sensitivity classification. Detection quality is fallible and requires representative tenant tests. Historical email without usable threat evidence requires a separate validated strategy; a clean test dataset does not establish historical coverage.
 
