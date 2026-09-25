@@ -2,12 +2,14 @@
 
 Shared communication intelligence platform for **email, Teams, Fireflies and Dialpad**, beginning with the **Email Intelligence Tool**.
 
-**Current status: planning.** This repository contains architecture and delivery plans. No application, integration, Azure resources or deployment workflows are implemented here yet. Proposed configuration examples are not executable features.
+**Current status: planning and setup preparation.** This repository contains architecture/delivery plans, an Azure/Graph setup runbook and an executable identity bootstrap. No ingestion application, complete infrastructure template or deployment workflow is implemented here yet. No Azure resources have been deployed by this repository work. Runtime configuration examples remain proposed contracts.
 
 ## Start Here
 
 | Document | Purpose |
 |---|---|
+| [Azure and Graph Setup](docs/AZURE_AND_GRAPH_SETUP.md) | Resource inventory, GitHub/Azure authentication, scoped mailbox permissions and runtime access tests |
+| [Azure Bootstrap](scripts/bootstrap-azure.sh) | Cloud Shell script for the resource group, identities, federation and deployment roles |
 | [Platform Plan](docs/PLATFORM_PLAN.md) | Architecture, common data model, source boundaries, access, lifecycle, repository layout and deployment strategy |
 | [Email Release Backlog](docs/EMAIL_RELEASE_BACKLOG.md) | Ordered implementation tasks and acceptance criteria for the first release |
 | [Architecture Decisions](docs/ARCHITECTURE_DECISIONS.md) | Proposed technology and behavior decisions, including the shared mode switch |
@@ -59,4 +61,4 @@ This is the authoritative repository: `Finishes-Solutions/fs-communication-intel
 
 It was empty when inspected on September 25, 2026. The earlier email prototype in `mattsinitiere/fs-outlook-email-ingestion-tool` remains reference material. Its PR was closed as superseded; its code and passing tests have not been imported or represented as validation of this platform.
 
-This planning change does not create source permissions, ingest company communications, configure monday boards or deploy cloud services.
+Committing these files does not create source permissions, ingest company communications, configure monday boards or deploy cloud services. Running the bootstrap yourself creates only the resource group, managed identities, GitHub federation and deployment role assignments described in the setup runbook.
