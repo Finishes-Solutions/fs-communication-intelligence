@@ -1,5 +1,7 @@
 # Azure and Microsoft Graph Setup
 
+> **Revision 2026-09-29:** Fireflies is the first release. Sections 1–3 (identities, GitHub OIDC) apply now. Sections 5–7 (mailbox and threat permissions) apply to the email release. The first-release resource list is in [Function Apps §6](FUNCTION_APPS.md#6-pilot-resource-inventory); Azure AI Search, App Configuration, Document Intelligence and Defender for Storage in §4 below are deferred to email. Fireflies needs no Graph permission: store its API key and webhook secret in Key Vault.
+
 Status: setup runbook and executable identity bootstrap. Azure infrastructure templates, Function Apps, ingestion code and deployment workflows are not yet implemented in this repository. No tenant changes were performed by preparing these files.
 
 The first release processes email body text and PDF attachments only, including OCR for scanned PDFs. All other file formats remain disabled; see [Email Layers and PDF Scope](EMAIL_PIPELINE_AND_PDF_SCOPE.md).
