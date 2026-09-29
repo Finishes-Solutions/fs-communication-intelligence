@@ -2,17 +2,21 @@
 
 Status: proposed for the first implementation release. These describe intended behavior, not features already implemented.
 
+**Revision 2026-09-29:** Fireflies is now the first source (ADR-010). ADR-011 and ADR-012 simplify the first-release foundation and revise parts of ADR-002 and ADR-004; those sections are annotated. ADR-013 adds agent access.
+
 ## ADR-001: One Repository, Common Platform, Separate Adapters
 
 Use one monorepo for email, Teams, Fireflies and Dialpad. Begin with Python for the Azure Functions and shared packages, allowing reuse of the earlier email prototype. Shared packages may not assume every communication has an email mailbox, message subject or recipient list.
 
-Initially implement only email. Future adapter directories receive coverage/contract documentation when useful; do not build fake clients, enable timers or request broad permissions for future sources. Add each adapter in its own release after discovery and contract tests.
+Initially implement only Fireflies (ADR-010); email follows, then Teams. Future adapter directories receive coverage/contract documentation when useful; do not build fake clients, enable timers or request broad permissions for future sources. Add each adapter in its own release after discovery and contract tests.
 
 Deploy capture/processing, retrieval and maintenance with boundaries appropriate to their permissions. Do not create a microservice for every processing step. Start with clear module interfaces and split for independent scaling or security needs. Shared packages must be included in each build artifact and versioned with it.
 
 ## ADR-002: SQL Is Authoritative; Search Is Rebuildable
 
 Use Azure Database for PostgreSQL for normalized source occurrences, versions, permissions, jobs, checkpoints and audit metadata. Store large originals and extracted artifacts in private Blob Storage. Azure AI Search stores derived keyword/vector evidence.
+
+> **Revised by ADR-012:** for the first release, PostgreSQL (pgvector + full-text) *is* the search index, so there is no separate search service. The rule below applies again once Azure AI Search is introduced.
 
 Do not add a separate pgvector search implementation to the first release. Rebuild search from eligible SQL/artifact versions. Publish SQL evidence state only after the relevant search version is complete, and require that state at retrieval. A partially written index must not expose unpublished evidence.
 
@@ -35,6 +39,8 @@ The desired operator control is `INGESTION_MODE=test|production|paused`.
 | `paused` | No new capture, extraction, embeddings or publication | No communication evidence returned |
 
 Mandatory withdrawals, retention and audit maintenance may continue while paused. Emergency infrastructure shutdown is a separate action. Already returned content cannot be recalled.
+
+> **Revised by ADR-011:** for the first release, the active mode and revision live in the PostgreSQL `runtime_config` table rather than App Configuration. The behavior below (one switch, revisions stamped on jobs, fail closed) is unchanged.
 
 For one local process, read environment variables. For deployed apps, propose one Azure App Configuration key for `INGESTION_MODE` and versioned scope settings. The environment file documents names, not an instruction to edit the same variable manually across every app.
 
@@ -79,3 +85,33 @@ monday is a controlled projection of eligible records with stable mappings, not 
 Deletion/revocation blocks retrieval before physical cleanup. Propagate cleanup to original artifacts, extracted text, chunks, indexes and destination copies subject to explicit retention/hold policy. Track tombstones so restores/replays do not resurrect withdrawn records. Define backup and soft-delete expiry separately.
 
 The first production release requires alerts, queue/reconciliation metrics, dead-letter replay, recovery drills and a measured backfill/cost plan. They are not deferred behind future source integrations.
+
+## ADR-010: Fireflies Is the First Source
+
+Decided 2026-09-29 by Matthew: build Fireflies first, then email, then Teams. Fireflies has no attachments, malware or threat gates, or cross-mailbox copies, and its volume is small (about 42 hours of transcripts). It still proves every shared capability: scoped capture, the durable queue, screening, citations, embeddings, authorized retrieval, the mode switch, deletion and agent access. Email and Teams add only their source-specific work. See [Fireflies Pipeline](FIREFLIES_PIPELINE.md) and [Fireflies Backlog](FIREFLIES_RELEASE_BACKLOG.md).
+
+The Fireflies API uses a user-bound bearer key rather than a managed identity. Store it in Key Vault, prefer a dedicated seat, and treat the webhook as an optimization: reconciliation sweeps are the source of truth, including for deletions.
+
+## ADR-011: Simplified First-Release Foundation
+
+Proposed. The earlier foundation (three Function Apps, App Configuration with configuration leases, a VNet from day one) was sized for company-wide email. For the first release:
+
+- **Two Function Apps**, ingestion and search, with separate managed identities and database roles. Maintenance runs as timers in the ingestion app. The maintenance identity stays unused until a separate app is justified.
+- **The mode lives in PostgreSQL** (`runtime_config`, one active revision enforced by a unique index; `active_dataset()` drives the retrieval views). Jobs carry the revision they were admitted under, and publication re-checks it. App Configuration is deferred.
+- **Networking:** the development stack uses synthetic data with an Entra-only, firewall-restricted database endpoint. The production stack, which runs real meetings even in `test` mode, uses VNet integration and private PostgreSQL access.
+
+Security boundaries are unchanged: separate ingestion and retrieval authority, fail-closed scope, and no content in logs. See [Function Apps](FUNCTION_APPS.md).
+
+## ADR-012: PostgreSQL Search for the First Release
+
+Proposed. Use pgvector (HNSW, cosine, 1536 dimensions) and PostgreSQL full-text search with Reciprocal Rank Fusion, inside the authoritative database. Reasons:
+
+- At pilot volume (about 1–2k chunks) a separate search service adds cost and a consistency problem without a quality benefit that has been shown.
+- Publication becomes a single transaction. Authorization, exclusions, tombstones and mode are enforced by views in the same query, so there is no filter-string mirroring into an external index.
+- The search role can read only `published_*` views. This was verified locally.
+
+Keep a `SearchBackend` interface. Move to Azure AI Search when a measured trigger occurs (email volume, filtered-vector recall or latency, or semantic-ranker value shown in evaluation). ADR-002's "search is a rebuildable derivative" rule then applies. See [Search and Agents](SEARCH_AND_AGENTS.md).
+
+## ADR-013: Agents Reach Evidence Only Through the Authorized API
+
+Proposed. The search app exposes the same retrieval core in two ways: REST/OpenAPI, and an MCP endpoint (`search_meetings`, `get_meeting`, `get_transcript_window`, `list_meetings`). Every call carries the user's delegated Entra token. Reader authority comes from app roles in the token mapped to corpora, never from caller parameters. No agent receives a database connection, index key or service credential. Returned text is marked as untrusted evidence, and Fireflies summaries are labelled as AI output. Entra ID has no dynamic client registration, so each agent platform uses a pre-registered client, tested per platform.

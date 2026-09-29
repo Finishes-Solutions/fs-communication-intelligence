@@ -4,7 +4,9 @@ Date: September 25, 2026. Status: proposed architecture and implementation seque
 
 Authoritative repository: https://github.com/Finishes-Solutions/fs-communication-intelligence
 
-This repository will own email, Teams, Fireflies and Dialpad ingestion. Email is the first release. The other sources receive extension points now, not active integrations. Access was verified on September 25, 2026. The repository was empty, with no existing branch, code, instructions or workflows. A minimal README initialized main; this plan is proposed in a separate planning branch.
+> **Revision 2026-09-29:** Fireflies is now the first release, then email, then Teams ([ADR-010](ARCHITECTURE_DECISIONS.md#adr-010-fireflies-is-the-first-source)). The first release uses two Function Apps, keeps the mode in PostgreSQL and uses PostgreSQL as its search index ([ADR-011](ARCHITECTURE_DECISIONS.md#adr-011-simplified-first-release-foundation), [ADR-012](ARCHITECTURE_DECISIONS.md#adr-012-postgresql-search-for-the-first-release)). The component table, repository layout and milestones below remain the long-term target; where they conflict with those ADRs, the ADRs govern the first release. Fireflies specifics: [Fireflies Pipeline](FIREFLIES_PIPELINE.md), [Function Apps](FUNCTION_APPS.md), [Database](DATABASE.md), [Search and Agents](SEARCH_AND_AGENTS.md).
+
+This repository will own email, Teams, Fireflies and Dialpad ingestion. Email was originally planned as the first release. The other sources receive extension points now, not active integrations. Access was verified on September 25, 2026. The repository was empty, with no existing branch, code, instructions or workflows. A minimal README initialized main; this plan is proposed in a separate planning branch.
 
 ## 1. Product Boundary
 
