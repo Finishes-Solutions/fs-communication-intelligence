@@ -67,7 +67,7 @@ Business context: Finishes Solutions is a real estate owner-developer (Waller, T
 - **Dev Azure is built by hand** by Matthew from the *FS CI Azure Build Guide (Dev), revision 2* (a Word document kept outside this public repo). It fixes PostgreSQL 18, Python 3.14, names, app settings and every grant. The grants are mirrored in `docs/AZURE_PERMISSIONS.md`; treat that file as the contract and never add a grant that is not in it.
 - `config/runtime.example.env`: proposed setting names.
 - A docs patch `email-first-adr-014.patch` (ADR-014 to ADR-017, README, backlogs, TEAMS_DISCOVERY.md) may already be applied. If `docs/ARCHITECTURE_DECISIONS.md` has no ADR-014, ask Matthew for the patch before PR 1, or write the equivalent ADRs yourself from §2–§3.
-- No application code, infrastructure templates or workflows exist yet.
+- `apps/ingestion` and `apps/search` contain only a health check. `ci.yml` and the dev deploy workflows exist (`deploy-dev.yml`, `deploy-function-app.yml`; see `docs/DEPLOYMENT.md`); each push to `main` redeploys only what changed. No infrastructure templates exist.
 - Reference only, do not import wholesale: earlier prototype `mattsinitiere/fs-outlook-email-ingestion-tool`, branch `phase3/scoped-email-intelligence`. A throwaway TypeScript/Azure SQL scaffold from a chat session also exists. **Ignore its stack**; only its ideas appear in this file.
 
 ---
@@ -220,7 +220,7 @@ Report these separately, with counts:
 5. **Capture.** Inventory/scope sync, delta reconcile, job queue, worker fetch/normalize, subscriptions and webhook. Tests for duplicates, 410, 429, moves, deletes and empty scope.
 6. **Processing.** Screening adapters, classifier interface + Azure OpenAI backend, chunker, embedder, atomic publish, restricted/review handling, D-E1 policy.
 7. **Search.** Hosting spike ADR, token validation, grants, hybrid query, REST + MCP, audit, local test auth, MCP Inspector docs.
-8. **Deploy (dev).** `deploy-dev.yml`: build each app with its packages, deploy both Flex apps, run `db/migrate.py` as `id-fs-ci-github-dev` (temporary runner firewall rule), smoke-test. Dev resources already exist (hand-built). Bicep is written for **production** only, modelled on the dev resources plus the production differences in the build guide.
+8. **Deploy (dev).** (Workflows written ahead of PR 4–7, see `docs/DEPLOYMENT.md`; first Azure run pending.) `deploy-dev.yml`: build each app with its packages, deploy both Flex apps, run `db/migrate.py` as `id-fs-ci-github-dev` (temporary runner firewall rule), smoke-test. Dev resources already exist (hand-built). Bicep is written for **production** only, modelled on the dev resources plus the production differences in the build guide.
 9. **Real test mailbox.** Dev app registration with certificate, `send-test-emails`, end-to-end run, positive/negative RBAC check.
 10. **Agent clients.** Claude, Copilot Studio and ChatGPT connection guides and results (including any client recorded as blocked).
 11. **Ops.** Dead-letter alerting, metrics, runbooks, restore drill; then E2 (PDF/OCR, Defender for Storage) as its own series.

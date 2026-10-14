@@ -4,12 +4,15 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_call: # deploy-dev.yml runs CI before deploying
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # github.workflow is the caller's name when called from deploy-dev.yml, so the
+  # deploy's CI run never cancels (or is cancelled by) the push-triggered CI run.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -28,7 +31,9 @@ jobs:
       - name: Type check
         run: |
           uv run --frozen mypy
-          uv run --frozen mypy tests db/run_checks.py db/migrate.py
+          uv run --frozen mypy tests db/run_checks.py db/migrate.py scripts/build_function_app.py scripts/deploy_targets.py
+          uv run --frozen mypy apps/ingestion/function_app.py
+          uv run --frozen mypy apps/search/function_app.py
       - name: Tests
         run: uv run --frozen pytest
 

@@ -1,0 +1,7 @@
+# Shared packages bundled into this app's deployment package, one per line.
+# A change under packages/<name>/ redeploys every app that lists it.
+# tests/unit/test_function_apps.py fails if the app imports a ci_* package
+# that is not listed here.
+ci_core
+ci_email
+ci_processing

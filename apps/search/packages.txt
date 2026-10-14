@@ -1,0 +1,7 @@
+# Shared packages bundled into this app's deployment package, one per line.
+# A change under packages/<name>/ redeploys every app that lists it.
+# tests/unit/test_function_apps.py fails if the app imports a ci_* package
+# that is not listed here. The search identity has no mailbox or write access
+# (L4), so ci_email stays out of this list.
+ci_core
+ci_retrieval

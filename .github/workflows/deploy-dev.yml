@@ -1,0 +1,139 @@
+name: Deploy (dev)
+
+# Runs on every push to main, but only updates what changed since the last
+# successful run of this workflow (scripts/deploy_targets.py, docs/DEPLOYMENT.md):
+# a docs-only change deploys nothing, a search-only change redeploys only search,
+# and migrations run only when db/migrations changes. CI must pass first.
+#
+# Manual run (Actions > Deploy (dev) > Run workflow): "changed" uses the same
+# rule; "all" migrates and redeploys both apps.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: What to deploy
+        type: choice
+        options: [changed, all]
+        default: changed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false # never stop a deploy halfway; queue the next one
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
+  plan:
+    name: Decide what changed
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read # to find the last successful deploy
+    outputs:
+      ingestion: ${{ steps.targets.outputs.ingestion }}
+      search: ${{ steps.targets.outputs.search }}
+      migrations: ${{ steps.targets.outputs.migrations }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Find the last successful deploy
+        id: base
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          base=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow deploy-dev.yml --branch main \
+            --status success --limit 1 --json headSha --jq '.[0].headSha // ""')
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
+          echo "last successful deploy: ${base:-none}"
+
+      - name: Decide targets
+        id: targets
+        run: |
+          if [[ "${{ inputs.scope }}" == "all" ]]; then
+            python3 scripts/deploy_targets.py --all
+          else
+            python3 scripts/deploy_targets.py --base "${{ steps.base.outputs.sha }}" --head "$GITHUB_SHA"
+          fi
+
+  migrate:
+    name: Database migrations
+    needs: [ci, plan]
+    if: needs.plan.outputs.migrations == 'true'
+    runs-on: ubuntu-24.04
+    environment: development
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RG: ${{ vars.AZURE_RESOURCE_GROUP }}
+      PGHOST: ${{ vars.CI_PG_HOST }}
+      PGDATABASE: communications
+      PGUSER: id-fs-ci-github-dev # migration login (docs/AZURE_PERMISSIONS.md §3)
+      PGSSLMODE: require
+      RULE: gh-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Open the database firewall for this runner
+        run: |
+          ip=$(curl -fsS https://api.ipify.org)
+          az postgres flexible-server firewall-rule create -g "$RG" --name "${PGHOST%%.*}" \
+            --rule-name "$RULE" --start-ip-address "$ip" --end-ip-address "$ip" --output none
+          sleep 20
+
+      - name: Apply migrations
+        run: |
+          PGPASSWORD=$(az account get-access-token --resource-type oss-rdbms --query accessToken -o tsv)
+          export PGPASSWORD
+          python3 db/migrate.py apply
+          python3 db/migrate.py status
+
+      - name: Close the database firewall
+        if: always()
+        run: |
+          az postgres flexible-server firewall-rule delete -g "$RG" --name "${PGHOST%%.*}" \
+            --rule-name "$RULE" --yes --output none || echo "::warning::firewall rule $RULE not removed"
+
+  ingestion:
+    name: Ingestion app
+    needs: [ci, plan, migrate]
+    # Run after migrations when they ran; skip only if they failed or nothing changed here.
+    if: >-
+      !cancelled() && needs.ci.result == 'success' && needs.plan.outputs.ingestion == 'true'
+      && (needs.migrate.result == 'success' || needs.migrate.result == 'skipped')
+    uses: ./.github/workflows/deploy-function-app.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      app: ingestion
+
+  search:
+    name: Search app
+    needs: [ci, plan, migrate]
+    if: >-
+      !cancelled() && needs.ci.result == 'success' && needs.plan.outputs.search == 'true'
+      && (needs.migrate.result == 'success' || needs.migrate.result == 'skipped')
+    uses: ./.github/workflows/deploy-function-app.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      app: search

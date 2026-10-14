@@ -1,0 +1,77 @@
+name: Deploy one Function App
+
+# Called by deploy-dev.yml once per app that changed. Builds the package in the
+# runner (no remote build, ADR-018), deploys it, then waits until /api/health
+# reports the commit just deployed. App names come from the "development"
+# environment variables CI_FUNC_INGEST_NAME / CI_FUNC_SEARCH_NAME, which only
+# a job running in that environment can read.
+
+on:
+  workflow_call:
+    inputs:
+      app:
+        description: ingestion or search
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Build and deploy ${{ inputs.app }}
+    runs-on: ubuntu-24.04
+    environment: development
+    permissions:
+      contents: read
+      id-token: write # GitHub OIDC -> id-fs-ci-github-dev (no stored secret)
+    env:
+      APP_NAME: ${{ inputs.app == 'ingestion' && vars.CI_FUNC_INGEST_NAME || vars.CI_FUNC_SEARCH_NAME }}
+    steps:
+      - name: Check configuration
+        run: |
+          if [[ "${{ inputs.app }}" != ingestion && "${{ inputs.app }}" != search ]]; then
+            echo "::error::unknown app '${{ inputs.app }}'"; exit 1
+          fi
+          if [[ -z "$APP_NAME" ]]; then
+            echo "::error::set CI_FUNC_INGEST_NAME / CI_FUNC_SEARCH_NAME in the development environment"; exit 1
+          fi
+
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Build package
+        run: uv run --frozen python scripts/build_function_app.py "${{ inputs.app }}" --sha "$GITHUB_SHA"
+
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ env.APP_NAME }}
+          package: build/${{ inputs.app }}
+
+      - name: Smoke test (health reports this commit)
+        env:
+          RG: ${{ vars.AZURE_RESOURCE_GROUP }}
+        run: |
+          host=$(az functionapp show -g "$RG" -n "$APP_NAME" --query defaultHostName -o tsv)
+          url="https://${host}/api/health"
+          for attempt in $(seq 1 20); do
+            body=$(curl -fsS --max-time 20 "$url" || true)
+            sha=$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("git_sha",""))' 2>/dev/null || true)
+            if [[ "$sha" == "$GITHUB_SHA" ]]; then
+              echo "healthy: $body"
+              exit 0
+            fi
+            echo "attempt $attempt/20: not live yet (got: ${body:-no response})"
+            sleep 15
+          done
+          echo "::error::$APP_NAME did not report commit $GITHUB_SHA at $url"
+          exit 1
