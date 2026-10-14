@@ -1,0 +1,51 @@
+[project]
+name = "fs-communication-intelligence"
+version = "0.1.0"
+description = "Finishes Solutions communication intelligence platform (email first)"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "pydantic==2.14.1",
+    "pydantic-settings==2.16.0",
+]
+
+[dependency-groups]
+dev = [
+    "mypy==2.4.0",
+    "pytest==9.1.1",
+    "ruff==0.17.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "packages/ci_core",
+    "packages/ci_email",
+    "packages/ci_processing",
+    "packages/ci_retrieval",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["packages", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+mypy_path = "packages"
+packages = ["ci_core", "ci_email", "ci_processing", "ci_retrieval"]
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["packages"]
+addopts = "-ra --strict-markers"

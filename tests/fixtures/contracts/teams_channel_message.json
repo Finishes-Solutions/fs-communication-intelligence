@@ -1,0 +1,14 @@
+{
+  "contract_version": "1",
+  "provider": "teams",
+  "connection_ref": "tenant-00000000-0000-0000-0000-000000000001",
+  "scope": {"scope_kind": "teams_channel", "native_scope_id": "19:synthetic-channel@thread.tacv2"},
+  "native_id": "1727790000000",
+  "kind": "channel_message",
+  "occurred_at": "2026-10-01T09:30:00-05:00",
+  "body_text": "Inspection for Example Ridge Building B moved to Tuesday 9am.",
+  "participants": [
+    {"role": "author", "native_id": "00000000-0000-0000-0000-0000000000bb", "display_name": "Sam Example"}
+  ],
+  "thread_ref": "1727789000000"
+}

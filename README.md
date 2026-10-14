@@ -54,6 +54,26 @@ The PR sequence lives in [`CLAUDE.md`](CLAUDE.md) §12: docs alignment, scaffold
 
 The operator control is `INGESTION_MODE=test|production|paused`, stored as the active `runtime_config` revision in PostgreSQL (ADR-011). An empty scope fails closed. See [ADR-004](docs/ARCHITECTURE_DECISIONS.md#adr-004-one-shared-mode-setting).
 
+## Development
+
+Requires [uv](https://docs.astral.sh/uv/) (it installs Python 3.14 itself). From the repo root:
+
+```bash
+uv sync                      # install Python 3.14 and the locked dependencies
+uv run pytest                # unit and contract tests
+uv run ruff check . && uv run ruff format --check .   # lint and formatting
+uv run mypy && uv run mypy tests db/run_checks.py     # type check
+```
+
+SQL checks need Docker. They apply `db/migrations` to a throwaway PostgreSQL 18 + pgvector 0.8.2 container and run `db/tests`:
+
+```bash
+docker run -d --name ci-pg -e POSTGRES_PASSWORD=postgres -p 55432:5432 pgvector/pgvector:0.8.2-pg18
+PGHOST=127.0.0.1 PGPORT=55432 PGUSER=postgres PGPASSWORD=postgres python3 db/run_checks.py
+```
+
+GitHub Actions runs all of this on every pull request (`.github/workflows/ci.yml`).
+
 ## Repository and Prototype
 
 This is the authoritative repository: `Finishes-Solutions/fs-communication-intelligence`.

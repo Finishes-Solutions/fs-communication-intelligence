@@ -34,9 +34,9 @@ Business context: Finishes Solutions is a real estate owner-developer (Waller, T
 
 | # | Decision | Notes |
 |---|---|---|
-| L1 | **PostgreSQL + pgvector ≥ 0.8.0** on Azure Database for PostgreSQL Flexible Server | Chosen over Azure SQL after comparison. pgvector 0.8 iterative index scans handle permission-filtered vector search. Verify `SELECT extversion FROM pg_extension WHERE extname='vector'` on the provisioned server. |
+| L1 | **PostgreSQL 18 + pgvector 0.8.2** on Azure Database for PostgreSQL Flexible Server (decided 2026-10-14: latest versions; Microsoft lists vector 0.8.2 for PG18) | Chosen over Azure SQL after comparison. pgvector 0.8 iterative index scans handle permission-filtered vector search. Verify `SELECT extversion FROM pg_extension WHERE extname='vector'` on the provisioned server. |
 | L2 | PostgreSQL is also the **job queue** (`FOR UPDATE SKIP LOCKED`, leases, dead state) and the **search index** (pgvector HNSW + full-text, fused with RRF) | No Service Bus or Azure AI Search for v1. Keep `JobQueue` and `SearchBackend` interfaces so either can be added later. |
-| L3 | **Python** (3.12 if Flex Consumption supports it in the chosen region, else 3.11), Azure Functions **v2 programming model**, **Flex Consumption** | Matches repo plan and future PDF/OCR libraries. |
+| L3 | **Python 3.14** (decided 2026-10-14: latest GA on Flex Consumption; build dependencies in GitHub Actions, not via Flex remote build), Azure Functions **v2 programming model**, **Flex Consumption** | Matches repo plan and future PDF/OCR libraries. |
 | L4 | **Two deployables with separate managed identities**: `ingestion` (capture, worker, maintenance timers) and `search` (REST + MCP) | The search identity never gets mailbox, Blob-write or DB-write access. |
 | L5 | **Exchange Online Application RBAC** is the hard mailbox boundary. Never grant tenant-wide Graph `Mail.Read` (application) in Entra. | Grants are additive; an Entra grant would silently defeat the RBAC scope. |
 | L6 | Read-only mail access. No `Mail.ReadWrite` or `Mail.Send` for the ingestion identity. | Writing Outlook categories back is out of scope. |
@@ -175,7 +175,7 @@ Goal: Matthew or Cody can run the whole pipeline on a Mac with **no Azure and no
 
 ### 10.1 Fully local (no cloud)
 - `local/docker-compose.yml`:
-  - `pgvector/pgvector:pg16` (match the major version provisioned in Azure; use pg17 if the Azure server is 17), with the migrations applied on start.
+  - `pgvector/pgvector:0.8.2-pg18` (the same image CI uses; keep it matched to the Azure server), with the migrations applied on start.
   - Azurite, for Functions host storage.
 - `GRAPH_BACKEND=fixture`: a fixture Graph client implementing the same interface as the real one. It serves `tests/fixtures/email/*.json` as mailboxes, folders, delta pages (including `@removed`, expired-token 410, 429 with Retry-After), messages and attachment metadata.
 - `EMBEDDER=fake`: deterministic hash-based vectors (correct dimension) so tests are stable. `SCREENER=fake`, `CLASSIFIER_BACKEND=fake` (rule-based on fixture keywords).
