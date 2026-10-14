@@ -1,5 +1,7 @@
 # Fireflies Meeting Pipeline (First Source)
 
+> **Superseded 2026-10-14:** email is the first source ([ADR-014](ARCHITECTURE_DECISIONS.md#adr-014-email-is-the-first-source)); Fireflies is undecided. Reference only.
+
 Status: proposed design for the first release. Nothing here is deployed. Fireflies is now the first source; email and then Teams follow on the same foundation (see [ADR-010](ARCHITECTURE_DECISIONS.md#adr-010-fireflies-is-the-first-source)).
 
 Related: [Function Apps](FUNCTION_APPS.md) · [Database](DATABASE.md) · [Search and Agents](SEARCH_AND_AGENTS.md) · [Fireflies Backlog](FIREFLIES_RELEASE_BACKLOG.md)

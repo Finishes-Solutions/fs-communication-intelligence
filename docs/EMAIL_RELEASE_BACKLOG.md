@@ -1,6 +1,8 @@
 # Email Intelligence Release Backlog
 
-Status: planned, not started. **Now the second release:** Fireflies ships first ([ADR-010](ARCHITECTURE_DECISIONS.md#adr-010-fireflies-is-the-first-source)); foundation items CI-002 to CI-006 are delivered as FF-003 to FF-007 in the [Fireflies Release Backlog](FIREFLIES_RELEASE_BACKLOG.md), and CI-014/CI-015 build on its PostgreSQL search and API. Repository access and initialization are complete. IDs below are planning references, not GitHub issues already created. Suggested responsibility is a role, not a staff assignment or deadline.
+> **2026-10-14:** email is the first release again ([ADR-014](ARCHITECTURE_DECISIONS.md#adr-014-email-is-the-first-source)). Foundation items CI-002 to CI-006 are delivered here, not in the Fireflies backlog. E1 records attachments as metadata only; CI-010/CI-011 (PDF) move to E2. The PR order in `CLAUDE.md` §12 takes precedence over the order below.
+
+Status: planned, not started. **Formerly the second release:** Fireflies ships first ([ADR-010](ARCHITECTURE_DECISIONS.md#adr-010-fireflies-is-the-first-source)); foundation items CI-002 to CI-006 are delivered as FF-003 to FF-007 in the [Fireflies Release Backlog](FIREFLIES_RELEASE_BACKLOG.md), and CI-014/CI-015 build on its PostgreSQL search and API. Repository access and initialization are complete. IDs below are planning references, not GitHub issues already created. Suggested responsibility is a role, not a staff assignment or deadline.
 
 The first release is a working, mailbox-scoped Email Intelligence Tool with authorized executive search. Teams, Fireflies and Dialpad runtime integrations are excluded. Their common record/adapter requirements shape the foundation.
 

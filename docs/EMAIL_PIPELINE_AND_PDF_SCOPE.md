@@ -1,5 +1,7 @@
 # Email Intelligence Layers and PDF-Only First Release
 
+> **2026-10-14:** PDF extraction moves to increment E2; E1 records attachment metadata only. The whole-message hold described below is now one value of `ATTACHMENT_UNSUPPORTED_POLICY` ([ADR-016](ARCHITECTURE_DECISIONS.md#adr-016-unsupported-attachment-handling-is-a-configured-policy)), with `publish_partial` as the local/dev default and no production default.
+
 Status: planned behavior, not deployed code. Matthew confirmed on September 25, 2026 that PDF is the only supported attachment format for the first release. Other formats will be enabled in separate tested releases.
 
 The PDF restriction applies to attachments. Ordinary email subject/body text still enters the email intelligence pipeline. An email does not need an attachment to be eligible.

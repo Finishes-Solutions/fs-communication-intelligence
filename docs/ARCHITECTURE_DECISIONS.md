@@ -4,6 +4,8 @@ Status: proposed for the first implementation release. These describe intended b
 
 **Revision 2026-09-29:** Fireflies is now the first source (ADR-010). ADR-011 and ADR-012 simplify the first-release foundation and revise parts of ADR-002 and ADR-004; those sections are annotated. ADR-013 adds agent access.
 
+**Revision 2026-10-14:** Email is the first source again (ADR-014, superseding ADR-010). ADR-015 sets the mailbox scope boundary, ADR-016 makes the unsupported-attachment rule in ADR-006 a configured policy, ADR-017 covers classification and the three agent clients, and ADR-018 records the database, language and hosting choices. The repo-root `CLAUDE.md` holds the full build context and wins where it disagrees with these docs.
+
 ## ADR-001: One Repository, Common Platform, Separate Adapters
 
 Use one monorepo for email, Teams, Fireflies and Dialpad. Begin with Python for the Azure Functions and shared packages, allowing reuse of the earlier email prototype. Shared packages may not assume every communication has an email mailbox, message subject or recipient list.
@@ -62,6 +64,8 @@ Every summary, chunk, citation and destination projection must satisfy its evide
 
 Reject known spam/threats and excluded scopes as early as practical. Stage only authorized material needed for processing. Attachments must pass malware checks before extraction. The first release accepts only PDF attachments. Extract native PDF text first where reliable; OCR scanned pages within PDFs with source/page attribution. Standalone images and other files remain unsupported even if the OCR service supports them. Evaluate extracted content for sensitive information and prompt attacks before embedding.
 
+> **Revised by ADR-016:** E1 records attachments as metadata only, and the unsupported-attachment rule below is now the configured `ATTACHMENT_UNSUPPORTED_POLICY`. PDF extraction arrives in E2.
+
 Unknown malware/threat state, unavailable policy services, low-quality extraction and unsupported/encrypted files remain pending or held. The initial conservative rule is whole-message hold when an attachment cannot be evaluated, including unsupported inline images. This coverage consequence and the PDF-only rollout contract are documented in [Email Layers and PDF Scope](EMAIL_PIPELINE_AND_PDF_SCOPE.md). Do not silently index incomplete evidence as complete.
 
 OCR does not resolve access control, encryption, malicious files or sensitivity classification. Detection quality is fallible and requires representative tenant tests. Historical email without usable threat evidence requires a separate validated strategy; a clean test dataset does not establish historical coverage.
@@ -87,6 +91,8 @@ Deletion/revocation blocks retrieval before physical cleanup. Propagate cleanup 
 The first production release requires alerts, queue/reconciliation metrics, dead-letter replay, recovery drills and a measured backfill/cost plan. They are not deferred behind future source integrations.
 
 ## ADR-010: Fireflies Is the First Source
+
+> **Superseded by ADR-014 (2026-10-14).** Email is the first source. Fireflies is undecided and gets no runtime code for now. The Fireflies docs remain reference material for the shared foundation.
 
 Decided 2026-09-29 by Matthew: build Fireflies first, then email, then Teams. Fireflies has no attachments, malware or threat gates, or cross-mailbox copies, and its volume is small (about 42 hours of transcripts). It still proves every shared capability: scoped capture, the durable queue, screening, citations, embeddings, authorized retrieval, the mode switch, deletion and agent access. Email and Teams add only their source-specific work. See [Fireflies Pipeline](FIREFLIES_PIPELINE.md) and [Fireflies Backlog](FIREFLIES_RELEASE_BACKLOG.md).
 
@@ -114,4 +120,57 @@ Keep a `SearchBackend` interface. Move to Azure AI Search when a measured trigge
 
 ## ADR-013: Agents Reach Evidence Only Through the Authorized API
 
+> **Revised by ADR-014/017:** the first MCP tools are `search_email`, `get_email` and `list_email`. The authorization rules below are unchanged.
+
 Proposed. The search app exposes the same retrieval core in two ways: REST/OpenAPI, and an MCP endpoint (`search_meetings`, `get_meeting`, `get_transcript_window`, `list_meetings`). Every call carries the user's delegated Entra token. Reader authority comes from app roles in the token mapped to corpora, never from caller parameters. No agent receives a database connection, index key or service credential. Returned text is marked as untrusted evidence, and Fireflies summaries are labelled as AI output. Entra ID has no dynamic client registration, so each agent platform uses a pre-registered client, tested per platform.
+
+## ADR-014: Email Is the First Source
+
+Decided by Matthew, recorded 2026-10-14; supersedes ADR-010. Source order is **email → Teams → (Fireflies, Dialpad: undecided)**. Only email gets runtime code now. Shared packages (`ci_core`, `ci_processing`, `ci_retrieval`) stay source-neutral so Teams can reuse them, but no Teams, Fireflies or Dialpad clients are built.
+
+Email ships in increments:
+
+- **E1:** body text. Attachments are recorded as metadata only (name, type, size, inline flag, content ID).
+- **E2:** PDF extraction and OCR behind malware scanning (Defender for Storage), as its own PR series. PDF remains the only attachment format confirmed for extraction. Other formats come later.
+
+Classified actionable mail will later feed monday.com department intake boards (Exhibit A). That routing is out of scope; the classification output and the `outbox` table are kept so it can be added (ADR-008).
+
+## ADR-015: Exchange Application RBAC Is the Mailbox Boundary
+
+Proposed. Matthew's requirement is "all mailboxes, with the ability to keep specific mailboxes out". Two layers enforce it:
+
+- **Hard layer (Exchange Online Application RBAC).** The ingestion identity gets `Application Mail.Read` through `New-ManagementRoleAssignment` with a custom resource scope. Pilot: members of a pilot group. Production: user and shared mailboxes, minus those with `CustomAttribute15 = 'FS-CI-Exclude'`. **Tenant-wide Entra `Mail.Read` (application) is never granted**: grants are additive, so an Entra grant would silently defeat the RBAC scope. Mail access is read-only; no `Mail.ReadWrite` or `Mail.Send` for any service identity.
+- **Soft layer (database).** The `runtime_config` mode, per-mailbox `source_scopes` state and `exclusions`. Exclusions always win, and an empty scope fails closed. An operator CLI (`ci scope list | include | exclude | set-mode`) writes every change to `audit_events`.
+
+An excluded mailbox does not exclude that person's mail in other mailboxes, so `exclusions` also supports participant addresses and `@domain` patterns, evaluated per occurrence before content is staged.
+
+The scope is verified with `Test-ServicePrincipalAuthorization` **and** a real runtime token: 200 on an in-scope mailbox and 403 on an excluded one. A 401 or 404 is not a valid negative test. Permission changes can take up to about two hours to apply.
+
+## ADR-016: Unsupported-Attachment Handling Is a Configured Policy
+
+Proposed; the business decision (D-E1) is open. ADR-006's whole-message hold for unsupported attachments would hold most mail, because most messages carry inline signature images. The rule becomes a setting:
+
+`ATTACHMENT_UNSUPPORTED_POLICY = hold_message | publish_partial | exempt_cid_inline`
+
+- `hold_message`: the original conservative rule.
+- `publish_partial`: publish the body and report unprocessed attachments as partial coverage.
+- `exempt_cid_inline`: ignore inline (`contentId`) images; hold for any other unsupported attachment.
+
+Local and dev default to `publish_partial`. **Production has no default**: the ingestion app refuses to start unless the value is set explicitly. Search results always report held and partial counts in a coverage block; incomplete evidence is never presented as complete.
+
+## ADR-017: Classification Produces Proposals; Three Agent Clients
+
+Proposed.
+
+**Classification.** A `Classifier` interface with `CLASSIFIER_BACKEND = azure_openai | decisions_api | fake`. Defaults: `fake` locally and `azure_openai` in the cloud. `decisions_api` sends email content to OpenAI and stays off until Matthew confirms data-processing approval (D-C1). Output is stored as proposals with model, policy version, input hash, per-label probability and decision, never as approvals. The starting labels and thresholds in `CLAUDE.md` §7 are uncalibrated and must be calibrated on a labelled pilot sample. Items with credentials, potential PHI or sensitive PII are marked restricted (not embedded, never returned). Spam and newsletters are recorded but not indexed.
+
+**Agent clients.** Claude, Microsoft Copilot (Copilot Studio) and ChatGPT, each signing in as the user through a pre-registered Entra client app (Entra has no dynamic client registration). Reader authority comes from app roles (`Communications.Reader.All`, `Communications.Reader.Own`), never from tool arguments. ChatGPT is the highest-risk client: if it rejects a pre-registered client, it is recorded as blocked and a thin OAuth broker is proposed, rather than a silent workaround. Which clients are approved for production is open (D-A1); all three are enabled in dev.
+
+## ADR-018: PostgreSQL, Python and Flex Consumption
+
+Proposed; confirms and extends ADR-011/012.
+
+- **Database:** Azure Database for PostgreSQL Flexible Server with **pgvector ≥ 0.8.0**, chosen over Azure SQL after a comparison. pgvector 0.8's iterative index scans (`hnsw.iterative_scan = relaxed_order`) keep permission-filtered vector search returning full pages when a user can see only a small share of the corpus. PostgreSQL is also the job queue (`FOR UPDATE SKIP LOCKED`, leases, dead state) and the search index (HNSW plus full-text, fused with RRF). `JobQueue` and `SearchBackend` interfaces keep Service Bus and Azure AI Search available later. The extension version must be checked on the provisioned server.
+- **Language and hosting:** Python 3.12 if Flex Consumption supports it in the chosen region, otherwise 3.11; Azure Functions v2 programming model on **Flex Consumption**. This matches the PDF/OCR libraries E2 needs.
+- **Two deployables:** `ingestion` (capture, worker, maintenance timers) and `search` (REST + MCP), with separate managed identities. The search identity never gets mailbox, Blob-write or database-write access. A hosting spike decides whether the MCP endpoint runs inside Functions or as an ASGI app on App Service or Container Apps; its result will be recorded as a new ADR.
+- **Embeddings:** Azure OpenAI `text-embedding-3-large` at 1536 dimensions in the Finishes tenant, recorded in the processing profile.
