@@ -13,7 +13,7 @@ Related: [Fireflies Pipeline](FIREFLIES_PIPELINE.md) · [Database](DATABASE.md) 
 
 Why two apps and not one: the search app faces users and agents, so it must not hold the Fireflies API key, Blob write access or database write access. Why not three: maintenance jobs (purges, lease recovery) need roughly the same permissions as ingestion, and a third app adds deployment and cost without a real security boundary at pilot scale. The bootstrap's `id-fs-ci-maintenance-<env>` identity is left unused until a separate maintenance app is justified.
 
-**Hosting:** Azure Functions **Flex Consumption**, Python 3.11, v2 programming model (decorators in `function_app.py`). Flex Consumption supports managed identity, VNet integration and per-function scaling. The search app should have one always-ready instance so agents don't hit cold starts; the ingestion app can scale to zero. Confirm region availability and the supported Python versions at build time.
+**Hosting:** Azure Functions **Flex Consumption**, Python 3.14 (ADR-018; 3.13 only as a recorded fallback), v2 programming model (decorators in `function_app.py`). Flex Consumption supports managed identity, VNet integration and per-function scaling. The search app should have one always-ready instance so agents don't hit cold starts; the ingestion app can scale to zero. Confirm region availability and the supported Python versions at build time.
 
 ## 2. Ingestion App Functions
 

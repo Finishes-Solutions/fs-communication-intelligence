@@ -40,7 +40,7 @@ Business context: Finishes Solutions is a real estate owner-developer (Waller, T
 | L4 | **Two deployables with separate managed identities**: `ingestion` (capture, worker, maintenance timers) and `search` (REST + MCP) | The search identity never gets mailbox, Blob-write or DB-write access. |
 | L5 | **Exchange Online Application RBAC** is the hard mailbox boundary. Never grant tenant-wide Graph `Mail.Read` (application) in Entra. | Grants are additive; an Entra grant would silently defeat the RBAC scope. |
 | L6 | Read-only mail access. No `Mail.ReadWrite` or `Mail.Send` for the ingestion identity. | Writing Outlook categories back is out of scope. |
-| L7 | Embeddings: Azure OpenAI `text-embedding-3-large` with `dimensions=1536`, in the Finishes Azure tenant | Record model + dimensions in the processing profile. |
+| L7 | Embeddings: Azure OpenAI `text-embedding-3-large` with `dimensions=1536`, in the Finishes Azure tenant. The `azure_openai` classifier uses a second deployment named `classifier` (model chosen at build time, Standard or Data Zone Standard, never Global) | Record model + dimensions (and the classifier model + version) in the processing profile. |
 | L8 | Agents reach evidence **only** through the authorized API. Entra delegated tokens; reader authority from app roles in the token, never from tool arguments. | No DB connection, index key or service credential ever goes to an agent. |
 | L9 | Mode switch `INGESTION_MODE=test|production|paused` lives in PostgreSQL `runtime_config`. Empty scope fails closed. | See repo ADR-004/011. |
 | L10 | No secrets in Git, logs, fixtures or chat. No real employee email content in fixtures, tests or logs. Log IDs, counts, states and reason codes only. | |
@@ -64,6 +64,7 @@ Business context: Finishes Solutions is a real estate owner-developer (Waller, T
 - `docs/`: thorough plans written when **Fireflies** was first. The source order has since changed to email-first. The designs for Function Apps, database, search/agents, email dedup and the PDF pipeline are still largely valid; treat them as reference material.
 - `db/migrations/0001_foundation.sql` (adapted for email in PR 3, plus `0002_email.sql`, a `db/migrate.py` ledger runner and CI checks on PG18 + pgvector 0.8.2; see `docs/DATABASE.md`). Original note: a 449-line draft, source-neutral, validated locally on PG16 + pgvector 0.6. It contains the tables `datasets`, `runtime_config`, `source_connections`, `source_scopes`, `corpora`, `access_grants`, `exclusions`, `communications`, `communication_scopes`, `communication_versions`, `participants`, `communication_participants`, `artifacts`, `transcript_segments`, `chunks`, `relationships`, `tombstones`, `jobs`, `checkpoints`, `rate_budgets`, `webhook_receipts`, `outbox`, `policy_decisions` and `audit_events`, plus `published_*` views and roles `ci_ingest`, `ci_search` and `ci_operator`. **Not applied to Azure.** Adapt it; don't throw it away.
 - `scripts/bootstrap-azure.sh`: creates managed identities, GitHub OIDC federation and RG-scoped deploy roles. Not confirmed as run.
+- **Dev Azure is built by hand** by Matthew from the *FS CI Azure Build Guide (Dev), revision 2* (a Word document kept outside this public repo). It fixes PostgreSQL 18, Python 3.14, names, app settings and every grant. The grants are mirrored in `docs/AZURE_PERMISSIONS.md`; treat that file as the contract and never add a grant that is not in it.
 - `config/runtime.example.env`: proposed setting names.
 - A docs patch `email-first-adr-014.patch` (ADR-014 to ADR-017, README, backlogs, TEAMS_DISCOVERY.md) may already be applied. If `docs/ARCHITECTURE_DECISIONS.md` has no ADR-014, ask Matthew for the patch before PR 1, or write the equivalent ADRs yourself from §2–§3.
 - No application code, infrastructure templates or workflows exist yet.
@@ -195,7 +196,7 @@ Goal: Matthew or Cody can run the whole pipeline on a Mac with **no Azure and no
 - Positive and negative check: the dev identity must get 200 on `ci-test@` and 403 on a real mailbox outside the scope. A 401 or 404 is not a valid negative test.
 
 ### 10.3 Dev in Azure
-Use GitHub OIDC (`environment: development`), deploy dev infra from Bicep, run in `test` mode with the test mailbox, then Matthew's mailbox, then a pilot group.
+Dev infrastructure is built **by hand** from the build guide (decided 2026-10-14); do not write dev Bicep that would recreate or drift from it. Code reaches dev through GitHub OIDC (`environment: development`) as `id-fs-ci-github-dev`, which is also the migration login. The database roles `ci_ingest`, `ci_search` and `ci_operator` are created by hand (the migration login has no `CREATEROLE`); migrations skip them when they exist. Run in `test` mode with the test mailbox, then Matthew's mailbox, then a pilot group.
 
 ---
 
@@ -219,7 +220,7 @@ Report these separately, with counts:
 5. **Capture.** Inventory/scope sync, delta reconcile, job queue, worker fetch/normalize, subscriptions and webhook. Tests for duplicates, 410, 429, moves, deletes and empty scope.
 6. **Processing.** Screening adapters, classifier interface + Azure OpenAI backend, chunker, embedder, atomic publish, restricted/review handling, D-E1 policy.
 7. **Search.** Hosting spike ADR, token validation, grants, hybrid query, REST + MCP, audit, local test auth, MCP Inspector docs.
-8. **Infra (dev).** Bicep: two Flex apps, PostgreSQL Flexible (Entra-only, pgvector allow-listed), Key Vault, Azure OpenAI embedding deployment, AI Language and Content Safety, App Insights; `deploy-dev.yml`.
+8. **Deploy (dev).** `deploy-dev.yml`: build each app with its packages, deploy both Flex apps, run `db/migrate.py` as `id-fs-ci-github-dev` (temporary runner firewall rule), smoke-test. Dev resources already exist (hand-built). Bicep is written for **production** only, modelled on the dev resources plus the production differences in the build guide.
 9. **Real test mailbox.** Dev app registration with certificate, `send-test-emails`, end-to-end run, positive/negative RBAC check.
 10. **Agent clients.** Claude, Copilot Studio and ChatGPT connection guides and results (including any client recorded as blocked).
 11. **Ops.** Dead-letter alerting, metrics, runbooks, restore drill; then E2 (PDF/OCR, Defender for Storage) as its own series.

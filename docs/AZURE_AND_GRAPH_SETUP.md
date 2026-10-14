@@ -1,5 +1,7 @@
 # Azure and Microsoft Graph Setup
 
+> **Superseded for the dev environment (2026-10-14).** Dev is built by hand from the *FS CI Azure Build Guide (Dev), revision 2*, kept outside this public repo. Every grant it makes is listed in [AZURE_PERMISSIONS.md](AZURE_PERMISSIONS.md). Where this runbook differs (resource names, a dev virtual network, App Configuration, Python version), the guide and that file win. The Exchange RBAC reasoning below is still accurate.
+
 > **Revision 2026-09-29:** Fireflies is the first release. Sections 1–3 (identities, GitHub OIDC) apply now. Sections 5–7 (mailbox and threat permissions) apply to the email release. The first-release resource list is in [Function Apps §6](FUNCTION_APPS.md#6-pilot-resource-inventory); Azure AI Search, App Configuration, Document Intelligence and Defender for Storage in §4 below are deferred to email. Fireflies needs no Graph permission: store its API key and webhook secret in Key Vault.
 
 Status: setup runbook and executable identity bootstrap. Azure infrastructure templates, Function Apps, ingestion code and deployment workflows are not yet implemented in this repository. No tenant changes were performed by preparing these files.
