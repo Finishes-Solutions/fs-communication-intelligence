@@ -1,5 +1,7 @@
 # Fireflies Release Backlog (First Release)
 
+> **Superseded 2026-10-14:** email is the first source ([ADR-014](ARCHITECTURE_DECISIONS.md#adr-014-email-is-the-first-source)); Fireflies is undecided. Keep this as reference for the shared foundation only.
+
 Status: planned, not started. IDs are planning references, not GitHub issues. No dates or staff assignments are asserted.
 
 The first release is **authorized semantic search over Fireflies meetings, available to executives through an API and MCP agents**. It also builds the shared foundation that email (second) and Teams (third) reuse. Email-specific work stays in the [Email Release Backlog](EMAIL_RELEASE_BACKLOG.md); its foundation items CI-002 through CI-006 are delivered here as FF-002 through FF-006.
