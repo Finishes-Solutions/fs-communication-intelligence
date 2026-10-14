@@ -1,7 +1,7 @@
 # fs-communication-intelligence — Build Context for Claude Code
 
 Owner: Matthew Sinitiere (Technology, Finishes Solutions). Co-maintainer: Cody Vela.
-Repository: `Finishes-Solutions/fs-communication-intelligence` (private). Azure resource group: `fs-communication-intelligence` (exists, otherwise empty).
+Repository: `Finishes-Solutions/fs-communication-intelligence` (**public for now**, so GitHub Actions minutes are free; treat every commit as world-readable and keep the README minimal). Azure resource group: `fs-communication-intelligence` (exists, otherwise empty).
 Written: 2026-10-14. Save this file as `CLAUDE.md` at the repo root so every session loads it.
 
 Read this whole file before writing code. It records decisions made in planning conversations that are **not** all reflected in the repo's `docs/` yet. Where this file and `docs/` disagree, **this file wins**, and you should update the affected doc in the same PR.
