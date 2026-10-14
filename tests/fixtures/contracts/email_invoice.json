@@ -1,0 +1,25 @@
+{
+  "contract_version": "1",
+  "provider": "email",
+  "connection_ref": "tenant-00000000-0000-0000-0000-000000000001",
+  "scope": {"scope_kind": "mailbox", "native_scope_id": "00000000-0000-0000-0000-0000000000aa"},
+  "native_id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-synthetic-0001",
+  "source_revision": "CQAAABYAAAAsynthetic",
+  "kind": "email",
+  "occurred_at": "2026-10-01T14:05:00Z",
+  "title": "Invoice 4471 for Lot 12 grading - payment due Friday",
+  "body_text": "Hi Pat,\n\nAttached is invoice 4471 for the grading work at Example Ridge Lot 12. Total due is $18,250.00 by Friday. Please confirm approval.\n\nThanks,\nJordan Rivera\nAcme Sitework LLC",
+  "direction": "in",
+  "participants": [
+    {"role": "from", "address": "jordan.rivera@acme-sitework.example", "display_name": "Jordan Rivera"},
+    {"role": "to", "address": "pat.example@finishessolutions.example", "display_name": "Pat Example"}
+  ],
+  "attachments": [
+    {"native_id": "att-0001", "name": "Invoice-4471.pdf", "content_type": "application/pdf", "size_bytes": 84211, "is_inline": false},
+    {"native_id": "att-0002", "name": "image001.png", "content_type": "image/png", "size_bytes": 5120, "is_inline": true, "content_id": "image001.png@01DB0000.00000000"}
+  ],
+  "thread_ref": "AAQkAGsyntheticconversation0001",
+  "internet_message_id": "<synthetic-4471@acme-sitework.example>",
+  "source_url": "https://outlook.office365.com/owa/?ItemID=synthetic-0001",
+  "provider_attributes": {"has_attachments": true, "parent_folder": "inbox"}
+}
