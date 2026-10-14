@@ -1,0 +1,93 @@
+-- Synthetic email seed shared by the check files (included with \ir).
+-- Invented people, vendors and amounts only. Random vectors stand in for
+-- embeddings. Nothing is published here; see publish.psql.
+--
+-- Mailboxes: A (pat, enrolled, test-approved), B (sam, enrolled,
+-- test-approved), U (enrolled, NOT approved).
+-- Messages:
+--   M1  A  invoice from jordan@acme-sitework.example        corpus C0
+--   M2  B  copy of M1 (same Internet Message-ID)             corpus C0
+--   M3  A  payroll notice from hr@payroll-vendor.example     corpus C0
+--   M4  U  message in the unapproved mailbox                 corpus C0
+--   M5  A  restricted-corpus message                         corpus C1
+SET search_path = ci, public;
+CREATE ROLE t_ingest LOGIN IN ROLE ci_ingest;
+CREATE ROLE t_search LOGIN IN ROLE ci_search;
+CREATE ROLE t_operator LOGIN IN ROLE ci_operator;
+
+-- control plane (operator decisions)
+INSERT INTO runtime_config (mode, enabled_providers, is_active, activated_at, activated_by)
+  VALUES ('test', '{email}', true, now(), 'op');
+INSERT INTO source_connections (id, provider, account_ref, display_name, enabled)
+  VALUES ('00000000-0000-0000-0000-0000000000e1', 'email', 'tenant-1', 'M365 email', true);
+INSERT INTO corpora (id, corpus_key, description) VALUES
+  ('00000000-0000-0000-0000-0000000000c0', 'email-enrolled', 'enrolled mailboxes'),
+  ('00000000-0000-0000-0000-0000000000c1', 'email-restricted', 'no grants');
+INSERT INTO access_grants (corpus_id, principal_type, principal_id, granted_by)
+  VALUES ('00000000-0000-0000-0000-0000000000c0', 'entra_app_role', 'Communications.Reader.All', 'op');
+INSERT INTO source_scopes (id, connection_id, scope_kind, native_scope_id, display_label, corpus_id,
+                           scope_state, test_approved, backfill_since, policy_version) VALUES
+  ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000e1', 'mailbox', 'oid-a', 'Mailbox A', '00000000-0000-0000-0000-0000000000c0', 'enrolled', true,  '2026-01-01', 'p1'),
+  ('00000000-0000-0000-0000-00000000005b', '00000000-0000-0000-0000-0000000000e1', 'mailbox', 'oid-b', 'Mailbox B', '00000000-0000-0000-0000-0000000000c0', 'enrolled', true,  '2026-01-01', 'p1'),
+  ('00000000-0000-0000-0000-00000000005c', '00000000-0000-0000-0000-0000000000e1', 'mailbox', 'oid-u', 'Mailbox U', '00000000-0000-0000-0000-0000000000c0', 'enrolled', false, '2026-01-01', 'p1');
+
+-- evidence (ingestion role)
+SET ROLE t_ingest;
+INSERT INTO email_mailboxes (scope_id, primary_smtp_address, recipient_type) VALUES
+  ('00000000-0000-0000-0000-00000000005a', 'pat.example@finishes.example', 'UserMailbox'),
+  ('00000000-0000-0000-0000-00000000005b', 'sam.example@finishes.example', 'UserMailbox'),
+  ('00000000-0000-0000-0000-00000000005c', 'shared.example@finishes.example', 'SharedMailbox');
+INSERT INTO participants (id, provider, provider_identity, email_normalized, display_name) VALUES
+  ('00000000-0000-0000-0000-0000000000d1', 'email', 'jordan.rivera@acme-sitework.example', 'jordan.rivera@acme-sitework.example', 'Jordan Rivera'),
+  ('00000000-0000-0000-0000-0000000000d2', 'email', 'pat.example@finishes.example', 'pat.example@finishes.example', 'Pat Example'),
+  ('00000000-0000-0000-0000-0000000000d3', 'email', 'sam.example@finishes.example', 'sam.example@finishes.example', 'Sam Example'),
+  ('00000000-0000-0000-0000-0000000000d4', 'email', 'hr@payroll-vendor.example', 'hr@payroll-vendor.example', 'Payroll Vendor');
+INSERT INTO communications (id, dataset_key, connection_id, native_id, kind, corpus_id, title, occurred_at) VALUES
+  ('00000000-0000-0000-0000-0000000000a1', 'test', '00000000-0000-0000-0000-0000000000e1', 'imm-a-1', 'email', '00000000-0000-0000-0000-0000000000c0', 'Invoice 4471 for Lot 12 grading', '2026-10-01 14:05Z'),
+  ('00000000-0000-0000-0000-0000000000a2', 'test', '00000000-0000-0000-0000-0000000000e1', 'imm-b-1', 'email', '00000000-0000-0000-0000-0000000000c0', 'Invoice 4471 for Lot 12 grading', '2026-10-01 14:05Z'),
+  ('00000000-0000-0000-0000-0000000000a3', 'test', '00000000-0000-0000-0000-0000000000e1', 'imm-a-2', 'email', '00000000-0000-0000-0000-0000000000c0', 'Payroll calendar update', '2026-10-02 09:00Z'),
+  ('00000000-0000-0000-0000-0000000000a4', 'test', '00000000-0000-0000-0000-0000000000e1', 'imm-u-1', 'email', '00000000-0000-0000-0000-0000000000c0', 'Shared inbox invoice question', '2026-10-03 10:00Z'),
+  ('00000000-0000-0000-0000-0000000000a5', 'test', '00000000-0000-0000-0000-0000000000e1', 'imm-a-3', 'email', '00000000-0000-0000-0000-0000000000c1', 'Restricted invoice dispute', '2026-10-04 11:00Z');
+INSERT INTO communication_scopes (communication_id, scope_id) VALUES
+  ('00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-00000000005a'),
+  ('00000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-00000000005b'),
+  ('00000000-0000-0000-0000-0000000000a3', '00000000-0000-0000-0000-00000000005a'),
+  ('00000000-0000-0000-0000-0000000000a4', '00000000-0000-0000-0000-00000000005c'),
+  ('00000000-0000-0000-0000-0000000000a5', '00000000-0000-0000-0000-00000000005a');
+INSERT INTO communication_participants (communication_id, participant_id, role) VALUES
+  ('00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000d1', 'from'),
+  ('00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000d2', 'to'),
+  ('00000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-0000000000d1', 'from'),
+  ('00000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-0000000000d3', 'to'),
+  ('00000000-0000-0000-0000-0000000000a3', '00000000-0000-0000-0000-0000000000d4', 'from'),
+  ('00000000-0000-0000-0000-0000000000a3', '00000000-0000-0000-0000-0000000000d2', 'to'),
+  ('00000000-0000-0000-0000-0000000000a4', '00000000-0000-0000-0000-0000000000d2', 'from'),
+  ('00000000-0000-0000-0000-0000000000a5', '00000000-0000-0000-0000-0000000000d1', 'from');
+INSERT INTO communication_versions (id, communication_id, version_no, source_revision, profile, processing_state)
+SELECT ('00000000-0000-0000-0000-0000000000b' || n)::uuid, ('00000000-0000-0000-0000-0000000000a' || n)::uuid,
+       1, 'sha-r' || n, '{"chunker":"para-1","embed":"te3l-1536","policy":"p1"}', 'embedded'
+FROM generate_series(1, 5) n;
+INSERT INTO email_messages (communication_id, mailbox_scope_id, internet_message_id, conversation_id,
+                            received_at, direction, has_attachments) VALUES
+  ('00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-00000000005a', '<inv-4471@acme-sitework.example>', 'conv-1', '2026-10-01 14:05Z', 'in', true),
+  ('00000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-00000000005b', '<inv-4471@acme-sitework.example>', 'conv-1', '2026-10-01 14:05Z', 'in', true),
+  ('00000000-0000-0000-0000-0000000000a3', '00000000-0000-0000-0000-00000000005a', '<pay-cal@payroll-vendor.example>', 'conv-2', '2026-10-02 09:00Z', 'in', false),
+  ('00000000-0000-0000-0000-0000000000a4', '00000000-0000-0000-0000-00000000005c', '<q-1@finishes.example>', 'conv-3', '2026-10-03 10:00Z', 'internal', false),
+  ('00000000-0000-0000-0000-0000000000a5', '00000000-0000-0000-0000-00000000005a', '<dispute@acme-sitework.example>', 'conv-4', '2026-10-04 11:00Z', 'in', false);
+INSERT INTO email_attachments (version_id, native_attachment_id, name, content_type, size_bytes, is_inline, content_id, status) VALUES
+  ('00000000-0000-0000-0000-0000000000b1', 'att-1', 'Invoice-4471.pdf', 'application/pdf', 84211, false, NULL, 'metadata_only'),
+  ('00000000-0000-0000-0000-0000000000b1', 'att-2', 'image001.png', 'image/png', 5120, true, 'image001.png@x', 'unsupported_partial');
+CREATE TEMP TABLE qv AS SELECT (SELECT array_agg(random())::vector(1536) FROM generate_series(1, 1536)) v;
+INSERT INTO chunks (version_id, communication_id, chunk_kind, seq, display_text,
+                    embedding_input_sha256, embedding_model, embedding)
+SELECT ('00000000-0000-0000-0000-0000000000b' || n)::uuid, ('00000000-0000-0000-0000-0000000000a' || n)::uuid,
+       'email_body', 0,
+       (ARRAY['Invoice 4471 for grading at Example Ridge Lot 12, total 18,250 due Friday.',
+              'Invoice 4471 for grading at Example Ridge Lot 12, total 18,250 due Friday.',
+              'The payroll calendar for November has been updated.',
+              'Question about an invoice sent to the shared inbox.',
+              'Dispute over the invoice for the retaining wall.'])[n],
+       'h' || n, 'te3l-1536', (SELECT v FROM qv)
+FROM generate_series(1, 5) n;
+RESET ROLE;
+GRANT SELECT ON qv TO t_search;

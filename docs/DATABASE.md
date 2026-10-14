@@ -1,14 +1,14 @@
 # Database Design
 
-Status: draft schema in [`db/migrations/0001_foundation.sql`](../db/migrations/0001_foundation.sql). It was applied to a local PostgreSQL 16.13 + pgvector 0.6.0 instance on 2026-09-29 and exercised by [`db/tests/0001_foundation_checks.sql`](../db/tests/0001_foundation_checks.sql). It has not been applied to any Azure database.
+Status: schema in [`db/migrations`](../db/migrations): `0001_foundation.sql` (source-neutral) and `0002_email.sql` (email extension). CI applies them to PostgreSQL 18 + pgvector 0.8.2 on every pull request and runs the behavior checks in [`db/tests`](../db/tests). They have not been applied to any Azure database.
 
-Related: [Fireflies Pipeline](FIREFLIES_PIPELINE.md) · [Function Apps](FUNCTION_APPS.md) · [Search and Agents](SEARCH_AND_AGENTS.md)
+Related: [Function Apps](FUNCTION_APPS.md) · [Search and Agents](SEARCH_AND_AGENTS.md) · [Email Deduplication](EMAIL_DEDUPLICATION.md)
 
 ## 1. Role of the Database
 
 PostgreSQL (Azure Database for PostgreSQL Flexible Server) is authoritative for records, versions, permissions, execution state and audit. **For the first release it is also the search index** (pgvector + full-text search; [ADR-012](ARCHITECTURE_DECISIONS.md#adr-012-postgresql-search-for-the-first-release)). Blob storage holds raw provider payloads. Everything searchable can be rebuilt from Blob + SQL.
 
-Everything lives in schema `ci`. The design is source-neutral: Fireflies, email and Teams share these tables, and provider-only details go in `provider_attributes` JSONB or later extension tables. No email-only column is mandatory.
+Everything lives in schema `ci`. The foundation is source-neutral: email, Teams and any later source share it. Email-only details live in the `email_*` extension tables (§9), and no email-only column is mandatory in the shared tables.
 
 ## 2. Entity Overview
 
@@ -33,17 +33,18 @@ erDiagram
 
 | Group | Tables |
 |---|---|
-| Control | `datasets`, `runtime_config`, `source_connections`, `source_scopes`, `corpora`, `access_grants`, `exclusions` |
+| Control | `datasets`, `runtime_config`, `source_connections`, `source_scopes`, `corpora`, `access_grants`, `exclusions`, `schema_migrations` |
 | Evidence | `communications`, `communication_scopes`, `communication_versions`, `participants`, `communication_participants`, `artifacts`, `transcript_segments`, `chunks`, `relationships`, `tombstones` |
 | Execution | `jobs`, `checkpoints`, `rate_budgets`, `webhook_receipts`, `outbox` |
 | Governance | `policy_decisions`, `audit_events` |
-| Retrieval surface | Views `published_communications`, `published_chunks`, `published_segments`, `published_participants` |
+| Email extension | `email_mailboxes`, `email_messages`, `email_attachments` |
+| Retrieval surface | Views `published_communications`, `published_chunks`, `published_segments`, `published_participants`, `published_email_messages`, `published_email_attachment_coverage` |
 
 ## 3. Identity Rules
 
 - **Communication identity:** `(dataset_key, connection_id, native_id)`. `connection_id` fixes the provider and account.
-- **Scope is a relationship, not part of identity.** A Fireflies transcript reached through two approved users is one communication with two `communication_scopes` rows. This refines the platform plan's identity rule. Email is unaffected: Graph immutable IDs are per-mailbox, so each mailbox copy is still its own communication, as [ADR-003](ARCHITECTURE_DECISIONS.md#adr-003-an-occurrence-is-distinct-from-a-conversation) requires.
-- **A meeting found in both Fireflies and Teams** is two communications linked by a `relationships` row of kind `same_meeting`, with provenance. They are never merged, and their grants are never combined.
+- **Scope is a relationship, not part of identity.** Graph immutable IDs are per-mailbox, so each mailbox copy of an email is its own communication with one `communication_scopes` row, as [ADR-003](ARCHITECTURE_DECISIONS.md#adr-003-an-occurrence-is-distinct-from-a-conversation) requires. Copies are correlated by Internet Message-ID plus a verified content fingerprint and collapsed in results after authorization; permissions are never combined. A source whose items are shared across scopes may link one communication to several scopes.
+- **The same item from two sources** (for example a meeting in Teams and in another recorder) is two communications linked by a `relationships` row, with provenance. They are never merged.
 - **Datasets:** `test` and `production` rows never mix. A test record is not promoted to production; production capture re-fetches it.
 
 ## 4. Versions and the Publication Fence
@@ -62,7 +63,10 @@ any → failed (retryable via job) · published → withdrawn
 
 - `communications.active_version_id = chunk.version_id`, the version state `published` and `lifecycle_state = 'active'`;
 - the communication's dataset equals `active_dataset()` (none when paused);
-- no matching `exclusions` or `tombstones` row.
+- at least one linked scope is `enrolled`, approved for that dataset, and has no active `scope` exclusion;
+- no active `item` exclusion, no participant matching an active `participant_address` or `participant_domain` exclusion, and no tombstone.
+
+**Scopes and exclusions.** `source_scopes.scope_state` records what inventory observed (`enrolled`, `excluded_by_rule`, `not_approved`, `no_exchange_access`, `no_mailbox`, `paused`); ingestion can write it but cannot change the `test_approved`/`production_approved` flags, which are operator decisions. `exclusions` has four kinds: `item`, `scope` (for example a whole mailbox), `participant_address` and `participant_domain` (stored lowercase, without `@`). Exclusions are revocable (`revoked_at`), are checked at capture before content is staged, and are enforced again by the views, so an exclusion added later hides evidence already indexed. Excluding a mailbox does not hide that person's mail in other mailboxes; a participant exclusion does.
 
 Partially written chunks for an unpublished version are therefore never visible. Withdrawal works by inserting a tombstone or exclusion first, which hides the item at once, then purging.
 
@@ -73,7 +77,7 @@ The queue is PostgreSQL, as [ADR-002](ARCHITECTURE_DECISIONS.md#adr-002-sql-is-a
 ```sql
 -- Admit (webhook, reconcile, backfill); duplicates collapse on jobs_open_dedupe
 INSERT INTO ci.jobs (dataset_key, config_revision, job_type, dedupe_key, payload, priority)
-VALUES ($1, $2, 'ff_fetch', $3, $4, $5)
+VALUES ($1, $2, 'email_fetch', $3, $4, $5)
 ON CONFLICT DO NOTHING;
 
 -- Claim
@@ -93,7 +97,7 @@ UPDATE ci.jobs SET state = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE '
 WHERE state = 'leased' AND lease_expires_at < now();
 ```
 
-Completion updates `state` only `WHERE id = $1 AND lease_owner = $2`. A worker that lost its lease cannot overwrite another worker's result. Payloads carry identifiers only, never transcript text.
+Completion updates `state` only `WHERE id = $1 AND lease_owner = $2`. A worker that lost its lease cannot overwrite another worker's result. Payloads carry identifiers only, never message content.
 
 **Rate budget** (shared across webhook fetches, reconcile and backfill; tested locally):
 
@@ -111,8 +115,8 @@ RETURNING used;   -- no row returned = wait for the next window
 
 | Role | Used by | Can | Cannot |
 |---|---|---|---|
-| `ci_ingest` | Ingestion app | Read all; write evidence, jobs, checkpoints, budgets, decisions; append audit | Change mode, scope approvals, reader grants or exclusions |
-| `ci_search` | Search app | Read `published_*` views, `access_grants`, `corpora`, `runtime_config`; append audit | Read base tables (`chunks`, `transcript_segments`, …), so it can never see unpublished, excluded or tombstoned content |
+| `ci_ingest` | Ingestion app | Read all; write evidence, email metadata, jobs, checkpoints, budgets, decisions; record observed scope state; append audit | Change mode, scope approvals, reader grants or exclusions |
+| `ci_search` | Search app | Read `published_*` views, `access_grants`, `corpora`, `runtime_config`; append audit | Read base tables (`chunks`, `email_messages`, …), so it can never see unpublished, excluded or tombstoned content |
 | `ci_operator` | `admin_mode` function and administrators | Manage mode, connections, scopes, corpora, grants, exclusions and budgets | Read evidence content |
 | Migration principal | GitHub migration job | Own the schema | Be used at runtime |
 
@@ -122,25 +126,28 @@ In Azure, each managed identity is created as a database principal with `pgaadau
 
 | Data | Location | Why |
 |---|---|---|
-| Raw Fireflies JSON | Private Blob, `raw/fireflies/<dataset>/<id>/<revision>.json` | Rebuild and audit source; not queried |
-| Transcript sentences | `transcript_segments.text` | Needed for citations and transcript windows; small |
+| Raw Graph message JSON | Private Blob, `raw/email/<dataset>/<mailbox>/<id>/<revision>.json` | Rebuild and audit source; not queried |
+| Message metadata | `email_messages`, `email_attachments` (metadata only in E1) | Citations, dedup, coverage |
 | Chunk text and embeddings | `chunks.display_text`, `chunks.embedding vector(1536)`, `chunks.tsv` | Search |
-| Provider summary | `artifacts` (Blob) + a `provider_summary` chunk | Labelled as Fireflies AI output |
 | Logs, audit, jobs | Identifiers, counts and reason codes only | Content-free by rule |
 
-**Sizing:** about 42 hours of meetings is roughly 20–30k sentences and 1–2k chunks. At 1536 float4 dimensions, that is about 6 KB per embedding, so around 10 MB of vectors. A Burstable server is more than enough. Exact (non-index) vector scans are fast at this size; the HNSW index matters beyond roughly 100k chunks.
+**Sizing:** company-wide email will reach hundreds of thousands to millions of chunks, at about 6 KB per 1536-dimension embedding. The HNSW index and `hnsw.iterative_scan = relaxed_order` (pgvector 0.8) are what keep permission-filtered queries returning full pages; the search app sets it per session, and an acceptance test lands with the search PR. Size the server from measured pilot volume.
 
 ## 8. Retention and Purge
 
-Maintenance purges `superseded` and `withdrawn` versions' chunks, segments and Blobs after a grace period (proposed 7 days, to allow rollback). Tombstones are kept for as long as the source may be replayed or restored. Backups follow the Flexible Server retention setting; deleting live rows does not remove backup copies immediately. Document the retention periods before production (FF-D8 in the backlog).
+Maintenance purges `superseded` and `withdrawn` versions' chunks, segments and Blobs after a grace period (proposed 7 days, to allow rollback). Tombstones are kept for as long as the source may be replayed or restored. Backups follow the Flexible Server retention setting; deleting live rows does not remove backup copies immediately. Retention periods are open decision D-R1; there is no automatic deletion until they are set.
 
 ## 9. How Email and Teams Extend This
 
-- **Email:** each mailbox copy is a `communications` row (`kind = 'email'`). The deduplication design's `email_content_variants`, `artifact_contents` and `processing_results` become extension tables keyed to `communication_versions` and `artifacts`. `chunks.chunk_kind` already allows `email_body` and `pdf_page` with `page_from`/`page_to`.
+- **Email (`0002_email.sql`):** each mailbox copy is a `communications` row (`kind = 'email'`) with an `email_messages` row (mailbox, Internet Message-ID exactly as delivered, conversation, received/sent times, direction, content fingerprint) indexed by `(mailbox_scope_id, received_at)`. `email_mailboxes` holds the inventory (primary SMTP address, recipient type). `email_attachments` holds per-version attachment metadata and its status under `ATTACHMENT_UNSUPPORTED_POLICY`. PDF extraction (E2) adds states and uses `chunks.chunk_kind = 'pdf_page'`.
 - **Teams:** `kind = 'chat_message' | 'channel_message' | 'meeting'`, with scopes of `teams_chat`/`teams_channel`, and `chat_context` chunks. Its ACLs probably need per-communication grants rather than one corpus. That is an additive `access_grants` target, planned during Teams discovery.
 
 ## 10. Open Items
 
 - Replace `pgcrypto` if the server image provides `gen_random_uuid()` natively (PostgreSQL 13+ does, so it is only kept for safety).
-- Confirm the pgvector version on Azure Flexible Server (the `azure.extensions` allowlist) and whether `hnsw.iterative_scan` is available for filtered queries at larger scale.
-- Add a `schema_migrations` ledger when the migration runner is chosen.
+- Confirm pgvector 0.8.2 on the provisioned Azure Flexible Server (the `azure.extensions` allowlist).
+- Classification proposals (model, policy version, input hash, per-label probability, decision) arrive with the processing PR as a new migration.
+
+## 11. Migrations
+
+Run `python db/migrate.py status` or `apply` with the standard `PG*` environment variables. Each `NNNN_name.sql` file runs in one transaction together with its `ci.schema_migrations` row, so files must not contain `BEGIN`/`COMMIT`. The runner refuses to continue if an applied file's checksum has changed: never edit an applied migration, add a new one. `python db/run_checks.py` applies everything to a throwaway database for each check file and also tests the ledger.

@@ -28,7 +28,7 @@ jobs:
       - name: Type check
         run: |
           uv run --frozen mypy
-          uv run --frozen mypy tests db/run_checks.py
+          uv run --frozen mypy tests db/run_checks.py db/migrate.py
       - name: Tests
         run: uv run --frozen pytest
 

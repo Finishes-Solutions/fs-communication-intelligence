@@ -1,0 +1,24 @@
+-- The documented hybrid query (vector top-50 + full-text top-50, RRF k=60),
+-- authorized from token claims ($3 roles, $4 user oid) BEFORE ranking.
+-- Defined in pg_temp so it needs no privileges beyond the search role's.
+CREATE FUNCTION pg_temp.search(q text, qvec vector, roles text[], user_oid text, lim int)
+RETURNS TABLE (communication_id uuid, score numeric) LANGUAGE sql STABLE AS $$
+WITH allowed AS (
+  SELECT DISTINCT g.corpus_id FROM ci.access_grants g
+  WHERE g.revoked_at IS NULL AND g.valid_from <= now() AND (g.valid_to IS NULL OR g.valid_to > now())
+    AND ((g.principal_type = 'entra_app_role' AND g.principal_id = ANY(roles))
+      OR (g.principal_type = 'entra_user' AND g.principal_id = user_oid))
+), cand AS (
+  SELECT * FROM ci.published_chunks pc WHERE pc.corpus_id IN (SELECT corpus_id FROM allowed)
+), vec AS (
+  SELECT id, row_number() OVER (ORDER BY embedding <=> qvec) r FROM cand ORDER BY embedding <=> qvec LIMIT 50
+), kw AS (
+  SELECT id, row_number() OVER (ORDER BY ts_rank_cd(tsv, tq) DESC) r
+  FROM cand, websearch_to_tsquery('english', q) tq WHERE tsv @@ tq
+  ORDER BY ts_rank_cd(tsv, tq) DESC LIMIT 50
+), fused AS (
+  SELECT id, sum(1.0 / (60 + r)) score FROM (SELECT * FROM vec UNION ALL SELECT * FROM kw) u GROUP BY id
+)
+SELECT c.communication_id, round(f.score, 4) FROM fused f JOIN cand c USING (id)
+ORDER BY f.score DESC LIMIT lim
+$$;
