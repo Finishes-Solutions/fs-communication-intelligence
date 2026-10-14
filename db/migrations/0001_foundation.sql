@@ -1,15 +1,16 @@
 -- 0001_foundation.sql
--- DRAFT: reviewed locally against PostgreSQL 16 + pgvector; not applied to any
--- Azure database. See docs/DATABASE.md for the design and state machines.
+-- Source-neutral foundation shared by email (first source, ADR-014), Teams and
+-- any later source. Provider-specific detail lives in extension tables
+-- (0002_email.sql) or content-free `provider_attributes` JSONB.
 --
--- Source-neutral foundation for Fireflies (first source), email and Teams.
--- No provider-specific columns are mandatory; provider detail lives in
--- `provider_attributes` JSONB or later extension tables.
+-- Checked in CI against PostgreSQL 18 + pgvector 0.8.2 (db/run_checks.py).
+-- Not yet applied to any Azure database. Apply with db/migrate.py, which runs
+-- each file in one transaction and records it in ci.schema_migrations, so
+-- files must not contain BEGIN/COMMIT. Never edit a migration after it has
+-- been applied anywhere; add a new one.
 --
 -- Azure Database for PostgreSQL Flexible Server: add VECTOR to the
 -- azure.extensions server parameter before applying this migration.
-
-BEGIN;
 
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;  -- gen_random_uuid() on PG < 13 images
@@ -40,7 +41,7 @@ CREATE TABLE runtime_config (
     activated_by      text NOT NULL,
     notes             text,
     created_at        timestamptz NOT NULL DEFAULT now(),
-    CHECK (enabled_providers <@ ARRAY['fireflies', 'email', 'teams', 'dialpad']::text[])
+    CHECK (enabled_providers <@ ARRAY['email', 'teams', 'fireflies', 'dialpad']::text[])
 );
 CREATE UNIQUE INDEX runtime_config_one_active ON runtime_config ((true)) WHERE is_active;
 
@@ -56,8 +57,8 @@ $$;
 
 CREATE TABLE source_connections (
     id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    provider       text NOT NULL CHECK (provider IN ('fireflies', 'email', 'teams', 'dialpad')),
-    account_ref    text NOT NULL,          -- Fireflies team/account, Entra tenant, ...
+    provider       text NOT NULL CHECK (provider IN ('email', 'teams', 'fireflies', 'dialpad')),
+    account_ref    text NOT NULL,          -- Entra tenant id, provider account, ...
     display_name   text NOT NULL,
     credential_ref text,                   -- Key Vault secret NAME, never a value
     enabled        boolean NOT NULL DEFAULT false,
@@ -65,24 +66,33 @@ CREATE TABLE source_connections (
     UNIQUE (provider, account_ref)
 );
 
--- A corpus is the unit readers are granted. Pilot: 'fireflies-executive'.
+-- A corpus is the unit readers are granted, e.g. 'email-enrolled'.
 CREATE TABLE corpora (
     id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     corpus_key  text NOT NULL UNIQUE,
     description text NOT NULL
 );
 
--- Approved capture scopes: a Fireflies user, a mailbox, a Teams chat, ...
+-- Capture scopes: a mailbox, a Teams chat or channel, ...
+-- scope_state is what inventory observed (written by ingestion); the
+-- *_approved flags are operator decisions (ingestion cannot change them).
+-- A scope is captured and searchable only when it is 'enrolled', approved for
+-- the active dataset, and has no active exclusion. Exclusions always win.
 CREATE TABLE source_scopes (
     id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     connection_id       uuid NOT NULL REFERENCES source_connections(id),
-    scope_kind          text NOT NULL,     -- 'fireflies_user', 'mailbox', 'teams_chat'
-    native_scope_id     text NOT NULL,     -- Fireflies user id, mailbox object id, ...
+    scope_kind          text NOT NULL CHECK (scope_kind IN ('mailbox', 'teams_chat', 'teams_channel',
+                                                            'fireflies_user', 'dialpad_user')),
+    native_scope_id     text NOT NULL,     -- mailbox Entra object id, chat id, ...
     display_label       text NOT NULL,     -- non-sensitive label for operators
     corpus_id           uuid NOT NULL REFERENCES corpora(id),
+    scope_state         text NOT NULL DEFAULT 'not_approved'
+                        CHECK (scope_state IN ('enrolled', 'excluded_by_rule', 'not_approved',
+                                               'no_exchange_access', 'no_mailbox', 'paused')),
+    state_reason_code   text,
+    state_checked_at    timestamptz,
     test_approved       boolean NOT NULL DEFAULT false,
     production_approved boolean NOT NULL DEFAULT false,
-    excluded            boolean NOT NULL DEFAULT false,
     backfill_since      timestamptz,       -- NULL blocks initial capture
     policy_version      text NOT NULL,
     approved_by         text,
@@ -104,26 +114,54 @@ CREATE TABLE access_grants (
     UNIQUE (corpus_id, principal_type, principal_id, valid_from)
 );
 
--- Individually excluded source items (e.g. an HR meeting). Checked at capture
--- and again at retrieval.
+-- Operator exclusions. Checked at capture (before content is staged) and
+-- again by the retrieval views, so an exclusion added later still hides
+-- evidence already indexed. Kinds:
+--   item                 one source item (connection + native id)
+--   scope                a whole scope, e.g. a mailbox (scope kind + native scope id)
+--   participant_address  any occurrence with this participant address, in any mailbox
+--   participant_domain   any occurrence with a participant in this domain (pattern = 'example.com')
+-- Excluding a mailbox does not exclude that person's mail in other mailboxes;
+-- use participant_address for that.
 CREATE TABLE exclusions (
-    id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    connection_id uuid NOT NULL REFERENCES source_connections(id),
-    native_id     text NOT NULL,
-    reason_code   text NOT NULL,
-    created_by    text NOT NULL,
-    created_at    timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (connection_id, native_id)
+    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    exclusion_kind  text NOT NULL CHECK (exclusion_kind IN ('item', 'scope', 'participant_address',
+                                                            'participant_domain')),
+    connection_id   uuid REFERENCES source_connections(id),
+    native_id       text,
+    scope_kind      text,
+    native_scope_id text,
+    pattern         text CHECK (pattern = lower(pattern) AND pattern NOT LIKE '@%'),
+    reason_code     text NOT NULL,
+    created_by      text NOT NULL,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    revoked_at      timestamptz,
+    revoked_by      text,
+    CHECK (CASE exclusion_kind
+        WHEN 'item' THEN connection_id IS NOT NULL AND native_id IS NOT NULL
+                         AND scope_kind IS NULL AND native_scope_id IS NULL AND pattern IS NULL
+        WHEN 'scope' THEN scope_kind IS NOT NULL AND native_scope_id IS NOT NULL
+                          AND native_id IS NULL AND pattern IS NULL
+        ELSE pattern IS NOT NULL AND native_id IS NULL AND scope_kind IS NULL
+             AND native_scope_id IS NULL
+    END),
+    CHECK ((revoked_at IS NULL) = (revoked_by IS NULL))
 );
+CREATE UNIQUE INDEX exclusions_active_item ON exclusions (connection_id, native_id)
+    WHERE exclusion_kind = 'item' AND revoked_at IS NULL;
+CREATE UNIQUE INDEX exclusions_active_scope ON exclusions (scope_kind, native_scope_id)
+    WHERE exclusion_kind = 'scope' AND revoked_at IS NULL;
+CREATE UNIQUE INDEX exclusions_active_pattern ON exclusions (exclusion_kind, pattern)
+    WHERE pattern IS NOT NULL AND revoked_at IS NULL;
 
 -- ---------------------------------------------------------------------------
 -- Communications, versions and evidence
 -- ---------------------------------------------------------------------------
 
 -- Identity: dataset + connection (provider/account) + provider native id.
--- A Fireflies transcript reached through two approved users is ONE row with
--- two communication_scopes links. Email immutable ids are per-mailbox, so each
--- mailbox copy is still its own row (see docs/DATABASE.md).
+-- Email immutable ids are per-mailbox, so each mailbox copy is its own row
+-- with one communication_scopes link (docs/EMAIL_DEDUPLICATION.md). A source
+-- whose items are shared across scopes may link one row to several scopes.
 CREATE TABLE communications (
     id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     dataset_key         text NOT NULL REFERENCES datasets(dataset_key),
@@ -189,14 +227,17 @@ CREATE TABLE participants (
     UNIQUE (provider, provider_identity)
 );
 CREATE INDEX participants_email ON participants (email_normalized);
+CREATE INDEX participants_email_domain ON participants (split_part(email_normalized, '@', 2));
 
 CREATE TABLE communication_participants (
     communication_id uuid NOT NULL REFERENCES communications(id) ON DELETE CASCADE,
     participant_id   uuid NOT NULL REFERENCES participants(id),
-    role             text NOT NULL CHECK (role IN ('organizer', 'host', 'attendee', 'speaker',
-                                                   'sender', 'to', 'cc', 'bcc', 'caller', 'callee')),
+    role             text NOT NULL CHECK (role IN ('from', 'sender', 'to', 'cc', 'bcc', 'author',
+                                                   'mentioned', 'organizer', 'host', 'attendee',
+                                                   'speaker', 'caller', 'callee')),
     PRIMARY KEY (communication_id, participant_id, role)
 );
+CREATE INDEX communication_participants_participant ON communication_participants (participant_id);
 
 CREATE TABLE artifacts (
     id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -211,7 +252,7 @@ CREATE TABLE artifacts (
     UNIQUE (version_id, kind, blob_key)
 );
 
--- Normalized utterances. Text lives here (not in Blob) because it is small,
+-- Normalized utterances (meeting sources; unused by email). Text lives here (not in Blob) because it is small,
 -- cited directly and needed for transcript windows.
 CREATE TABLE transcript_segments (
     version_id      uuid NOT NULL REFERENCES communication_versions(id) ON DELETE CASCADE,
@@ -281,7 +322,7 @@ CREATE TABLE jobs (
     id               bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     dataset_key      text NOT NULL REFERENCES datasets(dataset_key),
     config_revision  bigint NOT NULL REFERENCES runtime_config(revision),
-    job_type         text NOT NULL,       -- 'ff_fetch', 'process_version', 'withdraw', ...
+    job_type         text NOT NULL,       -- 'email_fetch', 'process_version', 'withdraw', ...
     dedupe_key       text NOT NULL,       -- e.g. connection_id:native_id
     payload          jsonb NOT NULL DEFAULT '{}',  -- identifiers only, never content
     state            text NOT NULL DEFAULT 'queued'
@@ -302,13 +343,13 @@ CREATE UNIQUE INDEX jobs_open_dedupe ON jobs (dataset_key, job_type, dedupe_key)
 CREATE INDEX jobs_ready ON jobs (priority, run_after) WHERE state = 'queued';
 
 CREATE TABLE checkpoints (
-    checkpoint_key text PRIMARY KEY,     -- e.g. 'fireflies:<connection>:<scope>:backfill'
+    checkpoint_key text PRIMARY KEY,     -- e.g. 'email:<connection>:<mailbox>:<folder>:delta'
     dataset_key    text NOT NULL REFERENCES datasets(dataset_key),
     cursor_value   jsonb NOT NULL,
     updated_at     timestamptz NOT NULL DEFAULT now()
 );
 
--- Shared request budget per provider connection (Fireflies limits are per plan).
+-- Shared request budget per provider connection.
 CREATE TABLE rate_budgets (
     connection_id  uuid PRIMARY KEY REFERENCES source_connections(id),
     window_seconds integer NOT NULL,
@@ -360,7 +401,7 @@ CREATE TABLE audit_events (
     occurred_at timestamptz NOT NULL DEFAULT now(),
     actor_type  text NOT NULL,           -- 'user', 'service', 'operator'
     actor_id    text NOT NULL,
-    action      text NOT NULL,           -- 'search', 'get_meeting', 'mode_change', ...
+    action      text NOT NULL,           -- 'search', 'get_email', 'mode_change', 'exclude', ...
     target_type text,
     target_id   text,
     details     jsonb NOT NULL DEFAULT '{}'  -- counts, ids, reason codes; never query text by default
@@ -369,7 +410,9 @@ CREATE INDEX audit_events_time ON audit_events (occurred_at DESC);
 
 -- ---------------------------------------------------------------------------
 -- Retrieval views: the ONLY objects the search role can read content from.
--- They expose published, active, non-excluded evidence in the active dataset.
+-- They expose published, active evidence in the active dataset, from at least
+-- one scope that is enrolled, approved for that dataset and not excluded, with
+-- no active item or participant exclusion and no tombstone.
 -- Views run with owner privileges, so ci_search never needs base-table access
 -- to chunks, versions or segments. Corpus authorization is applied on top by
 -- the API query (docs/SEARCH_AND_AGENTS.md).
@@ -384,8 +427,27 @@ JOIN communication_versions v ON v.id = c.active_version_id
 WHERE c.lifecycle_state = 'active'
   AND v.processing_state = 'published'
   AND c.dataset_key = ci.active_dataset()
+  AND EXISTS (SELECT 1 FROM ci.communication_scopes cs
+              JOIN ci.source_scopes s ON s.id = cs.scope_id
+              WHERE cs.communication_id = c.id
+                AND s.scope_state = 'enrolled'
+                AND CASE c.dataset_key WHEN 'test' THEN s.test_approved
+                                       WHEN 'production' THEN s.production_approved END
+                AND NOT EXISTS (SELECT 1 FROM ci.exclusions e
+                                WHERE e.exclusion_kind = 'scope' AND e.revoked_at IS NULL
+                                  AND e.scope_kind = s.scope_kind
+                                  AND e.native_scope_id = s.native_scope_id))
   AND NOT EXISTS (SELECT 1 FROM ci.exclusions e
-                  WHERE e.connection_id = c.connection_id AND e.native_id = c.native_id)
+                  WHERE e.exclusion_kind = 'item' AND e.revoked_at IS NULL
+                    AND e.connection_id = c.connection_id AND e.native_id = c.native_id)
+  AND NOT EXISTS (SELECT 1 FROM ci.communication_participants cp
+                  JOIN ci.participants p ON p.id = cp.participant_id
+                  JOIN ci.exclusions e ON e.revoked_at IS NULL
+                   AND ((e.exclusion_kind = 'participant_address'
+                         AND e.pattern = p.email_normalized)
+                     OR (e.exclusion_kind = 'participant_domain'
+                         AND e.pattern = split_part(p.email_normalized, '@', 2)))
+                  WHERE cp.communication_id = c.id)
   AND NOT EXISTS (SELECT 1 FROM ci.tombstones t
                   WHERE t.dataset_key = c.dataset_key AND t.connection_id = c.connection_id
                     AND t.native_id = c.native_id);
@@ -424,13 +486,19 @@ END $$;
 
 GRANT USAGE ON SCHEMA ci TO ci_ingest, ci_search, ci_operator;
 
--- Ingestion/processing: read/write evidence and execution state; cannot change
--- mode, scopes approvals or reader grants.
+-- Ingestion/processing: read/write evidence and execution state; records what
+-- inventory observed about scopes; cannot change mode, scope approvals,
+-- exclusions or reader grants.
 GRANT SELECT ON ALL TABLES IN SCHEMA ci TO ci_ingest;
 GRANT INSERT, UPDATE, DELETE ON communications, communication_scopes, communication_versions,
     participants, communication_participants, artifacts, transcript_segments, chunks,
     relationships, tombstones, jobs, checkpoints, rate_budgets, webhook_receipts, outbox,
     policy_decisions TO ci_ingest;
+GRANT INSERT (connection_id, scope_kind, native_scope_id, display_label, corpus_id, scope_state,
+              state_reason_code, state_checked_at, policy_version)
+    ON source_scopes TO ci_ingest;
+GRANT UPDATE (display_label, scope_state, state_reason_code, state_checked_at)
+    ON source_scopes TO ci_ingest;
 GRANT INSERT ON audit_events TO ci_ingest;
 
 -- Search: read-only over what retrieval needs; append-only audit.
@@ -445,5 +513,3 @@ GRANT SELECT, INSERT, UPDATE ON runtime_config, source_connections, source_scope
     access_grants, exclusions, rate_budgets TO ci_operator;
 GRANT SELECT ON datasets TO ci_operator;
 GRANT INSERT ON audit_events TO ci_operator;
-
-COMMIT;

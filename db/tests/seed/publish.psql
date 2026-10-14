@@ -1,0 +1,8 @@
+-- Publish every seeded version in one transaction (the publication fence).
+SET ROLE t_ingest;
+BEGIN;
+UPDATE ci.communication_versions SET processing_state = 'published', published_at = now();
+UPDATE ci.communications c SET active_version_id = v.id
+FROM ci.communication_versions v WHERE v.communication_id = c.id;
+COMMIT;
+RESET ROLE;

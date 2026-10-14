@@ -10,7 +10,7 @@ Requires [uv](https://docs.astral.sh/uv/) and, for the database checks, Docker.
 uv sync
 uv run pytest
 uv run ruff check . && uv run ruff format --check .
-uv run mypy && uv run mypy tests db/run_checks.py
+uv run mypy && uv run mypy tests db/run_checks.py db/migrate.py
 ```
 
 Database checks (throwaway local container only):

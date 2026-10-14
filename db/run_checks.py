@@ -1,4 +1,4 @@
-"""Apply every migration to a throwaway database and run the SQL behavior checks.
+"""Run the SQL behavior checks, each against a freshly migrated throwaway database.
 
 Usage (needs psql and a THROWAWAY PostgreSQL + pgvector server; standard PG*
 environment variables select it, and the user must be a superuser):
@@ -8,10 +8,12 @@ environment variables select it, and the user must be a superuser):
 The check files print lines like ``visible before publish (expect 0): 0`` and
 raise an error when a permission check fails. This script fails if any SQL
 errors, any ``(expect N): M`` line has M != N, or any NOTICE is not ``OK:``.
+It also checks the migration ledger: a second run applies nothing, and an
+edited migration is refused.
 
-It drops and recreates the database named by ``CI_CHECK_DB`` (default
-``ci_check``) and the cluster-level ``ci_*``/``t_*`` roles the checks create.
-Never point it at a real server.
+For every check file it drops and recreates the database named by
+``CI_CHECK_DB`` (default ``ci_check``) and the cluster-level ``ci_*``/``t_*``
+roles the checks create. Never point it at a real server.
 """
 
 from __future__ import annotations
@@ -20,7 +22,10 @@ import os
 import re
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
+
+import migrate
 
 DB_DIR = Path(__file__).resolve().parent
 EXPECT = re.compile(r"\(expect (\d+)\): (\d+)\s*$")
@@ -47,13 +52,34 @@ def reset(database: str) -> None:
     must(psql("postgres", "-c", f'CREATE DATABASE "{database}"'), "create db")
 
 
+def migrate_fresh(database: str) -> None:
+    reset(database)
+    try:
+        migrate.apply(database)
+    except migrate.MigrationError as exc:
+        sys.stderr.write(f"FAIL: migrations\n{exc}")
+        raise SystemExit(1) from exc
+
+
+def check_ledger(database: str) -> list[str]:
+    """A second run applies nothing; an edited applied migration is refused."""
+    failures: list[str] = []
+    migrate_fresh(database)
+    if again := migrate.apply(database):
+        failures.append(f"ledger: second run re-applied {[m.path.name for m in again]}")
+    edited = [replace(m, sha256="0" * 64) for m in migrate.discover()]
+    try:
+        migrate.apply(database, edited)
+        failures.append("ledger: an edited migration was not refused")
+    except migrate.MigrationError:
+        pass
+    print("migration ledger: checked")
+    return failures
+
+
 def main() -> int:
     database = os.environ.get("CI_CHECK_DB", "ci_check")
-    reset(database)
-
-    for migration in sorted((DB_DIR / "migrations").glob("*.sql")):
-        must(psql(database, "-f", str(migration)), f"apply {migration.name}")
-        print(f"applied {migration.name}")
+    failures = check_ledger(database)
 
     version = must(
         psql(database, "-tA", "-c", "SELECT extversion FROM pg_extension WHERE extname='vector'"),
@@ -62,8 +88,8 @@ def main() -> int:
     server = must(psql(database, "-tA", "-c", "SHOW server_version"), "read version").strip()
     print(f"PostgreSQL {server}, pgvector {version}")
 
-    failures: list[str] = []
     for check in sorted((DB_DIR / "tests").glob("*.sql")):
+        migrate_fresh(database)
         output = must(psql(database, "-tA", "-f", str(check)), f"run {check.name}")
         passed = 0
         for line in output.splitlines():
