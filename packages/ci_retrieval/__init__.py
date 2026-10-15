@@ -1,4 +1,4 @@
-"""Authorized retrieval: token validation, grant resolution, hybrid query, MCP tools.
+"""Authorized retrieval: hybrid query over published evidence.
 
-Empty until PR 7 (see CLAUDE.md section 12).
+Token validation, grants from Entra roles, REST and MCP arrive in PR 7.
 """

@@ -12,3 +12,5 @@ build/
 *.egg-info/
 .DS_Store
 test-results/
+# Testkit state: fixture mailboxes, local blob store (synthetic only)
+local/.data/

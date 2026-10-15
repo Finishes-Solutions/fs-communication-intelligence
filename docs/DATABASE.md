@@ -1,6 +1,6 @@
 # Database Design
 
-Status: schema in [`db/migrations`](../db/migrations): `0001_foundation.sql` (source-neutral) and `0002_email.sql` (email extension). CI applies them to PostgreSQL 18 + pgvector 0.8.2 on every pull request and runs the behavior checks in [`db/tests`](../db/tests). They have not been applied to any Azure database.
+Status: schema in [`db/migrations`](../db/migrations): `0001_foundation.sql` (source-neutral), `0002_email.sql` (email extension) and `0003_classification.sql` (classification proposals). CI applies them to PostgreSQL 18 + pgvector 0.8.2 on every pull request and runs the behavior checks in [`db/tests`](../db/tests). They have not been applied to any Azure database.
 
 Related: [Function Apps](FUNCTION_APPS.md) · [Search and Agents](SEARCH_AND_AGENTS.md) · [Email Deduplication](EMAIL_DEDUPLICATION.md)
 
@@ -146,7 +146,7 @@ Maintenance purges `superseded` and `withdrawn` versions' chunks, segments and B
 
 - Replace `pgcrypto` if the server image provides `gen_random_uuid()` natively (PostgreSQL 13+ does, so it is only kept for safety).
 - Confirm pgvector 0.8.2 on the provisioned Azure Flexible Server (the `azure.extensions` allowlist).
-- Classification proposals (model, policy version, input hash, per-label probability, decision) arrive with the processing PR as a new migration.
+- Classification proposals landed in `0003_classification.sql`: `classification_runs` (model, policy version, input hash, outcome and reason codes) and `classification_labels` (per-label probability, thresholds and decision; a missing answer is `unresolved` with a NULL probability, never 0). Views `published_review_flags` and `coverage_summary` give the search role review flags and held/not-indexed counts without access to the base tables.
 
 ## 11. Migrations
 

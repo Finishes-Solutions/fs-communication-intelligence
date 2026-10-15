@@ -1,0 +1,43 @@
+{
+  "title": "Message in a mailbox kept out of scope",
+  "expect": "never read: the mailbox returns 403 (outside Exchange RBAC) and has a DB scope exclusion",
+  "deliveries": [
+    {
+      "mailbox": "exec.private@finishes.example"
+    }
+  ],
+  "message": {
+    "subject": "Compensation committee agenda",
+    "from": {
+      "emailAddress": {
+        "name": "Board Secretary",
+        "address": "secretary@board-advisors.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Board Secretary",
+        "address": "secretary@board-advisors.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Executive Private",
+          "address": "exec.private@finishes.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-10T10:00:00Z",
+    "sentDateTime": "2026-10-10T10:00:00Z",
+    "internetMessageId": "<17_excluded_mailbox.2026-10-10@board-advisors.example>",
+    "conversationId": "AAQkAG-synthetic-conv-17_excluded_mailbox",
+    "body": {
+      "contentType": "text",
+      "content": "Agenda for the compensation committee meeting."
+    },
+    "attachments": []
+  }
+}

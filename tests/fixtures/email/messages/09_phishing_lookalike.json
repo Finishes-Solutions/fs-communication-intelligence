@@ -1,0 +1,43 @@
+{
+  "title": "Phishing look-alike (payment redirection)",
+  "expect": "review: indexed and flagged (phishing yes); note the look-alike domain acme-s1tework",
+  "deliveries": [
+    {
+      "mailbox": "ap@finishes.example"
+    }
+  ],
+  "message": {
+    "subject": "URGENT: updated remittance details for Acme Sitework",
+    "from": {
+      "emailAddress": {
+        "name": "Jordan Rivera",
+        "address": "jordan.rivera@acme-s1tework.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Jordan Rivera",
+        "address": "jordan.rivera@acme-s1tework.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Accounts Payable",
+          "address": "ap@finishes.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-10T08:05:00Z",
+    "sentDateTime": "2026-10-10T08:05:00Z",
+    "internetMessageId": "<09_phishing_lookalike.2026-10-10@acme-s1tework.example>",
+    "conversationId": "AAQkAG-synthetic-conv-09_phishing_lookalike",
+    "body": {
+      "contentType": "text",
+      "content": "Hello,\n\nOur bank has changed. Please use our updated remittance details for invoice 4471 and all future payments. Reply to this email today and we will send the new bank details.\n\nJordan Rivera"
+    },
+    "attachments": []
+  }
+}

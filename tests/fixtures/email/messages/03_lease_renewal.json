@@ -1,0 +1,43 @@
+{
+  "title": "Tenant lease renewal",
+  "expect": "index; leasing & operations",
+  "deliveries": [
+    {
+      "mailbox": "pat.morgan@finishes.example"
+    }
+  ],
+  "message": {
+    "subject": "Lease renewal - Suite 210, Westpark Plaza",
+    "from": {
+      "emailAddress": {
+        "name": "Chris Okafor",
+        "address": "chris.okafor@northwind-dental.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Chris Okafor",
+        "address": "chris.okafor@northwind-dental.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Morgan",
+          "address": "pat.morgan@finishes.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-08T16:00:00Z",
+    "sentDateTime": "2026-10-08T16:00:00Z",
+    "internetMessageId": "<03_lease_renewal.2026-10-08@northwind-dental.example>",
+    "conversationId": "AAQkAG-synthetic-conv-03_lease_renewal",
+    "body": {
+      "contentType": "text",
+      "content": "Hello Pat,\n\nNorthwind Dental would like to renew our lease for Suite 210 at Westpark Plaza for another five years. Could you send renewal terms by the end of the month?\n\nBest,\nChris Okafor\nPractice Manager"
+    },
+    "attachments": []
+  }
+}

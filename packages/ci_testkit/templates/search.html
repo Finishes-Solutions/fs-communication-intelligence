@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Search{% endblock %}
+{% block body %}
+<h1>Search as an executive's agent would</h1>
+<div class="panel">
+  <form method="get" action="/search" style="display:flex; gap:8px; align-items:end; flex-wrap:wrap">
+    <div style="flex:1; min-width:260px"><label>Query</label><input type="text" name="q" value="{{ q }}" placeholder="e.g. change order drainage, invoice 4471, site walk"></div>
+    <div><label>Signed in as</label><select name="persona">
+      <option value="executive" {{ 'selected' if persona == 'executive' }}>Executive (Communications.Reader.All)</option>
+      <option value="no_role" {{ 'selected' if persona == 'no_role' }}>Employee without a reader role</option>
+    </select></div>
+    <label class="check"><input type="checkbox" name="vector_only" value="true" {{ 'checked' if vector_only }}> show vector-only matches</label>
+    <button class="primary">Search</button>
+  </form>
+  <p class="small muted">This calls the real retrieval query as the <code>ci_search</code> database role: authorization before ranking, published evidence only. Sign-in is simulated here; real Entra token validation and the REST/MCP endpoints come in the search step. The fake embedder hashes words, so "vector" similarity here is closer to word overlap than meaning.</p>
+</div>
+
+{% if result %}
+<div class="panel">
+  <p><b>{{ result.hits|length }}</b> result(s){% if hidden %} <span class="small muted">(+{{ hidden }} vector-only matches hidden; they may be unrelated)</span>{% endif %} ·
+    coverage: <span class="badge b-purple">{{ result.held_count }} held</span>
+    <span class="badge">{{ result.not_indexed_count }} not indexed</span> in authorized mail ·
+    <span class="small muted">{{ result.note }}</span></p>
+  {% for h in result.hits %}
+  <div class="panel" style="margin:8px 0">
+    <div><b><a href="{{ h.web_link }}" title="Outlook web link (synthetic)">{{ h.title or '(no subject)' }}</a></b>
+      {% if h.keyword_match %}<span class="badge b-ok">keyword match</span>{% else %}<span class="badge">vector only: may be unrelated</span>{% endif %}
+      {% if h.review_reasons %}<span class="badge b-warn">⚑ review: {{ h.review_reasons|join(', ') }}</span>{% endif %}
+      {% if h.partial_attachments %}<span class="badge b-purple">{{ h.partial_attachments }} attachment(s) not processed</span>{% endif %}
+    </div>
+    <div class="small muted">Citation: mailbox {{ h.mailbox }} · from {{ h.sender }} · {{ h.received_at.strftime('%Y-%m-%d %H:%M') }} UTC · score {{ '%.4f'|format(h.score) }}
+      {% if h.collapsed_copies %}· also in {{ h.collapsed_copies|join(', ') }} (collapsed){% endif %}</div>
+    {% for e in h.excerpts %}<pre>{{ e }}</pre>{% endfor %}
+  </div>
+  {% else %}
+  <p>Not found in authorized, indexed mail.</p>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

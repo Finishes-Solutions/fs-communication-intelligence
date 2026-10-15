@@ -98,6 +98,11 @@ class Settings(BaseSettings):
     auth_mode: AuthMode = AuthMode.ENTRA
     email_include_sent: bool = True
     email_backfill_since: datetime | None = None
+    # Local only: a libpq URL for the docker-compose database. Deployed apps
+    # will connect with an Entra token instead (not built yet).
+    database_url: str | None = None
+    # Local stand-in for private Blob storage (raw Graph payloads).
+    local_blob_dir: str | None = None
 
     @model_validator(mode="before")
     @classmethod

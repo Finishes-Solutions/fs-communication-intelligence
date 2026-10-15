@@ -1,0 +1,43 @@
+{
+  "title": "Contains a fake SSN-like string",
+  "expect": "restricted by screening (sensitive PII): never classified, embedded or returned",
+  "deliveries": [
+    {
+      "mailbox": "sam.lee@finishes.example"
+    }
+  ],
+  "message": {
+    "subject": "New hire paperwork - Taylor Brooks",
+    "from": {
+      "emailAddress": {
+        "name": "Payroll Desk",
+        "address": "payroll@finishes.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Payroll Desk",
+        "address": "payroll@finishes.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Sam Lee",
+          "address": "sam.lee@finishes.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-12T10:00:00Z",
+    "sentDateTime": "2026-10-12T10:00:00Z",
+    "internetMessageId": "<10_fake_ssn.2026-10-12@finishes.example>",
+    "conversationId": "AAQkAG-synthetic-conv-10_fake_ssn",
+    "body": {
+      "contentType": "text",
+      "content": "Sam,\n\nNew hire paperwork for Taylor Brooks (synthetic test record). SSN: 123-45-6789. Please add to payroll before the next cycle.\n\nPayroll Desk"
+    },
+    "attachments": []
+  }
+}

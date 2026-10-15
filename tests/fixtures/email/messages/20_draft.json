@@ -1,0 +1,44 @@
+{
+  "title": "A draft",
+  "expect": "never read: Drafts is a skipped folder",
+  "deliveries": [
+    {
+      "mailbox": "pat.morgan@finishes.example",
+      "folder": "drafts"
+    }
+  ],
+  "message": {
+    "subject": "Draft: response to notice of claim",
+    "from": {
+      "emailAddress": {
+        "name": "Pat Morgan",
+        "address": "pat.morgan@finishes.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Pat Morgan",
+        "address": "pat.morgan@finishes.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Morgan & Hale LLP",
+          "address": "notices@morganhale-law.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-10T19:00:00Z",
+    "sentDateTime": "2026-10-10T19:00:00Z",
+    "internetMessageId": "<20_draft.2026-10-10@finishes.example>",
+    "conversationId": "AAQkAG-synthetic-conv-20_draft",
+    "body": {
+      "contentType": "text",
+      "content": "Draft reply, not sent."
+    },
+    "attachments": []
+  }
+}

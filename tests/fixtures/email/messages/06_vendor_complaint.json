@@ -1,0 +1,43 @@
+{
+  "title": "Vendor performance complaint (internal)",
+  "expect": "index; vendor performance",
+  "deliveries": [
+    {
+      "mailbox": "pat.morgan@finishes.example"
+    }
+  ],
+  "message": {
+    "subject": "Bright Paint Co - third missed date on Building C",
+    "from": {
+      "emailAddress": {
+        "name": "Alex Diaz",
+        "address": "alex.diaz@finishes.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Alex Diaz",
+        "address": "alex.diaz@finishes.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Morgan",
+          "address": "pat.morgan@finishes.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-10T12:30:00Z",
+    "sentDateTime": "2026-10-10T12:30:00Z",
+    "internetMessageId": "<06_vendor_complaint.2026-10-10@finishes.example>",
+    "conversationId": "AAQkAG-synthetic-conv-06_vendor_complaint",
+    "body": {
+      "contentType": "text",
+      "content": "Pat,\n\nBright Paint Co missed their start date on Building C again, the third delay this month. Two units also have finish defects that need rework. I'd like to discuss replacing them.\n\nAlex Diaz\nSite Superintendent"
+    },
+    "attachments": []
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "title": "In the Junk Email folder",
+  "expect": "never read: Junk Email is a skipped folder",
+  "deliveries": [
+    {
+      "mailbox": "sam.lee@finishes.example",
+      "folder": "junkemail"
+    }
+  ],
+  "message": {
+    "subject": "Your portfolio alert",
+    "from": {
+      "emailAddress": {
+        "name": "Crypto Alerts",
+        "address": "alerts@coin-signals.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Crypto Alerts",
+        "address": "alerts@coin-signals.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Sam Lee",
+          "address": "sam.lee@finishes.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-11T07:00:00Z",
+    "sentDateTime": "2026-10-11T07:00:00Z",
+    "internetMessageId": "<21_junk.2026-10-11@coin-signals.example>",
+    "conversationId": "AAQkAG-synthetic-conv-21_junk",
+    "body": {
+      "contentType": "text",
+      "content": "Buy now before it is too late."
+    },
+    "attachments": []
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "title": "Same message in two mailboxes + a BCC copy",
+  "expect": "three copies (ap@ was BCC'd and sees no BCC line): one fingerprint, linked as possible duplicates, collapsed in search after authorization",
+  "deliveries": [
+    {
+      "mailbox": "pat.morgan@finishes.example"
+    },
+    {
+      "mailbox": "sam.lee@finishes.example"
+    },
+    {
+      "mailbox": "ap@finishes.example"
+    }
+  ],
+  "message": {
+    "subject": "Site walk notes - Example Ridge Phase 2 - Oct 9",
+    "from": {
+      "emailAddress": {
+        "name": "Dana Whitfield",
+        "address": "dana.whitfield@brightline-builders.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Dana Whitfield",
+        "address": "dana.whitfield@brightline-builders.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Morgan",
+          "address": "pat.morgan@finishes.example"
+        }
+      },
+      {
+        "emailAddress": {
+          "name": "Sam Lee",
+          "address": "sam.lee@finishes.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-09T21:00:00Z",
+    "sentDateTime": "2026-10-09T21:00:00Z",
+    "internetMessageId": "<sitewalk-1009@brightline-builders.example>",
+    "conversationId": "AAQkAG-synthetic-conv-14_same_message_three_copies",
+    "body": {
+      "contentType": "text",
+      "content": "Notes from today's site walk at Example Ridge Phase 2:\n\n1. Curb and gutter complete on the east loop.\n2. Drainage inlet at lot 14 needs a grate adjustment.\n3. Next site walk is October 23.\n\nDana Whitfield\nProject Manager, Brightline Builders\n(512) 555-0177"
+    },
+    "attachments": []
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "title": "Contains a fake API key",
+  "expect": "restricted by classification (credentials = yes)",
+  "deliveries": [
+    {
+      "mailbox": "sam.lee@finishes.example"
+    }
+  ],
+  "message": {
+    "subject": "Portal API key for the draw reporting integration",
+    "from": {
+      "emailAddress": {
+        "name": "IT Help Desk",
+        "address": "it@finishes.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "IT Help Desk",
+        "address": "it@finishes.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Sam Lee",
+          "address": "sam.lee@finishes.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-12T15:30:00Z",
+    "sentDateTime": "2026-10-12T15:30:00Z",
+    "internetMessageId": "<11_fake_api_key.2026-10-12@finishes.example>",
+    "conversationId": "AAQkAG-synthetic-conv-11_fake_api_key",
+    "body": {
+      "contentType": "text",
+      "content": "Sam,\n\nHere is the key for the lender portal integration:\napi_key = FAKE-portal-key-0000-0000-0000-0000\n\nIT Help Desk"
+    },
+    "attachments": []
+  }
+}

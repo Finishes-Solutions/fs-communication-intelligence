@@ -1,0 +1,43 @@
+{
+  "title": "Mentions medical leave (uncertain PHI)",
+  "expect": "review: potential_phi is uncertain, so the item is indexed and flagged",
+  "deliveries": [
+    {
+      "mailbox": "pat.morgan@finishes.example"
+    }
+  ],
+  "message": {
+    "subject": "Superintendent coverage on Building C",
+    "from": {
+      "emailAddress": {
+        "name": "Alex Diaz",
+        "address": "alex.diaz@finishes.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Alex Diaz",
+        "address": "alex.diaz@finishes.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Morgan",
+          "address": "pat.morgan@finishes.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-13T18:10:00Z",
+    "sentDateTime": "2026-10-13T18:10:00Z",
+    "internetMessageId": "<23_uncertain_phi.2026-10-13@finishes.example>",
+    "conversationId": "AAQkAG-synthetic-conv-23_uncertain_phi",
+    "body": {
+      "contentType": "text",
+      "content": "Pat,\n\nMarcus will be out on medical leave for two weeks after surgery. I will cover the Building C schedule until he is back.\n\nAlex"
+    },
+    "attachments": []
+  }
+}

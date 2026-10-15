@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Testkit{% endblock %} · Communication Intelligence</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --ink: #1d2433; --muted: #5d6779; --line: #dfe3ea;
+    --accent: #2f5bd3; --ok: #1f7a4d; --okbg: #e6f4ec; --warn: #9a6200; --warnbg: #fff4dc;
+    --bad: #b42318; --badbg: #fdecea; --grey: #6b7280; --greybg: #eef0f3; --purple: #6941c6;
+    --purplebg: #f1ecfd;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: var(--bg); color: var(--ink); }
+  a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+  header { background: #16213e; color: #fff; padding: 10px 20px; display: flex; gap: 18px;
+           align-items: center; flex-wrap: wrap; }
+  header .brand { font-weight: 700; margin-right: 8px; }
+  header nav a { color: #cdd6f4; margin-right: 14px; }
+  header nav a.on { color: #fff; font-weight: 600; }
+  header .right { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+  main { padding: 18px 20px 60px; max-width: 1500px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 4px 0 12px; } h2 { font-size: 16px; margin: 18px 0 8px; }
+  h3 { font-size: 14px; margin: 12px 0 6px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px;
+           margin-bottom: 14px; }
+  .muted { color: var(--muted); } .small { font-size: 12px; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600;
+           background: var(--greybg); color: var(--grey); white-space: nowrap; }
+  .b-ok { background: var(--okbg); color: var(--ok); } .b-warn { background: var(--warnbg); color: var(--warn); }
+  .b-bad { background: var(--badbg); color: var(--bad); } .b-purple { background: var(--purplebg); color: var(--purple); }
+  .b-blue { background: #e8eefc; color: var(--accent); }
+  button, .btn { font: inherit; border: 1px solid var(--line); background: #fff; color: var(--ink);
+                 border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.danger { color: var(--bad); }
+  button:hover { filter: brightness(0.96); }
+  form.inline { display: inline; }
+  input[type=text], input[type=email], select, textarea { font: inherit; padding: 6px 8px; border: 1px solid var(--line);
+    border-radius: 6px; width: 100%; background: #fff; }
+  textarea { min-height: 160px; }
+  label { display: block; font-weight: 600; margin: 8px 0 3px; }
+  label.check { font-weight: 400; display: inline-flex; gap: 6px; align-items: center; margin-right: 14px; }
+  table { border-collapse: collapse; width: 100%; } th, td { text-align: left; padding: 5px 8px;
+    border-bottom: 1px solid var(--line); vertical-align: top; } th { font-size: 12px; color: var(--muted); }
+  .flash { border-left: 4px solid var(--accent); }
+  .flash ul { margin: 4px 0 0 18px; padding: 0; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+  pre { white-space: pre-wrap; background: #f3f4f6; border-radius: 6px; padding: 10px; margin: 6px 0; font-size: 12.5px; }
+  .fake { border: 1px dashed var(--warn); background: var(--warnbg); color: var(--warn); padding: 6px 10px;
+          border-radius: 6px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">CI Testkit</span>
+  <nav>
+    <a href="/" class="{{ 'on' if request.url.path == '/' }}">Flow board</a>
+    <a href="/compose" class="{{ 'on' if request.url.path.startswith('/compose') }}">Send a test email</a>
+    <a href="/scope" class="{{ 'on' if request.url.path.startswith('/scope') }}">Scope &amp; rules</a>
+    <a href="/search" class="{{ 'on' if request.url.path.startswith('/search') }}">Search</a>
+  </nav>
+  <span class="right">
+    <span class="badge {{ 'b-ok' if mode == 'test' else 'b-bad' }}">mode: {{ mode }}</span>
+    <span class="badge b-blue">attachments: {{ settings.attachment_unsupported_policy.value }}</span>
+    {% if overrides.screening_down %}<span class="badge b-bad">screening DOWN</span>{% endif %}
+    <form class="inline" method="post" action="/reset"
+          onsubmit="return confirm('Wipe the local database and fixture mailboxes and start over?')">
+      <button class="danger">Reset</button></form>
+  </span>
+</header>
+<main>
+  {% for r in flash %}
+  <div class="panel flash"><strong>{{ r.title }}</strong>
+    <ul>{% for line in r.lines %}<li>{{ line }}</li>{% endfor %}</ul></div>
+  {% endfor %}
+  {% block body %}{% endblock %}
+  <p class="small muted">Local testkit. Synthetic mail only. Graph, screening, classification and embeddings are
+    fakes; the database, capture, job queue, publication fence, exclusions and search authorization are the real code.</p>
+</main>
+</body>
+</html>

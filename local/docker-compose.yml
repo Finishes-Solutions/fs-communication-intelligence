@@ -1,0 +1,35 @@
+# Local stack for the testkit. Start it with `uv run ci up` (see local/README.md).
+# Ports bind to 127.0.0.1 only. Data persists in the `ci-local-pg` volume until
+# `uv run ci down --wipe`.
+name: fs-communication-intelligence
+
+services:
+  db:
+    # Same image as CI; keep it matched to the Azure Flexible Server
+    # (PostgreSQL 18 + pgvector 0.8.2).
+    image: pgvector/pgvector:0.8.2-pg18
+    environment:
+      POSTGRES_PASSWORD: postgres     # local throwaway database only
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - ci-local-pg:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Functions host storage, needed only when running `func start` locally.
+  # Not started by default: `docker compose --profile functions up -d`.
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.37.0
+    profiles: ["functions"]
+    command: azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 --skipApiVersionCheck
+    ports:
+      - "127.0.0.1:10000:10000"
+      - "127.0.0.1:10001:10001"
+      - "127.0.0.1:10002:10002"
+
+volumes:
+  ci-local-pg:

@@ -1,0 +1,43 @@
+{
+  "title": "Spam",
+  "expect": "not indexed (spam)",
+  "deliveries": [
+    {
+      "mailbox": "sam.lee@finishes.example"
+    }
+  ],
+  "message": {
+    "subject": "Congratulations! You've been selected",
+    "from": {
+      "emailAddress": {
+        "name": "Deals Unlimited",
+        "address": "promo@deals-unlimited.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Deals Unlimited",
+        "address": "promo@deals-unlimited.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Sam Lee",
+          "address": "sam.lee@finishes.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-11T09:15:00Z",
+    "sentDateTime": "2026-10-11T09:15:00Z",
+    "internetMessageId": "<08_spam.2026-10-11@deals-unlimited.example>",
+    "conversationId": "AAQkAG-synthetic-conv-08_spam",
+    "body": {
+      "contentType": "text",
+      "content": "Congratulations! You've been selected for an exclusive prize. Claim your reward today!"
+    },
+    "attachments": []
+  }
+}

@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}Message trace{% endblock %}
+{% macro mark(state) -%}
+  {%- if state == 'pass' -%}<span class="badge b-ok">✓ passed</span>
+  {%- elif state == 'stop' -%}<span class="badge b-bad">■ stopped here</span>
+  {%- elif state == 'flag' -%}<span class="badge b-warn">⚑ flagged</span>
+  {%- elif state == 'wait' -%}<span class="badge b-blue">… pending</span>
+  {%- else -%}<span class="badge">— not reached</span>{%- endif -%}
+{%- endmacro %}
+{% block body %}
+{% set m = t.message %}
+{% set v = t.versions[0] if t.versions else None %}
+{% set lane = t.lane[0] %}
+<style>
+  .stage { display: grid; grid-template-columns: 210px 1fr; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .stage:last-child { border-bottom: 0; } .stage .h { font-weight: 700; } .stage .h .badge { margin-top: 4px; }
+  .labels td.yes { color: var(--ok); font-weight: 700; } .labels td.review { color: var(--warn); font-weight: 700; }
+  .labels td.unresolved { color: var(--bad); font-weight: 700; } .labels tr.no { color: var(--muted); }
+</style>
+
+<p><a href="/">← Flow board</a></p>
+<h1>{{ m.subject or '(no subject)' }}</h1>
+<p>
+  <span class="badge {{ {'searchable':'b-ok','flagged':'b-warn','restricted':'b-bad','held':'b-purple','failed':'b-bad','queued':'b-blue'}.get(lane, '') }}">{{ lane_info[lane][0] }}</span>
+  {% if t.lane[1] %}<span class="badge">{{ t.lane[1] }}</span>{% endif %}
+  <span class="muted">{{ lane_info[lane][1] }}</span>
+</p>
+
+<div class="grid2">
+<div class="panel">
+  <h2 style="margin-top:0">In the (synthetic) mailbox</h2>
+  <table>
+    <tr><th>Mailbox</th><td>{{ t.mailbox.address }} <span class="muted small">({{ t.mailbox.recipientTypeDetails }})</span></td></tr>
+    <tr><th>Folder</th><td>{{ t.folder }}{% if t.entry.deleted %} <span class="badge b-bad">deleted at source</span>{% endif %}</td></tr>
+    <tr><th>From</th><td>{{ m['from'].emailAddress.name }} &lt;{{ m['from'].emailAddress.address }}&gt;</td></tr>
+    <tr><th>To</th><td>{% for r in m.toRecipients %}{{ r.emailAddress.address }}{{ ', ' if not loop.last }}{% endfor %}</td></tr>
+    {% if m.ccRecipients %}<tr><th>Cc</th><td>{% for r in m.ccRecipients %}{{ r.emailAddress.address }}{{ ', ' if not loop.last }}{% endfor %}</td></tr>{% endif %}
+    <tr><th>Received</th><td>{{ m.receivedDateTime }}</td></tr>
+    <tr><th>Attachments</th><td>{% for a in m.attachments or [] %}{{ a.name }} ({{ a.contentType }}{{ ', inline' if a.isInline }}){{ '; ' if not loop.last }}{% else %}none{% endfor %}</td></tr>
+  </table>
+  <pre>{{ m.body.content }}</pre>
+</div>
+<div class="panel">
+  <h2 style="margin-top:0">Do something at the source</h2>
+  {% if not t.entry.deleted %}
+  <form method="post" action="/message/{{ t.id }}/move" style="display:flex; gap:8px; align-items:end">
+    <div style="flex:1"><label>Move to folder</label>
+      <select name="folder">{% for f in t.folders %}<option {{ 'selected' if f == t.folder }}>{{ f }}</option>{% endfor %}</select></div>
+    <button>Move</button>
+  </form>
+  <form method="post" action="/message/{{ t.id }}/delete" style="margin-top:10px"
+        onsubmit="return confirm('Hard-delete this message at the source?')">
+    <button class="danger">Delete at source</button></form>
+  {% endif %}
+  <h3>Keep this sender out</h3>
+  {% set sender = m['from'].emailAddress.address %}
+  <form class="inline" method="post" action="/scope/exclusion">
+    <input type="hidden" name="kind" value="participant_address"><input type="hidden" name="pattern" value="{{ sender }}">
+    <button>Exclude {{ sender }}</button></form>
+  <form class="inline" method="post" action="/scope/exclusion">
+    <input type="hidden" name="kind" value="participant_domain"><input type="hidden" name="pattern" value="{{ sender.split('@')[1] }}">
+    <button>Exclude @{{ sender.split('@')[1] }}</button></form>
+  <p class="small muted">After any change, go back to the Flow board and press <b>Run everything</b>.</p>
+  <h3>Delivery</h3>
+  <p>Visible to search right now:
+    {% if t.visible %}<span class="badge b-ok">yes</span>{% else %}<span class="badge">no</span>{% endif %}</p>
+  <p><b>Routing preview</b> <span class="small muted">(display only; nothing is sent; monday routing is out of scope)</span><br>
+    {{ t.routing.status }}
+    {% for d in t.routing.destinations %}<br><span class="badge b-blue">→ {{ d }}</span>{% endfor %}
+    {% if t.routing.triggers %}<br><span class="small muted">because: {{ t.routing.triggers|join(', ') }}</span>{% endif %}
+  </p>
+</div>
+</div>
+
+<div class="panel">
+  <h2 style="margin-top:0">What the pipeline did, stage by stage</h2>
+
+  {% set sc = t.scope.scope if t.scope else None %}
+  <div class="stage"><div class="h">1. Mailbox scope<br>{{ mark('pass' if t.scope and t.scope.capturable else 'stop') }}</div><div>
+    {% if sc %}
+      State <b>{{ sc.scope_state }}</b>{% if sc.state_reason_code %} ({{ sc.state_reason_code }}){% endif %} ·
+      approved for test: <b>{{ 'yes' if sc.test_approved else 'no' }}</b> ·
+      excluded: <b>{{ 'yes' if sc.excluded else 'no' }}</b> ·
+      backfill boundary: <b>{{ sc.backfill_since.strftime('%Y-%m-%d') if sc.backfill_since else 'not set' }}</b>
+    {% else %}Not in the inventory yet.{% endif %}
+    <div class="small muted">Change on the <a href="/scope">Scope &amp; rules</a> page.</div>
+  </div></div>
+
+  <div class="stage"><div class="h">2. Capture (delta)<br>{{ mark('pass' if t.jobs else ('stop' if lane == 'not_read' else 'none')) }}</div><div>
+    {% for j in t.jobs %}
+      <div>Job #{{ j.id }} <b>{{ j.job_type }}</b> · {{ j.state }} · attempts {{ j.attempts }}
+        {% if j.last_error_code %}<span class="badge">{{ j.last_error_code }}</span>{% endif %}
+        <span class="small muted">priority {{ j.priority }} ({{ 'live' if j.priority < 100 else 'backfill' }})</span></div>
+    {% else %}
+      Not picked up by delta{% if lane == 'not_read' %}: {{ t.lane[1] }}{% endif %}.
+    {% endfor %}
+    {% for a in t.audit %}<div class="small">Audit: <b>{{ a.action }}</b> {{ a.details }}</div>{% endfor %}
+  </div></div>
+
+  {% set c = t.communication %}
+  <div class="stage"><div class="h">3. Fetch &amp; normalize<br>{{ mark('pass' if c else ('stop' if lane == 'excluded' else 'none')) }}</div><div>
+    {% if c %}
+      Stored as communication <code>{{ c.id }}</code> · lifecycle <b>{{ c.lifecycle_state }}</b> ·
+      direction <b>{{ t.email.direction }}</b><br>
+      Participants: {% for p in t.participants %}<span class="badge">{{ p.role }}: {{ p.email_normalized }}</span> {% endfor %}<br>
+      Internet Message-ID <code>{{ t.email.internet_message_id }}</code><br>
+      Content fingerprint: {% if t.email.content_fingerprint %}<code>{{ t.email.content_fingerprint[:16] }}…</code>{% else %}<span class="muted">none (attachments unfetched in E1, so no complete fingerprint)</span>{% endif %}
+      {% if t.duplicates %}<br>Same message in: {% for d in t.duplicates %}<span class="badge b-blue">{{ d.primary_smtp_address }}</span> {% endfor %}
+        <span class="small muted">(linked as possible duplicates; collapsed in search after authorization; permissions are never combined)</span>{% endif %}
+    {% elif lane == 'excluded' %}Stopped before any content was staged: {{ t.lane[1] }}.
+    {% else %}—{% endif %}
+  </div></div>
+
+  {% if v %}
+  {% set att = v.decisions|selectattr('check_name', 'equalto', 'attachment_policy')|list %}
+  <div class="stage"><div class="h">4. Attachments (D-E1)<br>{{ mark('stop' if att and att[0].decision == 'hold' else ('pass' if att else 'none')) }}</div><div>
+    {% if v.attachments %}
+      Policy at the time: <b>{{ v.profile.attachment_policy }}</b><br>
+      {% for a in v.attachments %}<div>{{ a.name }} · {{ a.content_type }} · {{ a.size_bytes }} bytes{{ ' · inline' if a.is_inline }} → <span class="badge">{{ a.status }}</span></div>{% endfor %}
+    {% else %}No attachments.{% endif %}
+  </div></div>
+
+  {% set scr = v.decisions|selectattr('check_name', 'in', ['pii_screen', 'prompt_shield', 'screening'])|list %}
+  {% set scr_hold = scr|selectattr('decision', 'equalto', 'hold')|list %}
+  {% set scr_pending = scr|selectattr('decision', 'equalto', 'pending')|list %}
+  <div class="stage"><div class="h">5. Screening<br>{{ mark('stop' if scr_hold else ('wait' if scr_pending and not (scr|selectattr('decision','equalto','allow')|list) else ('pass' if scr else 'none'))) }}</div><div>
+    <div class="fake">Fake screener (patterns). Deployed: Azure AI Language PII + Content Safety Prompt Shields.</div>
+    {% for d in scr %}<div>{{ d.check_name }} → <b>{{ d.decision }}</b>{% if d.reason_code %} <span class="badge">{{ d.reason_code }}</span>{% endif %} <span class="small muted">{{ d.service_ref or '' }}</span></div>{% else %}Not screened.{% endfor %}
+  </div></div>
+
+  {% set run = v.classification %}
+  <div class="stage"><div class="h">6. Classification<br>{{ mark('pass' if run else 'none') }}</div><div>
+    {% if run %}
+      <div class="fake">Fake classifier: keyword rules with made-up probabilities. They exercise the rules; they are not model accuracy. Thresholds are uncalibrated.</div>
+      <p class="small muted">Model {{ run.model }} · policy {{ run.policy_version }} · input hash <code>{{ run.input_sha256[:12] }}…</code> · stored as a proposal, never an approval.</p>
+      <table class="labels"><tr><th>Label</th><th>Probability</th><th>No ≤</th><th>Yes ≥</th><th>Answer</th></tr>
+        {% for l in v.labels %}<tr class="{{ l.decision }}"><td>{{ l.label }}</td><td>{{ '%.2f'|format(l.probability) if l.probability is not none else '—' }}</td>
+          <td>{{ '%.2f'|format(l.no_threshold) }}</td><td>{{ '%.2f'|format(l.yes_threshold) }}</td><td class="{{ l.decision }}">{{ l.decision }}</td></tr>{% endfor %}
+      </table>
+    {% else %}Not classified{% if scr_hold %} (screening stopped it first){% elif att and att[0].decision == 'hold' %} (held for attachments first){% endif %}.{% endif %}
+  </div></div>
+
+  <div class="stage"><div class="h">7. Outcome<br>{{ mark('flag' if lane == 'flagged' else ('pass' if v.processing_state == 'published' else ('stop' if v.processing_state in ('held','rejected') else 'wait'))) }}</div><div>
+    Version {{ v.version_no }} is <b>{{ v.processing_state }}</b>{% if v.hold_reason_code %} — <span class="badge">{{ v.hold_reason_code }}</span>{% endif %}
+    {% if run %}<br>Rule result: <b>{{ run.outcome }}</b>{% if run.outcome_reasons %} ({{ run.outcome_reasons|join(', ') }}){% endif %}{% endif %}
+    <div class="small muted">Rules, most protective first: credentials / PHI / sensitive PII = yes → restricted · spam or newsletter = yes → not indexed · any of those uncertain, or phishing ≠ no → indexed and flagged · otherwise indexed.</div>
+  </div></div>
+
+  <div class="stage"><div class="h">8. Index (chunks)<br>{{ mark('pass' if v.chunks else 'none') }}</div><div>
+    {% for ch in v.chunks %}<div><span class="badge">chunk {{ ch.seq }}</span> <span class="small muted">{{ ch.embedding_model }} · embedded with a subject/from/date/mailbox header that is not shown as evidence</span><pre>{{ ch.display_text }}</pre></div>
+    {% else %}No chunks: nothing from this version can be returned by search.{% endfor %}
+  </div></div>
+  {% endif %}
+</div>
+
+{% if t.versions|length > 1 %}
+<div class="panel"><h2 style="margin-top:0">All versions</h2>
+  <table><tr><th>#</th><th>State</th><th>Reason</th><th>Attachment policy</th><th>Created</th></tr>
+  {% for x in t.versions %}<tr><td>{{ x.version_no }}</td><td>{{ x.processing_state }}</td><td>{{ x.hold_reason_code or '' }}</td><td>{{ x.profile.attachment_policy }}</td><td>{{ x.created_at.strftime('%H:%M:%S') }}</td></tr>{% endfor %}
+  </table></div>
+{% endif %}
+{% endblock %}

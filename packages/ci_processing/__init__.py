@@ -1,4 +1,4 @@
 """Source-neutral processing: screening, classification, chunking, embedding, publication.
 
-Empty until PR 6 (see CLAUDE.md section 12).
+Local fake backends only so far; the Azure backends arrive in PR 6.
 """

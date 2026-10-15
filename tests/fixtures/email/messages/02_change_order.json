@@ -1,0 +1,43 @@
+{
+  "title": "Change order needing a decision",
+  "expect": "index; approval/action required; development & construction",
+  "deliveries": [
+    {
+      "mailbox": "pat.morgan@finishes.example"
+    }
+  ],
+  "message": {
+    "subject": "Change Order #7 - Example Ridge Phase 2 drainage - $12,400",
+    "from": {
+      "emailAddress": {
+        "name": "Dana Whitfield",
+        "address": "dana.whitfield@brightline-builders.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Dana Whitfield",
+        "address": "dana.whitfield@brightline-builders.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Morgan",
+          "address": "pat.morgan@finishes.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-07T15:20:00Z",
+    "sentDateTime": "2026-10-07T15:20:00Z",
+    "internetMessageId": "<02_change_order.2026-10-07@brightline-builders.example>",
+    "conversationId": "AAQkAG-synthetic-conv-02_change_order",
+    "body": {
+      "contentType": "text",
+      "content": "Pat,\n\nThe civil engineer flagged additional subsurface drainage along the north lot line at Example Ridge Phase 2. Change Order #7 adds $12,400 and two working days to the schedule.\n\nCan you approve the change order this week? The crew is ready to start Monday.\n\nDana Whitfield\nProject Manager, Brightline Builders\n(512) 555-0177"
+    },
+    "attachments": []
+  }
+}

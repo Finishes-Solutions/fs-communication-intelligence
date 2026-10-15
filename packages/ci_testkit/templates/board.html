@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Flow board{% endblock %}
+{% block body %}
+<style>
+  .steps { display: flex; gap: 8px; align-items: stretch; flex-wrap: wrap; }
+  .step { flex: 1 1 170px; background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+  .step b { display: block; } .arrow { align-self: center; color: var(--muted); font-size: 18px; }
+  .lanes { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+  .lane { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+  .lane h3 { margin: 0 0 2px; display: flex; justify-content: space-between; gap: 6px; }
+  .lane p.expl { margin: 0 0 8px; font-size: 12px; color: var(--muted); }
+  .card { display: block; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin-bottom: 6px;
+          color: var(--ink); background: #fcfcfd; }
+  .card:hover { border-color: var(--accent); text-decoration: none; }
+  .card .s { font-weight: 600; } .card .m { font-size: 12px; color: var(--muted); }
+  .lane-searchable { border-top: 4px solid var(--ok); } .lane-flagged { border-top: 4px solid var(--warn); }
+  .lane-restricted { border-top: 4px solid var(--bad); } .lane-held { border-top: 4px solid var(--purple); }
+  .lane-not_indexed, .lane-not_read, .lane-withdrawn { border-top: 4px solid var(--grey); }
+  .lane-excluded, .lane-hidden { border-top: 4px solid #8a94a6; } .lane-queued { border-top: 4px solid var(--accent); }
+  .lane-failed { border-top: 4px solid var(--bad); }
+</style>
+
+<h1>Email flow: from a mailbox to a delivered (or deliberately withheld) result</h1>
+
+<div class="panel">
+  <div class="steps">
+    <div class="step"><b>1. Inventory &amp; scope</b><span class="small muted">Which mailboxes may be read. Exclusions always win.</span></div>
+    <div class="arrow">→</div>
+    <div class="step"><b>2. Capture</b><span class="small muted">Per-folder delta finds new, moved and deleted mail and queues jobs.</span></div>
+    <div class="arrow">→</div>
+    <div class="step"><b>3. Fetch &amp; normalize</b><span class="small muted">Read the message, check participant exclusions, stage it.</span></div>
+    <div class="arrow">→</div>
+    <div class="step"><b>4. Screen &amp; classify</b><span class="small muted">PII and prompt-attack screening, then 20 label questions.</span></div>
+    <div class="arrow">→</div>
+    <div class="step"><b>5. Decide &amp; deliver</b><span class="small muted">Index, flag, restrict, hold or skip; publish atomically to search.</span></div>
+  </div>
+  <p style="margin:12px 0 0">
+    <form class="inline" method="post" action="/run/all"><button class="primary">▶ Run everything</button></form>
+    &nbsp;or one step at a time:
+    <form class="inline" method="post" action="/run/sync"><button>1 · Sync mailboxes</button></form>
+    <form class="inline" method="post" action="/run/reconcile"><button>2 · Check for new mail</button></form>
+    <form class="inline" method="post" action="/run/work"><button>3–5 · Process the queue</button></form>
+    &nbsp;<a href="/compose">+ Send a test email</a>
+  </p>
+  <p class="small muted" style="margin:8px 0 0">Queue:
+    {% for q in queue %}<span class="badge {{ 'b-bad' if q.state == 'dead' else ('b-blue' if q.state in ('queued','leased') else '') }}">{{ q.job_type }} · {{ q.state }} · {{ q.n }}</span> {% else %}empty{% endfor %}
+  </p>
+</div>
+
+<div class="lanes">
+{% for lane in lane_order %}
+  {% set cards = lanes[lane] %}
+  {% if cards or lane in ('searchable','flagged','restricted','held','not_indexed') %}
+  <div class="lane lane-{{ lane }}">
+    <h3>{{ lane_info[lane][0] }} <span class="badge">{{ cards|length }}</span></h3>
+    <p class="expl">{{ lane_info[lane][1] }}</p>
+    {% for c in cards %}
+      <a class="card" href="/message/{{ c.id }}">
+        <div class="s">{{ c.subject }}</div>
+        <div class="m">{{ c.mailbox }} · {{ c.folder }} · {{ c.received }}</div>
+        <div class="m">from {{ c.from }}</div>
+        {% if c.reason %}<div class="m"><span class="badge">{{ c.reason }}</span></div>{% endif %}
+      </a>
+    {% else %}<p class="small muted">none</p>{% endfor %}
+  </div>
+  {% endif %}
+{% endfor %}
+</div>
+{% endblock %}

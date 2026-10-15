@@ -1,0 +1,43 @@
+{
+  "title": "Industry newsletter",
+  "expect": "not indexed (newsletter)",
+  "deliveries": [
+    {
+      "mailbox": "pat.morgan@finishes.example"
+    }
+  ],
+  "message": {
+    "subject": "Texas CRE Weekly - October 13 edition",
+    "from": {
+      "emailAddress": {
+        "name": "Texas CRE Weekly",
+        "address": "news@txcre-weekly.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Texas CRE Weekly",
+        "address": "news@txcre-weekly.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Morgan",
+          "address": "pat.morgan@finishes.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-13T11:00:00Z",
+    "sentDateTime": "2026-10-13T11:00:00Z",
+    "internetMessageId": "<07_newsletter.2026-10-13@txcre-weekly.example>",
+    "conversationId": "AAQkAG-synthetic-conv-07_newsletter",
+    "body": {
+      "contentType": "text",
+      "content": "This week's digest: cap rates, multifamily starts and a look at suburban retail.\n\nYou are receiving this newsletter because you subscribed. Unsubscribe at any time."
+    },
+    "attachments": []
+  }
+}

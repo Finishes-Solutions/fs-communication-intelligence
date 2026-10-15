@@ -1,0 +1,43 @@
+{
+  "title": "Legal notice of claim",
+  "expect": "index; compliance & legal",
+  "deliveries": [
+    {
+      "mailbox": "pat.morgan@finishes.example"
+    }
+  ],
+  "message": {
+    "subject": "Notice of claim - incident at Example Commons parking lot",
+    "from": {
+      "emailAddress": {
+        "name": "Morgan & Hale LLP",
+        "address": "notices@morganhale-law.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Morgan & Hale LLP",
+        "address": "notices@morganhale-law.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Morgan",
+          "address": "pat.morgan@finishes.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-09T13:10:00Z",
+    "sentDateTime": "2026-10-09T13:10:00Z",
+    "internetMessageId": "<04_legal_notice.2026-10-09@morganhale-law.example>",
+    "conversationId": "AAQkAG-synthetic-conv-04_legal_notice",
+    "body": {
+      "contentType": "text",
+      "content": "Dear Ms. Morgan,\n\nThis firm represents a visitor who reports an injury in the Example Commons parking lot on September 28. Please forward this notice to your liability insurance carrier and preserve related records.\n\nMorgan & Hale LLP"
+    },
+    "attachments": []
+  }
+}

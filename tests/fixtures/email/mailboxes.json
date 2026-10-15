@@ -1,0 +1,47 @@
+[
+  {
+    "id": "00000000-0000-4000-8000-00000000a001",
+    "address": "pat.morgan@finishes.example",
+    "displayName": "Pat Morgan",
+    "recipientTypeDetails": "UserMailbox",
+    "accountEnabled": true,
+    "exchangeAccess": true,
+    "note": "Development director (synthetic)"
+  },
+  {
+    "id": "00000000-0000-4000-8000-00000000a002",
+    "address": "sam.lee@finishes.example",
+    "displayName": "Sam Lee",
+    "recipientTypeDetails": "UserMailbox",
+    "accountEnabled": true,
+    "exchangeAccess": true,
+    "note": "Controller (synthetic)"
+  },
+  {
+    "id": "00000000-0000-4000-8000-00000000a003",
+    "address": "ap@finishes.example",
+    "displayName": "Accounts Payable",
+    "recipientTypeDetails": "SharedMailbox",
+    "accountEnabled": false,
+    "exchangeAccess": true,
+    "note": "Shared mailbox: accountEnabled is false"
+  },
+  {
+    "id": "00000000-0000-4000-8000-00000000a004",
+    "address": "leasing@finishes.example",
+    "displayName": "Leasing Team",
+    "recipientTypeDetails": "SharedMailbox",
+    "accountEnabled": false,
+    "exchangeAccess": true,
+    "note": "In Exchange scope but not approved in the database"
+  },
+  {
+    "id": "00000000-0000-4000-8000-00000000a005",
+    "address": "exec.private@finishes.example",
+    "displayName": "Executive Private",
+    "recipientTypeDetails": "UserMailbox",
+    "accountEnabled": true,
+    "exchangeAccess": false,
+    "note": "Kept out: CustomAttribute15=FS-CI-Exclude (Graph returns 403)"
+  }
+]

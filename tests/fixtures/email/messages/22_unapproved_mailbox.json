@@ -1,0 +1,43 @@
+{
+  "title": "In a mailbox that is not approved yet",
+  "expect": "never read until the leasing@ mailbox is approved on the Scope page",
+  "deliveries": [
+    {
+      "mailbox": "leasing@finishes.example"
+    }
+  ],
+  "message": {
+    "subject": "Tour request - Suite 140",
+    "from": {
+      "emailAddress": {
+        "name": "Jamie Fox",
+        "address": "jamie.fox@tenant-prospect.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Jamie Fox",
+        "address": "jamie.fox@tenant-prospect.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Leasing Team",
+          "address": "leasing@finishes.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-12T13:00:00Z",
+    "sentDateTime": "2026-10-12T13:00:00Z",
+    "internetMessageId": "<22_unapproved_mailbox.2026-10-12@tenant-prospect.example>",
+    "conversationId": "AAQkAG-synthetic-conv-22_unapproved_mailbox",
+    "body": {
+      "contentType": "text",
+      "content": "Could we tour Suite 140 next Tuesday?"
+    },
+    "attachments": []
+  }
+}

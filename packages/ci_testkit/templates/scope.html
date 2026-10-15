@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Scope & rules{% endblock %}
+{% block body %}
+<h1>Scope &amp; rules</h1>
+
+<div class="panel">
+  <h2 style="margin-top:0">Mailboxes</h2>
+  <p class="small muted">In Azure the hard boundary is Exchange application RBAC (a mailbox outside it returns 403). These controls are the database "soft layer" on top: approval for the test dataset and exclusions, which always win. Every change is written to the audit log.</p>
+  <table>
+    <tr><th>Mailbox</th><th>Type</th><th>Exchange access</th><th>Observed state</th><th>Approved (test)</th><th>Excluded</th><th>Captured?</th><th></th></tr>
+    {% for m in mailboxes %}{% set s = m.scope %}
+    <tr>
+      <td><b>{{ m.fixture.address }}</b><div class="small muted">{{ m.fixture.note }}</div></td>
+      <td>{{ m.fixture.recipientTypeDetails }}<div class="small muted">accountEnabled={{ m.fixture.accountEnabled|lower }}</div></td>
+      <td>{{ '200 (in RBAC scope)' if m.fixture.exchangeAccess else '403 (outside RBAC scope)' }}</td>
+      <td>{{ s.scope_state if s else '—' }}{% if s and s.state_reason_code %}<div class="small muted">{{ s.state_reason_code }}</div>{% endif %}</td>
+      <td>{{ 'yes' if s and s.test_approved else 'no' }}</td>
+      <td>{{ 'yes' if s and s.excluded else 'no' }}</td>
+      <td>{% if m.capturable %}<span class="badge b-ok">yes</span>{% else %}<span class="badge">no</span>{% endif %}</td>
+      <td>{% if s %}
+        <form class="inline" method="post" action="/scope/mailbox">
+          <input type="hidden" name="scope_id" value="{{ s.id }}"><input type="hidden" name="native_scope_id" value="{{ s.native_scope_id }}">
+          {% if s.test_approved %}<button name="action" value="unapprove">Un-approve</button>{% else %}<button name="action" value="approve">Approve</button>{% endif %}
+          {% if s.excluded %}<button name="action" value="unexclude">Remove exclusion</button>{% else %}<button name="action" value="exclude" class="danger">Exclude</button>{% endif %}
+        </form>{% endif %}</td>
+    </tr>{% endfor %}
+  </table>
+</div>
+
+<div class="grid2">
+<div class="panel">
+  <h2 style="margin-top:0">Participant exclusions</h2>
+  <p class="small muted">Excluding a mailbox does not exclude that person's mail sitting in other mailboxes. These rules match any sender or recipient, in every mailbox, before content is staged; and search hides already-indexed matches at once.</p>
+  <table>{% for e in exclusions %}
+    <tr><td><span class="badge">{{ e.exclusion_kind }}</span></td><td>{{ e.pattern or ('mailbox ' ~ addresses.get(e.native_scope_id, e.native_scope_id)) }}</td><td class="small muted">{{ e.reason_code }} · {{ e.created_by }}</td>
+      <td><form class="inline" method="post" action="/scope/exclusion/{{ e.id }}/revoke"><button>Revoke</button></form></td></tr>
+  {% else %}<tr><td class="muted">none</td></tr>{% endfor %}</table>
+  <form method="post" action="/scope/exclusion" style="display:flex; gap:8px; align-items:end; margin-top:10px">
+    <div><label>Kind</label><select name="kind"><option value="participant_domain">domain</option><option value="participant_address">address</option></select></div>
+    <div style="flex:1"><label>Domain or address</label><input type="text" name="pattern" placeholder="vendor.example or person@vendor.example" required></div>
+    <button>Add</button>
+  </form>
+</div>
+
+<div class="panel">
+  <h2 style="margin-top:0">Mode</h2>
+  <p>Current mode: <b>{{ mode }}</b>. Paused reads nothing, processes nothing and makes search return nothing.</p>
+  <form class="inline" method="post" action="/scope/mode"><input type="hidden" name="mode" value="test"><button {{ 'disabled' if mode == 'test' }}>Test</button></form>
+  <form class="inline" method="post" action="/scope/mode"><input type="hidden" name="mode" value="paused"><button {{ 'disabled' if mode == 'paused' }}>Pause</button></form>
+  <p class="small muted">Production mode is a manual decision in the real environment and is not available here.</p>
+
+  <h2>Open decisions (what-if)</h2>
+  <form method="post" action="/scope/settings">
+    <label>ATTACHMENT_UNSUPPORTED_POLICY (D-E1)</label>
+    <select name="attachment_policy">{% for p in policies %}<option {{ 'selected' if p == settings.attachment_unsupported_policy.value }}>{{ p }}</option>{% endfor %}</select>
+    <p class="small muted">hold_message: any attachment holds the message (most mail has a signature logo) · publish_partial: index the body, report attachments as partial · exempt_cid_inline: ignore inline logos, hold for anything else.</p>
+    <label class="check"><input type="checkbox" name="include_sent" value="true" {{ 'checked' if settings.email_include_sent }}> Include Sent Items (D-S1)</label>
+    <label class="check"><input type="checkbox" name="screening_down" value="true" {{ 'checked' if overrides.screening_down }}> Simulate the screening service being down</label>
+    <p><button class="primary">Save</button></p>
+  </form>
+  <form method="post" action="/run/reprocess"><button>Reprocess everything under the current settings</button></form>
+</div>
+</div>
+
+<div class="panel">
+  <h2 style="margin-top:0">Simulate Graph failures</h2>
+  <form method="post" action="/scope/simulate" style="display:flex; gap:12px; align-items:end; flex-wrap:wrap">
+    <div><label>Next N Graph calls return 429 (throttled)</label><input type="text" name="throttle_calls" value="0" style="width:90px"></div>
+    <div><label>Next delta call returns 410 (expired) for</label>
+      <select name="expire_mailbox"><option value="">—</option>{% for m in mailboxes %}<option>{{ m.fixture.address }}</option>{% endfor %}</select></div>
+    <button>Arm</button>
+  </form>
+  <p class="small muted">Then press Run everything. 429 stops that mailbox for this round and retries later; 410 drops the delta checkpoint and resyncs from the backfill boundary, and database uniqueness absorbs the duplicates.</p>
+</div>
+{% endblock %}

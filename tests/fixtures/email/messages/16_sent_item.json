@@ -1,0 +1,44 @@
+{
+  "title": "Outgoing reply in Sent Items",
+  "expect": "captured from Sent Items (D-S1 default true); direction = out",
+  "deliveries": [
+    {
+      "mailbox": "pat.morgan@finishes.example",
+      "folder": "sentitems"
+    }
+  ],
+  "message": {
+    "subject": "RE: Change Order #7 - Example Ridge Phase 2 drainage - $12,400",
+    "from": {
+      "emailAddress": {
+        "name": "Pat Morgan",
+        "address": "pat.morgan@finishes.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Pat Morgan",
+        "address": "pat.morgan@finishes.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Dana Whitfield",
+          "address": "dana.whitfield@brightline-builders.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-08T09:30:00Z",
+    "sentDateTime": "2026-10-08T09:30:00Z",
+    "internetMessageId": "<16_sent_item.2026-10-08@finishes.example>",
+    "conversationId": "AAQkAG-synthetic-conv-16_sent_item",
+    "body": {
+      "contentType": "text",
+      "content": "Dana,\n\nApproved, pending the revised drawings. Please send them before the crew mobilizes.\n\nPat"
+    },
+    "attachments": []
+  }
+}

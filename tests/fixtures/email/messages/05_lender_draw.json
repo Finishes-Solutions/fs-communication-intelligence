@@ -1,0 +1,43 @@
+{
+  "title": "Lender draw request",
+  "expect": "index; capital & finance, payment & billing",
+  "deliveries": [
+    {
+      "mailbox": "sam.lee@finishes.example"
+    }
+  ],
+  "message": {
+    "subject": "Draw #4 package - Example Ridge construction loan - documents needed by Oct 20",
+    "from": {
+      "emailAddress": {
+        "name": "Riley Chen",
+        "address": "rchen@firstprairie-bank.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Riley Chen",
+        "address": "rchen@firstprairie-bank.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Sam Lee",
+          "address": "sam.lee@finishes.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-09T17:45:00Z",
+    "sentDateTime": "2026-10-09T17:45:00Z",
+    "internetMessageId": "<05_lender_draw.2026-10-09@firstprairie-bank.example>",
+    "conversationId": "AAQkAG-synthetic-conv-05_lender_draw",
+    "body": {
+      "contentType": "text",
+      "content": "Sam,\n\nTo fund Draw #4 on the Example Ridge construction loan we still need the updated budget, lien waivers and the inspector's report. Please send them by October 20.\n\nRiley Chen\nConstruction Lending, First Prairie Bank"
+    },
+    "attachments": []
+  }
+}

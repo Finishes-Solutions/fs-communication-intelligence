@@ -1,0 +1,43 @@
+{
+  "title": "Older than the backfill boundary",
+  "expect": "never read: received before EMAIL_BACKFILL_SINCE (2026-09-01)",
+  "deliveries": [
+    {
+      "mailbox": "pat.morgan@finishes.example"
+    }
+  ],
+  "message": {
+    "subject": "Q2 budget recap",
+    "from": {
+      "emailAddress": {
+        "name": "Alex Diaz",
+        "address": "alex.diaz@finishes.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Alex Diaz",
+        "address": "alex.diaz@finishes.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Morgan",
+          "address": "pat.morgan@finishes.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-08-15T16:00:00Z",
+    "sentDateTime": "2026-08-15T16:00:00Z",
+    "internetMessageId": "<19_before_backfill.2026-08-15@finishes.example>",
+    "conversationId": "AAQkAG-synthetic-conv-19_before_backfill",
+    "body": {
+      "contentType": "text",
+      "content": "Q2 closed 3% under budget."
+    },
+    "attachments": []
+  }
+}

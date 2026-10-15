@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Send a test email{% endblock %}
+{% block body %}
+<h1>Send a test email</h1>
+<div class="grid2">
+<div class="panel">
+  <form method="post" action="/compose">
+    <label>Deliver to mailbox</label>
+    <select name="to_mailbox">
+      {% for m in mailboxes %}<option {{ 'selected' if m == form.to_mailbox }}>{{ m }}</option>{% endfor %}
+    </select>
+    <label>Folder</label>
+    <select name="folder">
+      {% for f in ['inbox','sentitems','drafts','junkemail','deleteditems','Projects'] %}
+      <option {{ 'selected' if f == form.folder }}>{{ f }}</option>{% endfor %}
+    </select>
+    <div class="grid2">
+      <div><label>From name</label><input type="text" name="from_name" value="{{ form.from_name }}"></div>
+      <div><label>From address</label><input type="text" name="from_address" required
+           value="{{ form.from_address }}" placeholder="someone@vendor.example"></div>
+    </div>
+    <label>Cc (comma-separated)</label><input type="text" name="cc" value="{{ form.cc }}">
+    <label>Subject</label><input type="text" name="subject" value="{{ form.subject }}">
+    <label>Body (plain text)</label><textarea name="body">{{ form.body }}</textarea>
+    <p>
+      <label class="check"><input type="checkbox" name="inline_logo" value="true" {{ 'checked' if form.inline_logo }}> inline signature logo</label>
+      <label class="check"><input type="checkbox" name="pdf_attachment" value="true" {{ 'checked' if form.pdf_attachment }}> PDF attachment (metadata only in E1)</label>
+    </p>
+    <p><label class="check"><input type="checkbox" name="run_now" value="true" checked> run the whole flow right after delivering</label></p>
+    <button class="primary">Deliver</button>
+  </form>
+  <p class="small muted">Use invented names and <code>.example</code> addresses only. Never paste real email here.</p>
+</div>
+<div class="panel">
+  <h2 style="margin-top:0">Start from a scenario</h2>
+  <p class="small muted">Each scenario is a synthetic fixture with the outcome it is meant to show. Loading one fills the form; you can change anything before delivering.</p>
+  <table>
+    {% for p in presets %}
+    <tr class="{{ 'on' if chosen and chosen.key == p.key }}">
+      <td><a href="/compose?preset={{ p.key }}">{{ p.title }}</a><div class="small muted">{{ p.expect }}</div></td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+</div>
+{% endblock %}

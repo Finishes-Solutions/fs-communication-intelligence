@@ -1,0 +1,47 @@
+{
+  "title": "Long thread with quoted history",
+  "expect": "index; only the new text (uniqueBody) is indexed, not the quoted history",
+  "deliveries": [
+    {
+      "mailbox": "pat.morgan@finishes.example"
+    }
+  ],
+  "message": {
+    "subject": "RE: RE: Building C framing schedule",
+    "from": {
+      "emailAddress": {
+        "name": "Dana Whitfield",
+        "address": "dana.whitfield@brightline-builders.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Dana Whitfield",
+        "address": "dana.whitfield@brightline-builders.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Morgan",
+          "address": "pat.morgan@finishes.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-14T14:00:00Z",
+    "sentDateTime": "2026-10-14T14:00:00Z",
+    "internetMessageId": "<12_long_thread.2026-10-14@brightline-builders.example>",
+    "conversationId": "AAQkAG-synthetic-conv-12_long_thread",
+    "body": {
+      "contentType": "text",
+      "content": "Confirmed - the framing crew starts Monday 10/20 and the inspection is booked for 10/24.\n\nDana\n\n-----Original Message-----\nFrom: Pat Morgan\nSent: Tuesday, October 7, 2026\nSubject: RE: Building C framing schedule\n\nCan you confirm the framing start date?\n\n-----Original Message-----\nFrom: Dana Whitfield\nSent: Monday, October 6, 2026\nSubject: Building C framing schedule\n\nWe expect framing on Building C to start the week of 10/20."
+    },
+    "attachments": [],
+    "uniqueBody": {
+      "contentType": "text",
+      "content": "Confirmed - the framing crew starts Monday 10/20 and the inspection is booked for 10/24.\n\nDana"
+    }
+  }
+}

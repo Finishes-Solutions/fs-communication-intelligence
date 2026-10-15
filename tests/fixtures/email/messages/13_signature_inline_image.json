@@ -1,0 +1,52 @@
+{
+  "title": "Short note with only a signature logo (D-E1)",
+  "expect": "the D-E1 case: index under publish_partial and exempt_cid_inline, held under hold_message",
+  "deliveries": [
+    {
+      "mailbox": "pat.morgan@finishes.example"
+    }
+  ],
+  "message": {
+    "subject": "Lunch & learn moved to Thursday",
+    "from": {
+      "emailAddress": {
+        "name": "Office Manager",
+        "address": "office@finishes.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Office Manager",
+        "address": "office@finishes.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Morgan",
+          "address": "pat.morgan@finishes.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-13T15:00:00Z",
+    "sentDateTime": "2026-10-13T15:00:00Z",
+    "internetMessageId": "<13_signature_inline_image.2026-10-13@finishes.example>",
+    "conversationId": "AAQkAG-synthetic-conv-13_signature_inline_image",
+    "body": {
+      "contentType": "text",
+      "content": "Hi all,\n\nThe lunch & learn on the new expense policy is moving to Thursday at noon.\n\nOffice Manager"
+    },
+    "attachments": [
+      {
+        "id": "att-logo",
+        "name": "image001.png",
+        "contentType": "image/png",
+        "size": 6144,
+        "isInline": true,
+        "contentId": "image001.png@01DB1A2B.3C4D5E60"
+      }
+    ]
+  }
+}

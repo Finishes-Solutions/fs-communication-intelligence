@@ -1,0 +1,43 @@
+{
+  "title": "From a domain with a participant exclusion",
+  "expect": "skipped at capture: participant_domain exclusion hr-benefits.example (seeded); excluding a mailbox would not catch this",
+  "deliveries": [
+    {
+      "mailbox": "sam.lee@finishes.example"
+    }
+  ],
+  "message": {
+    "subject": "Open enrollment reminder",
+    "from": {
+      "emailAddress": {
+        "name": "Benefits Team",
+        "address": "benefits@hr-benefits.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Benefits Team",
+        "address": "benefits@hr-benefits.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Sam Lee",
+          "address": "sam.lee@finishes.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-09T14:00:00Z",
+    "sentDateTime": "2026-10-09T14:00:00Z",
+    "internetMessageId": "<18_excluded_participant_domain.2026-10-09@hr-benefits.example>",
+    "conversationId": "AAQkAG-synthetic-conv-18_excluded_participant_domain",
+    "body": {
+      "contentType": "text",
+      "content": "Open enrollment closes October 31. Review your elections."
+    },
+    "attachments": []
+  }
+}

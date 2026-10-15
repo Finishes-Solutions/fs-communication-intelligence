@@ -20,4 +20,12 @@ docker run -d --name ci-pg -e POSTGRES_PASSWORD=postgres -p 55432:5432 pgvector/
 PGHOST=127.0.0.1 PGPORT=55432 PGUSER=postgres PGPASSWORD=postgres python3 db/run_checks.py
 ```
 
+Local testkit (synthetic mail end to end, with a web UI): see [`local/README.md`](local/README.md).
+
+```bash
+uv run ci up
+```
+
+End-to-end tests against a throwaway database: `CI_TEST_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:55432/ci_pytest uv run pytest -m db`.
+
 Contributors: see `CLAUDE.md` and `docs/`.

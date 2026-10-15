@@ -66,7 +66,7 @@ Business context: Finishes Solutions is a real estate owner-developer (Waller, T
 - `scripts/bootstrap-azure.sh`: creates managed identities, GitHub OIDC federation and RG-scoped deploy roles. Not confirmed as run.
 - `config/runtime.example.env`: proposed setting names.
 - A docs patch `email-first-adr-014.patch` (ADR-014 to ADR-017, README, backlogs, TEAMS_DISCOVERY.md) may already be applied. If `docs/ARCHITECTURE_DECISIONS.md` has no ADR-014, ask Matthew for the patch before PR 1, or write the equivalent ADRs yourself from §2–§3.
-- No application code, infrastructure templates or workflows exist yet.
+- Local testkit (added 2026-10-15, see `local/README.md`): fixture Graph backend, fake screener/classifier/embedder, inventory + per-folder delta capture, job queue worker, processing with `0003_classification.sql`, authorized search core (`ci_retrieval.search`) and a local web UI (`uv run ci up`). This covers most of PR 4 plus the local, fake-backend parts of PRs 5-7. Not built: real Graph client, subscriptions/webhooks, Azure screening/classifier/embedder backends, token validation, REST/MCP endpoints, Function Apps.
 - Reference only, do not import wholesale: earlier prototype `mattsinitiere/fs-outlook-email-ingestion-tool`, branch `phase3/scoped-email-intelligence`. A throwaway TypeScript/Azure SQL scaffold from a chat session also exists. **Ignore its stack**; only its ideas appear in this file.
 
 ---
