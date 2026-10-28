@@ -4,7 +4,7 @@
 # Communications.Reader.All / .Own, assignment required), one client app per
 # agent platform, and give the named people the Reader.All role.
 #
-#   READERS="matthews@finishessolutions.com chuck@finishessolutions.com" \
+#   READERS="matthews@finishessolutions.com chuckc@finishesetc.net" \
 #     bash scripts/azure/2-search-api-entra.sh
 #
 # Client secrets are printed ONCE, for pasting into Claude / ChatGPT / Copilot

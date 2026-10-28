@@ -81,7 +81,7 @@ Set-Mailbox -Identity 'someone@finishessolutions.com' -CustomAttribute15 'FS-CI-
 Check one included and one excluded mailbox:
 
 ```powershell
-Test-ServicePrincipalAuthorization -Identity $SpId -Resource 'chuck@finishessolutions.com'
+Test-ServicePrincipalAuthorization -Identity $SpId -Resource 'chuckc@finishesetc.net'
 Test-ServicePrincipalAuthorization -Identity $SpId -Resource 'EXCLUDED@finishessolutions.com'
 ```
 
@@ -196,7 +196,7 @@ Re-running `ci capture --hours 24` later only adds new or changed mail. `ci proc
 Chuck's actionable list as a Markdown file. `local/out/` is git-ignored; it contains real email content, so don't commit or forward it carelessly:
 
 ```bash
-mkdir -p local/out && ci actionable --person chuck@finishessolutions.com --hours 24 --out local/out/chuck-actionable.md && open local/out/chuck-actionable.md
+mkdir -p local/out && ci actionable --person chuckc@finishesetc.net --hours 24 --out local/out/chuck-actionable.md && open local/out/chuck-actionable.md
 ```
 
 Search from the terminal:
@@ -220,7 +220,7 @@ ci search "change order Three Lakes"
 }
 ```
 
-Ask, for example: *"Use list_actionable for chuck@finishessolutions.com over the last 24 hours and summarise what needs his decision, with links."* Claude Code works too:
+Ask, for example: *"Use list_actionable for chuckc@finishesetc.net over the last 24 hours and summarise what needs his decision, with links."* Claude Code works too:
 
 ```bash
 claude mcp add fs-communications -- uv run --directory "$PWD" --env-file local/azure-dev.env ci mcp

@@ -104,7 +104,7 @@ alias ci='uv run --env-file local/azure-dev.env ci' && ci tenant init
 ## 6. Search API sign-in (Entra) and who may read
 
 ```bash
-READERS="matthews@finishessolutions.com chuck@finishessolutions.com" bash scripts/azure/2-search-api-entra.sh
+READERS="matthews@finishessolutions.com chuckc@finishesetc.net" bash scripts/azure/2-search-api-entra.sh
 ```
 
 This registers the search API (scope `Communications.Search`, app roles `Communications.Reader.All` / `.Own`, assignment required). It gives each address in `READERS` the **Reader.All** role, which means **all enrolled company mail**; use `.Own` in the portal for someone who should only see their own mailbox. It also creates one client app each for Claude, ChatGPT and Copilot Studio, and points the search Function App at the API.
@@ -166,7 +166,7 @@ If Cloud Shell can't reach the database (timeout), add its address: `az postgres
 
 - `ci stats`: published, held/rejected by reason, failed codes, label counts, attachment extraction.
 - Give your own command-line identity read access once: `ci grant add --me`. Agents use the app roles from step 6 instead.
-- `mkdir -p local/out && ci actionable --person chuck@finishessolutions.com --hours 24 --out local/out/chuck.md`. This is real content: keep it out of Git and share deliberately.
+- `mkdir -p local/out && ci actionable --person chuckc@finishesetc.net --hours 24 --out local/out/chuck.md`. This is real content: keep it out of Git and share deliberately.
 - Hand-check about 30 action items and 30 random published messages, and note wrong labels. The thresholds are uncalibrated.
 - Connect the agents (§10) and ask the same questions.
 

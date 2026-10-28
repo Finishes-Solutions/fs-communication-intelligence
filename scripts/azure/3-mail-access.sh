@@ -31,7 +31,7 @@ New-ServicePrincipal -AppId '$ING_CLIENT' -ObjectId '$ING_P' -DisplayName 'FS CI
 if (-not (Get-ManagementScope -Identity 'FS-CI-Email-All' -ErrorAction SilentlyContinue)) {
   New-ManagementScope -Name 'FS-CI-Email-All' -RecipientRestrictionFilter \$Filter }
 New-ManagementRoleAssignment -Name 'FS-CI-Email-All-Read-Dev' -App '$ING_P' -Role 'Application Mail.Read' -CustomResourceScope 'FS-CI-Email-All'
-Test-ServicePrincipalAuthorization -Identity '$ING_P' -Resource 'chuck@finishessolutions.com'
+Test-ServicePrincipalAuthorization -Identity '$ING_P' -Resource 'chuckc@finishesetc.net'
 
 Expect InScope = True. Exchange can take up to about 2 hours to apply it.
 PS
