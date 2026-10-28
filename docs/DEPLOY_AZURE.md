@@ -16,7 +16,7 @@ Work in **Azure Cloud Shell → Bash** (portal.azure.com, `>_`). It already has 
 Select the subscription that holds the `fs-communication-intelligence` resource group (every script uses the current one):
 
 ```bash
-az account set --subscription "Finishes 3.0" && az group show -n fs-communication-intelligence --query name -o tsv
+az account set --subscription "Finishes 3.0 Azure Subscription" && az group show -n fs-communication-intelligence --query name -o tsv
 ```
 
 ```bash
