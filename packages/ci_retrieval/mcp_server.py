@@ -116,9 +116,10 @@ def build_server(
             )
 
     @server.tool(
-        description="Emails that ask a person (email address) to act or approve, plus risk "
-        "items (phishing, legal/compliance, vendor problems, urgent, flagged for review), "
-        "from the last N hours." + _TRUST
+        description="Emails that ask a person to act or approve, plus risk items (phishing, "
+        "legal/compliance, vendor problems, urgent, flagged for review), from the last N hours. "
+        "`person` is one email address or several comma-separated addresses for someone with "
+        "more than one mailbox." + _TRUST
     )
     def list_actionable(
         person: str | None = None, hours: float = 24, include_risks: bool = True, limit: int = 50

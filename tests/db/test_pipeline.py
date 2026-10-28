@@ -175,6 +175,16 @@ def test_audit_records_ids_not_query_text(pipeline: dict[str, Any]) -> None:
     assert rows and not any("very-distinctive-query-text" in r["d"] for r in rows)
 
 
+def test_actionable_accepts_several_addresses_for_one_person(pipeline: dict[str, Any]) -> None:
+    with pipeline["connect"]("ci_search") as conn:
+        both = retrieval.list_actionable(
+            conn, READER, person=f" {PAT.upper()} , {MORGAN}", hours=24 * 60
+        )
+    subjects = {a["subject"] for a in both["actions"]}
+    assert "Invoice 4471 for Lot 12 grading - payment due Friday" in subjects  # Pat
+    assert both["person"] == f"{MORGAN}, {PAT}"
+
+
 def test_exclusions_and_pause_hide_published_mail(pipeline: dict[str, Any]) -> None:
     query = "change order lease invoice lien draw"
     assert search(pipeline, query)["results"]

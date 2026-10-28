@@ -432,25 +432,28 @@ def list_actionable(
     include_risks: bool = True,
     limit: int = 50,
 ) -> dict[str, Any]:
-    """Messages asking ``person`` (an address) to act, plus risk items.
+    """Messages asking ``person`` to act, plus risk items.
 
-    A message counts as asking the person when the classifier marked action or
-    approval required and either named the person in ``action_for`` or named
-    nobody while the person's own mailbox received it. Without ``person``,
-    every authorized action item is listed. Risks are company-wide within the
-    caller's grants.
+    ``person`` is one address or several, comma-separated, for someone with
+    more than one mailbox. A message counts as asking the person when the
+    classifier marked action or approval required and either named one of
+    their addresses in ``action_for`` or named nobody while one of their
+    mailboxes received it. Without ``person``, every authorized action item is
+    listed. Risks are company-wide within the caller's grants.
     """
-    person = person.lower() if person else None
+    addresses = sorted({a.strip().lower() for a in (person or "").split(",") if a.strip()})
+    people = addresses or None
     since = datetime.now(UTC) - timedelta(hours=hours)
     actions = _listing(
         conn,
         principal,
         Filters(since=since),
         """AND cl.yes_labels && %(action_labels)s::text[]
-           AND (%(person)s::text IS NULL OR %(person)s = ANY(cl.action_for)
-                OR (cardinality(cl.action_for) = 0 AND e.mailbox_address = %(person)s
+           AND (%(people)s::text[] IS NULL OR cl.action_for && %(people)s::text[]
+                OR (cardinality(cl.action_for) = 0
+                    AND e.mailbox_address = ANY(%(people)s::text[])
                     AND e.direction = 'in'))""",
-        {"action_labels": list(ACTION_LABELS), "person": person},
+        {"action_labels": list(ACTION_LABELS), "people": people},
         limit,
     )
     risks = (
@@ -473,13 +476,13 @@ def list_actionable(
             "action_ids": [a["communication_id"] for a in actions],
             "risk_ids": [r["communication_id"] for r in risks],
             "hours": hours,
-            "person_filter": person is not None,
+            "person_filter": len(addresses),
         },
     )
     conn.commit()
     return {
         "note": UNTRUSTED_NOTE,
-        "person": person,
+        "person": ", ".join(addresses) or None,
         "since": since.isoformat(),
         "actions": actions,
         "risks": risks,
