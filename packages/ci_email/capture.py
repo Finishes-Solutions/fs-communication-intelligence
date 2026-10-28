@@ -342,7 +342,7 @@ def capture_window(
 ) -> list[MailboxResult]:
     """Capture every eligible mailbox. Fails closed on paused mode or empty scope."""
     if not 0 < hours <= MAX_CAPTURE_HOURS:
-        raise ValueError(f"--hours must be greater than 0 and at most {MAX_CAPTURE_HOURS} (93 days)")
+        raise ValueError(f"--hours must be more than 0 and at most {MAX_CAPTURE_HOURS} (93 days)")
     since = (now or datetime.now(UTC)) - timedelta(hours=hours)
     with connect("ci_ingest") as conn:
         config = active_config(conn)
