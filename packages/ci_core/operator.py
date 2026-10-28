@@ -227,3 +227,100 @@ def approve_all_enrolled(conn: Connection, dataset: Dataset, actor: str) -> int:
     for r in rows:
         approve_mailbox(conn, r["address"], dataset, actor)
     return len(rows)
+
+
+_KEY = re.compile(r"^[a-z0-9_]{2,40}$")
+
+
+def list_people(conn: Connection) -> list[dict[str, Any]]:
+    """Profiles for step 2 of action items (ci_processing.routing)."""
+    return conn.execute(
+        "SELECT key, display_name, addresses, role, not_to_confuse, enabled, updated_by,"
+        " updated_at FROM action_people ORDER BY key"
+    ).fetchall()
+
+
+def set_person(
+    conn: Connection,
+    actor: str,
+    key: str,
+    *,
+    display_name: str,
+    addresses: list[str],
+    role: str = "",
+    not_to_confuse: str = "",
+    enabled: bool = True,
+) -> None:
+    """Create or replace a profile. Changing it makes processing re-ask the model."""
+    if not _KEY.match(key):
+        raise OperatorError("key must look like chuck_sr (a-z, 0-9, _)")
+    cleaned = sorted({a.strip().lower() for a in addresses if a.strip()})
+    if not cleaned or not all(_ADDRESS.match(a) for a in cleaned):
+        raise OperatorError("give at least one valid email address")
+    if not display_name.strip():
+        raise OperatorError("give the person's name as people write it, e.g. Chuck Sr.")
+    for text, limit in ((role, 500), (not_to_confuse, 1000)):
+        if len(text) > limit:
+            raise OperatorError(f"keep role and 'not to confuse with' under {limit} characters")
+    conn.execute(
+        "INSERT INTO action_people (key, display_name, addresses, role, not_to_confuse,"
+        " enabled, updated_by) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+        " ON CONFLICT (key) DO UPDATE SET display_name = EXCLUDED.display_name,"
+        " addresses = EXCLUDED.addresses, role = EXCLUDED.role,"
+        " not_to_confuse = EXCLUDED.not_to_confuse, enabled = EXCLUDED.enabled,"
+        " updated_by = EXCLUDED.updated_by, updated_at = now()",
+        (key, display_name.strip(), cleaned, role.strip(), not_to_confuse.strip(), enabled, actor),
+    )
+    audit(
+        conn,
+        actor,
+        "person_profile_set",
+        "action_people",
+        key,
+        {"addresses": len(cleaned), "enabled": enabled},
+    )
+
+
+NAME_KINDS = ("property", "entity")
+
+
+def list_names(conn: Connection) -> list[dict[str, Any]]:
+    """Canonical property/project and legal-entity names (shown to the classifier)."""
+    return conn.execute(
+        "SELECT kind, canonical, aliases, created_by, created_at FROM known_names"
+        " ORDER BY kind, lower(canonical)"
+    ).fetchall()
+
+
+def add_name(
+    conn: Connection, actor: str, kind: str, canonical: str, aliases: list[str] | None = None
+) -> None:
+    """Add a canonical name, or replace the aliases of an existing one (same kind and name)."""
+    if kind not in NAME_KINDS:
+        raise OperatorError("kind must be property or entity")
+    name = " ".join(canonical.split())
+    if not 0 < len(name) <= 120:
+        raise OperatorError("give a name of 1 to 120 characters")
+    cleaned = sorted(
+        {" ".join(a.split()) for a in aliases or [] if a.strip()} - {name}, key=str.casefold
+    )
+    if any(len(a) > 120 for a in cleaned):
+        raise OperatorError("keep each alias under 120 characters")
+    conn.execute(
+        "INSERT INTO known_names (kind, canonical, aliases, created_by) VALUES (%s, %s, %s, %s)"
+        " ON CONFLICT (kind, lower(canonical)) DO UPDATE SET aliases = EXCLUDED.aliases",
+        (kind, name, cleaned, actor),
+    )
+    audit(
+        conn, actor, "known_name_set", "known_names", None, {"kind": kind, "aliases": len(cleaned)}
+    )
+
+
+def remove_name(conn: Connection, actor: str, kind: str, canonical: str) -> None:
+    removed = conn.execute(
+        "DELETE FROM known_names WHERE kind = %s AND lower(canonical) = lower(%s) RETURNING id",
+        (kind, " ".join(canonical.split())),
+    ).fetchall()
+    if not removed:
+        raise OperatorError(f"no {kind} named {canonical!r}")
+    audit(conn, actor, "known_name_removed", "known_names", str(removed[0]["id"]), {"kind": kind})

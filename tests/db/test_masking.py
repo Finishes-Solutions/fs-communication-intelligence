@@ -154,7 +154,12 @@ def test_several_readable_attachments_publish_with_chunks_from_each(db: str) -> 
         return connect(dbname=db, role="ci_ingest")
 
     with connect(dbname=db) as conn:
-        m = message(conn, "Change Order 7 - Building C")
+        # Several messages share the subject (replies, mailbox copies); take the one with the PDF.
+        m = conn.execute(
+            "SELECT a.version_id::text FROM email_attachments a"
+            " WHERE a.native_attachment_id = 'att-0201' ORDER BY a.version_id LIMIT 1"
+        ).fetchone()
+        assert m is not None
         conn.execute(
             "INSERT INTO email_attachments (version_id, native_attachment_id, name, content_type,"
             " size_bytes, is_inline, extraction_status, extracted_chars)"

@@ -9,8 +9,9 @@ Run history holds counts and codes only, never content.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
@@ -18,7 +19,9 @@ from ci_core.db import Connection, required
 from ci_core.operator import OperatorError, audit
 
 INTERVALS = (15, 30, 60, 120, 240, 720, 1440)
-RUNNING_CAPTURE_GRACE = timedelta(minutes=45)  # a capture older than this is presumed dead
+MAX_REQUEST_HOURS = 24 * 93  # a requested backfill; the scheduled window stays <= 744
+# A capture older than this is presumed dead (the ingestion app stops a run after 2 hours).
+RUNNING_CAPTURE_GRACE = timedelta(minutes=130)
 Trigger = Literal["schedule", "manual"]
 
 
@@ -135,13 +138,27 @@ def update_schedule(conn: Connection, actor: str, **changes: Any) -> Schedule:
 
 def request_run(conn: Connection, actor: str, hours: float | None = None) -> None:
     """Ask for a capture at the next tick (within about 5 minutes)."""
-    if hours is not None and not 0 < hours <= 744:
-        raise OperatorError("hours must be between 0 and 744")
+    if hours is not None and not 0 < hours <= MAX_REQUEST_HOURS:
+        raise OperatorError(f"hours must be between 0 and {MAX_REQUEST_HOURS} (93 days)")
     conn.execute(
         "UPDATE ops_settings SET run_requested_at = now(), run_requested_hours = %s WHERE id",
         (hours,),
     )
     audit(conn, actor, "capture_requested", "ops_settings", None, {"hours": hours})
+
+
+def hours_since(day: str, now: datetime, time_zone: str = "America/Chicago") -> float:
+    """Hours from midnight (local time) on ``day`` (YYYY-MM-DD) to ``now``, rounded up."""
+    try:
+        start = datetime.combine(date.fromisoformat(day), time(0), ZoneInfo(time_zone))
+    except ValueError as exc:
+        raise OperatorError("give the date as YYYY-MM-DD, e.g. 2026-09-01") from exc
+    hours = math.ceil((now - start).total_seconds() / 3600)
+    if hours <= 0:
+        raise OperatorError("that date is in the future")
+    if hours > MAX_REQUEST_HOURS:
+        raise OperatorError(f"that is more than {MAX_REQUEST_HOURS // 24} days back")
+    return float(hours)
 
 
 def capture_in_progress(conn: Connection, now: datetime) -> bool:

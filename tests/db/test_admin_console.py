@@ -30,6 +30,7 @@ from ci_email.process import (
 from ci_processing.classification import FakeClassifier
 from ci_processing.embedding import FakeEmbedder
 from ci_processing.originals import DirectoryStore
+from ci_processing.routing import FakePersonRouter
 from ci_processing.screening import FakeScreener
 from ci_retrieval.entra import EntraTokenVerifier
 from ci_retrieval.identity import READER_ALL
@@ -122,7 +123,9 @@ def client(database_ready: str, files: DirectoryStore) -> Iterator[TestClient]:
             TENANT, API_ID, API_URI, keys=StaticKeys(), required_scope=ADMIN_SCOPE
         ),
         connector=lambda role: connect(dbname=database_ready, role=role),  # type: ignore[arg-type]
-        lab_backends=lambda: LabBackends(FakeScreener(), FakeClassifier()),
+        lab_backends=lambda: LabBackends(
+            FakeScreener(), FakeClassifier(), router=FakePersonRouter()
+        ),
         originals=files,
     )
     with TestClient(app, base_url=BASE) as c:
@@ -419,3 +422,139 @@ def test_failed_attachments_are_reread_and_messages_republished(
         and r["attachment_chunks"] > 0
         for r in rows
     )
+
+
+# ----- Label check, people and the Lab person step ----------------------------
+
+
+def test_label_feedback_round_trip(client: TestClient, database_ready: str) -> None:
+    target = invoice_detail(client)["communication_id"]
+    url = f"/api/feedback/{target}"
+    first = client.get(url, headers=auth()).json()
+    assert first["email"]["subject"] and first["labels"] == {} and first["action_for"] == {}
+    assert "fyi_only" in first["reasons"]
+    assert {s["label"] for s in first["email"]["scores"]} >= {"spam", "action_required"}
+    saved = client.put(
+        url, headers=auth(), json={"kind": "label", "subject": "spam", "applies": False}
+    ).json()
+    assert saved["labels"] == {"spam": False}
+    saved = client.put(
+        url,
+        headers=auth(),
+        json={"kind": "action_for", "subject": PAT, "applies": False, "reason": "fyi_only"},
+    ).json()
+    assert saved["action_for"] == {PAT: {"applies": False, "reason": "fyi_only"}}
+    cleared = client.put(
+        url, headers=auth(), json={"kind": "label", "subject": "spam", "applies": None}
+    ).json()
+    assert cleared["labels"] == {}
+    for bad in (
+        {"kind": "label", "subject": "made_up", "applies": True},
+        {"kind": "action_for", "subject": PAT, "applies": False, "reason": "because"},
+        {"kind": "other", "subject": "spam", "applies": True},
+    ):
+        assert client.put(url, headers=auth(), json=bad).status_code == 400
+    missing = "/api/feedback/00000000-0000-0000-0000-000000000000"
+    assert client.get(missing, headers=auth()).status_code == 404
+    # An admin without a reader role can't judge (or see) mail.
+    assert client.get(url, headers=auth(roles=[ADMIN_ROLE])).status_code == 404
+    with connect(dbname=database_ready) as conn:
+        rows = conn.execute(
+            "SELECT subject_kind, reviewer FROM label_feedback WHERE communication_id = %s",
+            (target,),
+        ).fetchall()
+    assert [(r["subject_kind"], r["reviewer"]) for r in rows] == [
+        ("action_for", "matthew@finishessolutions.example")
+    ]
+
+
+def test_review_queue_skips_judged_emails(client: TestClient) -> None:
+    query = f"/api/review/next?source=actionable&person={PAT}"
+    before = client.get(query, headers=auth()).json()
+    assert before["communication_id"] and before["in_source"] >= 1
+    client.put(
+        f"/api/feedback/{before['communication_id']}",
+        headers=auth(),
+        json={"kind": "label", "subject": "urgent", "applies": True},
+    )
+    after = client.get(query, headers=auth()).json()
+    assert after["remaining"] == before["remaining"] - 1
+    assert after["communication_id"] != before["communication_id"]
+    for source in ("recent", "risks", "label&label=invoice_receipt"):
+        assert client.get(f"/api/review/next?source={source}", headers=auth()).status_code == 200
+
+
+def test_calibration_report_shape(client: TestClient) -> None:
+    report = client.get("/api/calibration", headers=auth()).json()
+    assert {lb["label"] for lb in report["labels"]} >= {"spam", "project_risk"}
+    assert report["min_sample"] == 20 and isinstance(report["actions"], list)
+    urgent = next(lb for lb in report["labels"] if lb["label"] == "urgent")
+    assert urgent["judged"] >= 1 and urgent["suggestion"] is None
+
+
+def test_people_profiles_and_lab_person_check(client: TestClient, database_ready: str) -> None:
+    sam = "sam.new@finishessolutions.example"  # not in the fixture lists used above
+    bad = client.put(
+        "/api/people", headers=auth(), json={"key": "Sam!", "display_name": "Sam", "addresses": sam}
+    )
+    assert bad.status_code == 400
+    saved = client.put(
+        "/api/people",
+        headers=auth(),
+        json={
+            "key": "sam",
+            "display_name": "Sam New",
+            "addresses": sam,
+            "role": "Approves change orders",
+            "not_to_confuse": "Sam Old (sam.old@finishessolutions.example)",
+        },
+    ).json()
+    assert any(p["key"] == "sam" and p["addresses"] == [sam] for p in saved["people"])
+    row = latest_audit(database_ready, "person_profile_set")
+    assert row is not None and row["actor_id"] == "matthew@finishessolutions.example"
+    result = client.post(
+        "/api/lab/classify",
+        headers=auth(),
+        json={
+            "subject": "CO 9 for Building C",
+            "sender": "pm@builder.example",
+            "to": sam,
+            "body": "Sam, please approve change order 9 by Friday.",
+            "person": sam,
+        },
+    ).json()
+    check = result["person_check"]
+    assert check["person"] == "Sam New" and check["decision"] == "yes"
+    assert result["routing"]["action_item"] is True
+    assert result["routing"]["why"][0].startswith("Step 2 for Sam New")
+    no_profile = client.post(
+        "/api/lab/classify",
+        headers=auth(),
+        json={"subject": "Hello", "body": "Please confirm by Friday.", "person": PAT},
+    ).json()
+    assert no_profile["person_check"] is None
+
+
+def test_messages_filter_by_property_and_entity(client: TestClient) -> None:
+    acme = client.get("/api/messages?since_days=0&entity=acme", headers=auth()).json()
+    assert acme["results"]
+    assert all(any("acme" in e.lower() for e in r["entities_ai"]) for r in acme["results"])
+    lots = client.get("/api/messages?since_days=0&property=lot", headers=auth()).json()
+    everything = client.get("/api/messages?since_days=0", headers=auth()).json()
+    assert 0 < len(lots["results"]) < len(everything["results"])
+    nothing = client.get("/api/messages?since_days=0&entity=zzz-no-such", headers=auth()).json()
+    assert nothing["results"] == []
+
+
+def test_lab_returns_property_and_entity_names(client: TestClient) -> None:
+    result = client.post(
+        "/api/lab/classify",
+        headers=auth(),
+        json={
+            "subject": "Draw request for Example Commons",
+            "body": "Capital Company LLC asks you to approve the draw for Building B by Friday.",
+            "person": PAT,
+        },
+    ).json()
+    assert "Capital Company LLC" in result["entities_ai"]
+    assert {"Example Commons", "Building B"} <= set(result["properties_ai"])

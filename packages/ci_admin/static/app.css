@@ -155,3 +155,28 @@ dl.kv dd { margin: 0; }
 .lrow > *, .lab-out, .lab-out > * { min-width: 0; }
 @media (max-width: 700px) { .lrow { grid-template-columns: minmax(0, 1fr) auto auto; } .lrow .gauge { grid-column: 1 / -1; } }
 .verdict > * { min-width: 0; overflow-wrap: anywhere; }
+
+/* ---------- label check ---------- */
+.check { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 1000px) { .check { grid-template-columns: 1fr; } }
+.check > * { min-width: 0; }
+.check-card .empty { border: 1px dashed var(--line); border-radius: 10px; padding: 40px 20px; text-align: center; }
+.check-rows { display: flex; flex-direction: column; }
+.check-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: center;
+  padding: 6px 2px; border-bottom: 1px solid var(--line); }
+@media (max-width: 600px) { .check-row { grid-template-columns: minmax(0, 1fr) auto; } .check-row .judge-pair { grid-column: 1 / -1; } }
+.judge-pair { display: inline-flex; gap: 4px; }
+.judge { min-width: 76px; }
+.judge.on-yes { background: color-mix(in srgb, var(--good) 22%, var(--panel)); border-color: var(--good); font-weight: 600; }
+.judge.on-no { background: color-mix(in srgb, var(--bad) 18%, var(--panel)); border-color: var(--bad); font-weight: 600; }
+.action-q { border: 1px solid var(--accent); border-radius: 8px; padding: 10px 12px; margin: 12px 0;
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }
+.reasons { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; width: 100%; }
+.sample.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, var(--panel)); }
+h4 { margin: 12px 0 6px; font-size: 13px; }
+
+/* ---------- property and entity names ---------- */
+.names { margin: 2px 0; }
+.chip.name-prop { color: var(--accent); }
+.chip.name-ent { color: var(--text); border: 1px solid var(--line); }
+.chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }

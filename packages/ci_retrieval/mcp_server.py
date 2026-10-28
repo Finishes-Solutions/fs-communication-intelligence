@@ -40,6 +40,13 @@ _TRUST = (
     " indexed mail."
 )
 
+_NAMES = (
+    " Results include properties_ai and entities_ai: property/project and legal-entity names"
+    " the AI found written in each email."
+    " `property` and `entity` keep only emails whose names contain that text"
+    ' (case-insensitive, e.g. property="willow", entity="capital company").'
+)
+
 PrincipalSource = Callable[[], Principal]
 Connector = Callable[[], Connection]
 
@@ -66,7 +73,9 @@ def build_server(
         return datetime.now(UTC) - timedelta(days=days) if days else None
 
     @server.tool(
-        description="Search authorized, indexed company email by meaning and keywords." + _TRUST
+        description="Search authorized, indexed company email by meaning and keywords."
+        + _NAMES
+        + _TRUST
     )
     def search_email(
         query: str,
@@ -74,6 +83,8 @@ def build_server(
         sender: str | None = None,
         since_days: float | None = None,
         label: str | None = None,
+        property: str | None = None,
+        entity: str | None = None,
         limit: int = 10,
     ) -> dict[str, Any]:
         with connector() as conn:
@@ -83,7 +94,12 @@ def build_server(
                 query,
                 embedder,
                 retrieval.Filters(
-                    mailbox=mailbox, sender=sender, since=_since(since_days), label=label
+                    mailbox=mailbox,
+                    sender=sender,
+                    since=_since(since_days),
+                    label=label,
+                    property=property,
+                    entity=entity,
                 ),
                 limit,
             )
@@ -96,13 +112,15 @@ def build_server(
 
     @server.tool(
         description="List recent authorized emails, newest first, optionally by mailbox, "
-        "sender or label (e.g. cat_payment_billing)." + _TRUST
+        "sender or label (e.g. cat_payment_billing)." + _NAMES + _TRUST
     )
     def list_email(
         mailbox: str | None = None,
         sender: str | None = None,
         since_days: float | None = 1,
         label: str | None = None,
+        property: str | None = None,
+        entity: str | None = None,
         limit: int = 25,
     ) -> dict[str, Any]:
         with connector() as conn:
@@ -110,7 +128,12 @@ def build_server(
                 conn,
                 principal_of(),
                 retrieval.Filters(
-                    mailbox=mailbox, sender=sender, since=_since(since_days), label=label
+                    mailbox=mailbox,
+                    sender=sender,
+                    since=_since(since_days),
+                    label=label,
+                    property=property,
+                    entity=entity,
                 ),
                 limit,
             )
@@ -119,8 +142,12 @@ def build_server(
         description="Emails that ask a person to act or approve, plus project risks (schedule "
         "delays, cost overruns, disputes, liens, failed inspections, safety, quality, financing, "
         "parties not performing), from the last N hours. "
-        "`person` is one email address or several comma-separated addresses for someone with "
-        "more than one mailbox." + _TRUST
+        "`person` is one email address, several comma-separated addresses for someone with "
+        "more than one mailbox, or a profile key. When the person has a profile, a separate "
+        "per-person check decides which emails are really theirs (it tells apart people with "
+        "similar names, e.g. Chuck Sr. and Chuck Jr.): `actions` are its confident answers and "
+        "`possible` the ones it was unsure about; treat `possible` as needing confirmation."
+        + _TRUST
     )
     def list_actionable(
         person: str | None = None, hours: float = 24, include_risks: bool = True, limit: int = 50

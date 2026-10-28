@@ -16,6 +16,7 @@ is reused across mailbox copies. Logs carry ids, counts and codes only.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import threading
 import time
@@ -37,6 +38,8 @@ from ci_processing.classification import (
     ClassificationInput,
     ClassificationResult,
     Classifier,
+    KnownName,
+    with_known_names,
 )
 from ci_processing.embedding import Embedder
 from ci_processing.extraction import (
@@ -49,6 +52,7 @@ from ci_processing.extraction import (
 from ci_processing.originals import OriginalStore, OriginalStoreError
 from ci_processing.policy import Disposition, Outcome, classification_outcome, screening_gate
 from ci_processing.redaction import RedactionUnavailable, Redactor
+from ci_processing.routing import ROUTING_VERSION, PersonProfile, PersonRouter, rule_out
 from ci_processing.screening import Screener
 
 log = logging.getLogger(__name__)
@@ -69,6 +73,7 @@ class Backends:
     extraction_enabled: bool = False
     attachment_max_bytes: int = 25 * 1024 * 1024
     originals: OriginalStore | None = None  # keep original files (CLAUDE.md section 3a)
+    router: PersonRouter | None = None  # step 2 of action items (ci_processing.routing)
     # Set: mask sensitive numbers and credentials (SENSITIVE_DATA_POLICY=mask).
     # None: restrict messages that contain them instead.
     redactor: Redactor | None = None
@@ -275,12 +280,32 @@ def _participants(conn: Connection, communication_id: str) -> dict[str, list[str
     return out
 
 
+def known_names(conn: Connection) -> list[KnownName]:
+    """The administrator's canonical property/entity names (``ci names``), if any."""
+    return [
+        KnownName(r["kind"], r["canonical"], tuple(r["aliases"]))
+        for r in conn.execute(
+            "SELECT kind, canonical, aliases FROM known_names ORDER BY kind, lower(canonical)"
+        ).fetchall()
+    ]
+
+
 def _classify(
     conn: Connection, backends: Backends, item: ClassificationInput
 ) -> tuple[ClassificationResult, int | None]:
+    """Classify (or reuse an identical copy's result); names are mapped to canonical."""
+    known = known_names(conn)
+    result, reused_from = _classify_raw(conn, backends, item, known)
+    return with_known_names(result, known), reused_from
+
+
+def _classify_raw(
+    conn: Connection, backends: Backends, item: ClassificationInput, known: list[KnownName]
+) -> tuple[ClassificationResult, int | None]:
     model = getattr(backends.classifier, "model", type(backends.classifier).__name__)
     prior = conn.execute(
-        "SELECT id, summary, action_text, action_for, due_text, risk_text FROM classification_runs"
+        "SELECT id, summary, action_text, action_for, due_text, risk_text, properties, entities"
+        " FROM classification_runs"
         " WHERE input_sha256 = %s AND model = %s AND policy_version = %s AND reused_from IS NULL"
         " ORDER BY id LIMIT 1",
         (item.sha256(), model, POLICY_VERSION),
@@ -300,8 +325,10 @@ def _classify(
             tuple(prior["action_for"]),
             prior["due_text"],
             prior["risk_text"],
+            tuple(prior["properties"]),
+            tuple(prior["entities"]),
         ), int(prior["id"])
-    return backends.classifier.classify(item), None
+    return backends.classifier.classify(item, known), None
 
 
 def _store_classification(
@@ -315,7 +342,8 @@ def _store_classification(
         conn.execute(
             "INSERT INTO classification_runs (version_id, model, policy_version, input_sha256,"
             " disposition, reason_codes, summary, action_text, action_for, due_text, risk_text,"
-            " reused_from) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+            " reused_from, properties, entities)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
             " ON CONFLICT (version_id, model, policy_version) DO NOTHING RETURNING id",
             (
                 version_id,
@@ -330,6 +358,8 @@ def _store_classification(
                 result.due_text,
                 result.risk_text,
                 reused_from,
+                list(result.properties),
+                list(result.entities),
             ),
         ).fetchone()
     )["id"]
@@ -413,6 +443,79 @@ def _redact(conn: Connection, job: dict[str, Any], redactor: Redactor) -> None:
     )
 
 
+def _profile_version(profile: PersonProfile) -> str:
+    """Routing version plus a hash of the profile: editing a profile re-asks the model."""
+    digest = _sha(
+        json.dumps([profile.display_name, profile.addresses, profile.role, profile.not_to_confuse])
+    )[:12]
+    return f"{ROUTING_VERSION}:{digest}"
+
+
+def _route_people(
+    conn: Connection,
+    job: dict[str, Any],
+    router: PersonRouter,
+    result: ClassificationResult,
+    item: ClassificationInput,
+) -> None:
+    """Step 2: one decision per enabled person (rules first, then the model)."""
+    for p in conn.execute(
+        "SELECT key, display_name, addresses, role, not_to_confuse FROM action_people"
+        " WHERE enabled ORDER BY key"
+    ).fetchall():
+        profile = PersonProfile(
+            p["key"], p["display_name"], tuple(p["addresses"]), p["role"], p["not_to_confuse"]
+        )
+        version = _profile_version(profile)
+        ruled_out = rule_out(result, item, profile, job["mailbox_address"])
+        values: tuple[float | None, str, str | None, str | None, str]
+        if ruled_out:
+            values = (None, "no", None, ruled_out, "rules")
+        else:
+            prior = conn.execute(
+                "SELECT probability, decision, action_text, reason_code, model FROM action_routes"
+                " WHERE input_sha256 = %s AND person_key = %s AND policy_version = %s"
+                " AND model <> 'rules' LIMIT 1",
+                (item.sha256(), profile.key, version),
+            ).fetchone()
+            if prior:
+                values = (
+                    prior["probability"],
+                    prior["decision"],
+                    prior["action_text"],
+                    prior["reason_code"],
+                    prior["model"],
+                )
+            else:
+                route = router.route(item, profile)
+                values = (
+                    route.probability,
+                    route.decision.value,
+                    route.action,
+                    route.reason,
+                    route.model,
+                )
+        conn.execute(
+            "INSERT INTO action_routes (version_id, person_key, input_sha256, probability,"
+            " decision, action_text, reason_code, model, policy_version)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+            " ON CONFLICT (version_id, person_key) DO UPDATE SET"
+            " input_sha256 = EXCLUDED.input_sha256, probability = EXCLUDED.probability,"
+            " decision = EXCLUDED.decision, action_text = EXCLUDED.action_text,"
+            " reason_code = EXCLUDED.reason_code, model = EXCLUDED.model,"
+            " policy_version = EXCLUDED.policy_version, created_at = now()",
+            (
+                job["version_id"],
+                profile.key,
+                item.sha256(),
+                *values[:3],
+                values[3],
+                values[4],
+                version,
+            ),
+        )
+
+
 def process_version(conn: Connection, job: dict[str, Any], backends: Backends) -> Disposition:
     if backends.extraction_enabled and backends.graph is not None:
         _extract_attachments(conn, job, backends)
@@ -443,6 +546,8 @@ def process_version(conn: Connection, job: dict[str, Any], backends: Backends) -
             body, attachments = _texts(conn, job["version_id"])
     people = _participants(conn, job["communication_id"])
     sender = (people.get("from") or [""])[0]
+    result: ClassificationResult | None = None
+    item: ClassificationInput | None = None
     if outcome is None:
         item = ClassificationInput(
             subject=job["title"] or "",
@@ -474,6 +579,9 @@ def process_version(conn: Connection, job: dict[str, Any], backends: Backends) -
             (job["communication_id"],),
         )
         return outcome.disposition
+
+    if backends.router is not None and result is not None and item is not None:
+        _route_people(conn, job, backends.router, result, item)
 
     pieces = _chunks(job, sender, body, attachments)
     vectors = backends.embedder.embed([p[4] for p in pieces]) if pieces else []
@@ -588,7 +696,7 @@ def _requeue(conn: Connection, versions: list[Any]) -> int:
         " (SELECT id FROM classification_runs WHERE version_id = ANY(%s))",
         (versions,),
     )
-    for table in ("chunks", "classification_runs", "policy_decisions"):
+    for table in ("chunks", "classification_runs", "policy_decisions", "action_routes"):
         conn.execute(f"DELETE FROM {table} WHERE version_id = ANY(%s)", (versions,))  # noqa: S608
     conn.execute(
         "UPDATE communication_versions SET processing_state = 'fetched', hold_reason_code = NULL,"
