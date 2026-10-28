@@ -10,8 +10,9 @@ message.
 
 Obvious bulk and automated mail is skipped first, before any paid step
 (ci_processing.prefilter). Screening runs before classification; restricted
-and held content is never classified by AI, embedded or published. Classification of identical content
-is reused across mailbox copies. Logs carry ids, counts and codes only.
+and held content is never classified by AI, embedded or published.
+Classification of identical content is reused across mailbox copies. Logs carry
+ids, counts and codes only.
 """
 
 from __future__ import annotations
