@@ -5,15 +5,26 @@ The database comes from the standard ``PG*`` environment variables; locally,
 ``audit_events`` under ``--actor`` (default: ``CI_OPERATOR`` or the OS user).
 
     ci seed                                   load the synthetic fixture tenant (local only)
+    ci tenant init                            register the real tenant (GRAPH_TENANT_ID)
     ci inventory sync                         re-read mailboxes from the Graph backend
     ci scope list
     ci scope include ADDRESS [--dataset test|production] [--revoke]
+    ci scope include --all-enrolled           approve every reachable mailbox for test
     ci scope exclude ADDRESS --reason CODE    keep a whole mailbox out
     ci scope exclude --participant ADDRESS|@DOMAIN --reason CODE
                                               hide a person's or domain's mail in every mailbox
     ci scope exclude ... --revoke
     ci mode show
     ci mode set test|production|paused [--note TEXT]
+    ci grant add --me | --user OBJECT_ID      let a person read the enrolled corpus
+    ci grant list | ci grant revoke --user OBJECT_ID
+
+    ci capture --hours 24                     store mail received in the last N hours
+    ci process [--limit N] [--retry-failed]   extract, screen, classify, embed, publish
+    ci stats                                  counts by state, outcome, label, extraction
+    ci search "QUERY" [--mailbox ADDRESS]     authorized search as the signed-in person
+    ci actionable [--person ADDRESS] [--hours 24] [--out FILE.md]
+    ci mcp                                    MCP server over stdio for Claude
 
 Production changes (``--dataset production``, ``mode set production``) also
 need ``--confirm-production``.
@@ -29,7 +40,8 @@ from collections.abc import Sequence
 
 import psycopg
 
-from ci_cli.seed import CORPUS_KEY, seed
+from ci_cli import pipeline
+from ci_cli.seed import seed
 from ci_core.db import Connection, connect
 from ci_core.operator import (
     OperatorError,
@@ -41,9 +53,8 @@ from ci_core.operator import (
     set_mode,
 )
 from ci_core.runtime import RuntimeConfigError, active_config, eligible_mailboxes
-from ci_core.settings import DeploymentEnvironment, GraphBackend, SettingsError, load_settings
-from ci_email.fixture import FixtureGraphClient
-from ci_email.inventory import sync_inventory
+from ci_core.settings import DeploymentEnvironment, SettingsError, load_settings
+from ci_retrieval.identity import IdentityError
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -52,6 +63,8 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("seed", help="load the synthetic fixture tenant (local only)")
+    tenant = sub.add_parser("tenant").add_subparsers(dest="action", required=True)
+    tenant.add_parser("init", help="register the real tenant (GRAPH_TENANT_ID)")
 
     inventory = sub.add_parser("inventory").add_subparsers(dest="action", required=True)
     inventory.add_parser("sync", help="re-read mailboxes from the Graph backend")
@@ -59,7 +72,9 @@ def _parser() -> argparse.ArgumentParser:
     scope = sub.add_parser("scope").add_subparsers(dest="action", required=True)
     scope.add_parser("list")
     include = scope.add_parser("include", help="approve a mailbox for a dataset")
-    include.add_argument("address")
+    include_target = include.add_mutually_exclusive_group(required=True)
+    include_target.add_argument("address", nargs="?")
+    include_target.add_argument("--all-enrolled", action="store_true")
     include.add_argument("--dataset", choices=["test", "production"], default="test")
     include.add_argument("--revoke", action="store_true")
     include.add_argument("--confirm-production", action="store_true")
@@ -76,6 +91,33 @@ def _parser() -> argparse.ArgumentParser:
     set_.add_argument("mode", choices=["test", "production", "paused"])
     set_.add_argument("--note")
     set_.add_argument("--confirm-production", action="store_true")
+
+    grant = sub.add_parser("grant").add_subparsers(dest="action", required=True)
+    grant.add_parser("list")
+    for name in ("add", "revoke"):
+        g = grant.add_parser(name)
+        who = g.add_mutually_exclusive_group(required=True)
+        who.add_argument("--me", action="store_true")
+        who.add_argument("--user")
+
+    capture = sub.add_parser("capture", help="store mail received in the last N hours")
+    capture.add_argument("--hours", type=float, required=True)
+    capture.add_argument("--workers", type=int, default=6)
+    process = sub.add_parser("process", help="extract, screen, classify, embed, publish")
+    process.add_argument("--limit", type=int)
+    process.add_argument("--workers", type=int, default=4)
+    process.add_argument("--retry-failed", action="store_true")
+    sub.add_parser("stats")
+    search = sub.add_parser("search")
+    search.add_argument("query")
+    search.add_argument("--mailbox")
+    search.add_argument("--limit", type=int, default=10)
+    actionable = sub.add_parser("actionable")
+    actionable.add_argument("--person")
+    actionable.add_argument("--hours", type=float, default=24)
+    actionable.add_argument("--limit", type=int, default=50)
+    actionable.add_argument("--out")
+    sub.add_parser("mcp", help="MCP server over stdio for Claude Desktop / Claude Code")
     return parser
 
 
@@ -126,23 +168,7 @@ def _seed(conn: Connection, actor: str) -> None:
     print(f"seeded fixture tenant: {result.inventory.total} mailboxes in inventory")
     for state, count in sorted(result.inventory.states.items()):
         print(f"  {state}: {count}")
-    print("Next: messages are captured by the reconcile command (arrives in PR 5).")
-
-
-def _inventory_sync(conn: Connection, actor: str) -> None:
-    if load_settings().graph_backend is not GraphBackend.FIXTURE:
-        raise OperatorError("the real Graph client arrives in PR 5; use GRAPH_BACKEND=fixture")
-    graph = FixtureGraphClient.from_directory()
-    row = conn.execute(
-        "SELECT c.id::text AS connection_id, k.id::text AS corpus_id"
-        " FROM source_connections c, corpora k"
-        " WHERE c.provider = 'email' AND c.account_ref = %s AND k.corpus_key = %s",
-        (graph.tenant.tenant_id, CORPUS_KEY),
-    ).fetchone()
-    if row is None:
-        raise OperatorError("no fixture connection; run ci seed first")
-    summary = sync_inventory(conn, graph, row["connection_id"], row["corpus_id"], actor)
-    print(f"inventory: {summary.states}")
+    print("Next: ci capture --hours 24, then ci process.")
 
 
 def _run(args: argparse.Namespace, conn: Connection) -> None:
@@ -150,13 +176,21 @@ def _run(args: argparse.Namespace, conn: Connection) -> None:
     if args.command == "seed":
         _seed(conn, actor)
         return
+    if args.command == "tenant":
+        pipeline.tenant_init(conn, actor)
+        return
     if args.command == "inventory":
-        _inventory_sync(conn, actor)
+        pipeline.inventory_sync(conn, actor)
+        return
+    if args.command == "grant":
+        pipeline.grant(conn, args, actor)
         return
 
     if args.command == "scope":
         if args.action == "list":
             _scope_list(conn)
+        elif args.action == "include" and args.all_enrolled:
+            pipeline.include_all_enrolled(conn, actor)
         elif args.action == "include":
             _require_production_confirmation(args, args.dataset == "production")
             approve_mailbox(conn, args.address, args.dataset, actor, revoke=args.revoke)
@@ -183,12 +217,27 @@ def _run(args: argparse.Namespace, conn: Connection) -> None:
     print(f"mode is now {config.mode} (revision {config.revision})")
 
 
+_STANDALONE = {
+    "capture": pipeline.capture,
+    "process": pipeline.process,
+    "search": pipeline.search,
+    "actionable": pipeline.actionable,
+}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        with connect() as conn:
-            _run(args, conn)
-    except (OperatorError, SettingsError, RuntimeConfigError) as exc:
+        if args.command in _STANDALONE:
+            _STANDALONE[args.command](args)
+        elif args.command == "stats":
+            pipeline.stats()
+        elif args.command == "mcp":
+            pipeline.mcp()
+        else:
+            with connect() as conn:
+                _run(args, conn)
+    except (OperatorError, SettingsError, RuntimeConfigError, IdentityError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except psycopg.OperationalError as exc:

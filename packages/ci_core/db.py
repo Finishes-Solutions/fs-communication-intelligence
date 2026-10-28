@@ -1,19 +1,30 @@
 """PostgreSQL connections.
 
 Connection details come from the standard libpq ``PG*`` environment variables
-(``PGHOST``, ``PGPORT``, ``PGUSER``, ``PGPASSWORD``, ``PGDATABASE``), so the same
-code works against the local container and, later, Azure (where PR 8 supplies
-an Entra access token as the password). Every session uses ``search_path = ci``.
+(``PGHOST``, ``PGPORT``, ``PGUSER``, ``PGDATABASE`` and, locally, ``PGPASSWORD``).
+With ``DATABASE_AUTH=entra`` the password is an Entra access token for Azure
+Database for PostgreSQL, fetched with the signed-in Azure CLI user or the
+app's managed identity, and TLS is required. Every session uses
+``search_path = ci``.
+
+``role`` switches the session to one of the application roles
+(``ci_ingest``, ``ci_search``, ``ci_operator``) so code runs with that role's
+grants even when the login is an administrator.
 """
 
 from __future__ import annotations
 
-from typing import Any
+import os
+from typing import Any, Literal
 
 import psycopg
+from psycopg import sql
 from psycopg.rows import DictRow, dict_row
 
 Connection = psycopg.Connection[DictRow]
+AppRole = Literal["ci_ingest", "ci_search", "ci_operator"]
+
+POSTGRES_ENTRA_SCOPE = "https://ossrdbms-aad.database.windows.net/.default"
 
 
 def required(row: DictRow | None) -> DictRow:
@@ -23,7 +34,21 @@ def required(row: DictRow | None) -> DictRow:
     return row
 
 
-def connect(conninfo: str = "", **kwargs: Any) -> Connection:
-    return psycopg.connect(
+def _entra_password() -> str:
+    from azure.identity import DefaultAzureCredential
+
+    credential = DefaultAzureCredential(exclude_interactive_browser_credential=True)
+    return credential.get_token(POSTGRES_ENTRA_SCOPE).token
+
+
+def connect(conninfo: str = "", *, role: AppRole | None = None, **kwargs: Any) -> Connection:
+    if os.environ.get("DATABASE_AUTH", "password").lower() == "entra":
+        kwargs.setdefault("password", _entra_password())
+        kwargs.setdefault("sslmode", os.environ.get("PGSSLMODE", "require"))
+    conn = psycopg.connect(
         conninfo, row_factory=dict_row, options="-c search_path=ci,public", **kwargs
     )
+    if role is not None:
+        conn.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role)))
+        conn.commit()
+    return conn

@@ -58,6 +58,13 @@ class AuthMode(StrEnum):
     LOCAL_TEST = "local_test"
 
 
+class DatabaseAuth(StrEnum):
+    """``password`` uses PGPASSWORD; ``entra`` fetches an Entra token for Azure PostgreSQL."""
+
+    PASSWORD = "password"  # noqa: S105 - a mode name, not a credential
+    ENTRA = "entra"
+
+
 _FAKE_BACKENDS: dict[str, StrEnum] = {
     "classifier_backend": ClassifierBackend.FAKE,
     "embedder": EmbedderBackend.FAKE,
@@ -98,6 +105,30 @@ class Settings(BaseSettings):
     auth_mode: AuthMode = AuthMode.ENTRA
     email_include_sent: bool = True
     email_backfill_since: datetime | None = None
+    database_auth: DatabaseAuth = DatabaseAuth.PASSWORD
+
+    # Microsoft Graph (GRAPH_BACKEND=graph). App-only, certificate credential;
+    # the certificate file stays outside the repo.
+    graph_tenant_id: str | None = None
+    graph_client_id: str | None = None
+    graph_certificate_path: str | None = None
+
+    # Azure AI services in the Finishes tenant, reached with Entra tokens.
+    azure_openai_endpoint: str | None = None
+    azure_openai_api_version: str = "2024-10-21"
+    azure_openai_chat_deployment: str | None = None
+    azure_openai_embedding_deployment: str = "text-embedding-3-large"
+    azure_language_endpoint: str | None = None
+    azure_content_safety_endpoint: str | None = None
+
+    # Attachment text extraction without OCR or malware scanning: an exception
+    # to L11 approved by Matthew on 2026-10-28 for the first real-mail run.
+    attachment_extraction_enabled: bool = False
+    attachment_max_bytes: int = 25 * 1024 * 1024
+
+    # Local-only principal for the MCP server and CLI (AUTH_MODE=local_test).
+    local_test_principal_oid: str = "00000000-0000-0000-0000-00000000c0de"
+    local_test_principal_roles: str = "Communications.Reader.All"
 
     @model_validator(mode="before")
     @classmethod
@@ -156,6 +187,12 @@ class Settings(BaseSettings):
                 "CLASSIFIER_DECISIONS_API_APPROVED=true after data-processing approval (D-C1)"
             )
         return self
+
+    def require(self, *names: str) -> None:
+        """Raise ``SettingsError`` naming every unset setting a real backend needs."""
+        missing = [n.upper() for n in names if not getattr(self, n)]
+        if missing:
+            raise SettingsError(f"set {', '.join(missing)} (see local/azure-dev.env.example)")
 
     @property
     def initial_capture_allowed(self) -> bool:

@@ -15,6 +15,7 @@ Only synthetic data belongs in these fixtures.
 
 from __future__ import annotations
 
+import base64
 import copy
 import itertools
 import json
@@ -27,6 +28,7 @@ from urllib.parse import parse_qs, urlparse
 from pydantic import BaseModel, ConfigDict, Field
 
 from ci_email.graph import (
+    WELL_KNOWN_FOLDERS,
     DeltaItem,
     DeltaPage,
     DeltaTokenExpired,
@@ -143,7 +145,7 @@ class Fault:
     """An injected failure. ``times`` counts down; matching is on the given fields."""
 
     kind: Literal["throttle", "expired"]
-    operation: Literal["delta", "get_message"] = "delta"
+    operation: Literal["delta", "get_message", "list_messages"] = "delta"
     mailbox_id: str | None = None
     folder_id: str | None = None
     retry_after: float = 1.0
@@ -276,6 +278,26 @@ class FixtureGraphClient:
         self._rounds[token] = _Round(items, mailbox_id, folder_id, current)
         return self._page(token)
 
+    def list_messages(self, mailbox_id: str, *, received_since: datetime) -> list[dict[str, Any]]:
+        self._count("list_messages")
+        mailbox = self._mailbox(mailbox_id)
+        self._raise_fault("list_messages", mailbox_id, None, delta_link=False)
+        found = []
+        for loc in self._located.values():
+            received = datetime.fromisoformat(loc.fixture.message["receivedDateTime"])
+            if loc.mailbox_id == mailbox_id and received >= received_since:
+                message = copy.deepcopy(loc.fixture.message)
+                message["parentFolderId"] = mailbox.folder_id(loc.folder)
+                found.append(message)
+        return found
+
+    def well_known_folder_ids(self, mailbox_id: str) -> dict[str, str]:
+        self._count("well_known_folder_ids")
+        mailbox = self._mailbox(mailbox_id)
+        return {
+            name: mailbox.folder_id(name) for name in WELL_KNOWN_FOLDERS if name in mailbox.folders
+        }
+
     def get_message(self, mailbox_id: str, message_id: str) -> dict[str, Any]:
         self._count("get_message")
         mailbox = self._mailbox(mailbox_id)
@@ -293,7 +315,21 @@ class FixtureGraphClient:
         loc = self._located.get((mailbox_id, message_id))
         if loc is None:
             raise ItemNotFound(f"message {message_id} not found")
-        return [copy.deepcopy(a) for a in loc.fixture.attachments]
+        return [
+            {k: v for k, v in a.items() if k != "contentBase64"} for a in loc.fixture.attachments
+        ]
+
+    def get_attachment_bytes(self, mailbox_id: str, message_id: str, attachment_id: str) -> bytes:
+        """Fixture attachments carry ``contentBase64``; those without it yield empty bytes."""
+        self._count("get_attachment_bytes")
+        self._mailbox(mailbox_id)
+        loc = self._located.get((mailbox_id, message_id))
+        if loc is None:
+            raise ItemNotFound(f"message {message_id} not found")
+        for a in loc.fixture.attachments:
+            if a["id"] == attachment_id:
+                return base64.b64decode(a.get("contentBase64", ""))
+        raise ItemNotFound(f"attachment {attachment_id} not found")
 
     # -- internals ----------------------------------------------------------
 

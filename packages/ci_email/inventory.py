@@ -21,7 +21,13 @@ from dataclasses import dataclass
 
 from ci_core.db import Connection, required
 from ci_core.operator import audit
-from ci_email.graph import GraphClient, Mailbox, MailboxAccessDenied, MailboxNotFound
+from ci_email.graph import (
+    GraphClient,
+    GraphError,
+    Mailbox,
+    MailboxAccessDenied,
+    MailboxNotFound,
+)
 
 POLICY_VERSION = "inventory-v1"
 _RECIPIENT_TYPE = {
@@ -30,6 +36,7 @@ _RECIPIENT_TYPE = {
     "room": "RoomMailbox",
     "equipment": "EquipmentMailbox",
     "other": "Other",
+    "unknown": "Other",
 }
 
 
@@ -50,7 +57,7 @@ def _observe(conn: Connection, graph: GraphClient, mailbox: Mailbox) -> tuple[st
     ).fetchone()
     if excluded:
         return "excluded_by_rule", "operator_exclusion"
-    if mailbox.purpose not in ("user", "shared"):
+    if mailbox.purpose not in ("user", "shared", "unknown"):
         return "excluded_by_rule", f"recipient_type_{mailbox.purpose}"
     try:
         graph.list_folders(mailbox.id)
@@ -58,6 +65,8 @@ def _observe(conn: Connection, graph: GraphClient, mailbox: Mailbox) -> tuple[st
         return "no_exchange_access", "graph_403"
     except MailboxNotFound:
         return "no_mailbox", "graph_404"
+    except GraphError as exc:
+        return "no_exchange_access", f"graph_error_{type(exc).__name__.lower()}"
     return "enrolled", None
 
 

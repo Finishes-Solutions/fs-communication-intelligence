@@ -29,7 +29,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, Protocol
 
-MailboxPurpose = Literal["user", "shared", "room", "equipment", "other"]
+# "unknown": the real client lists directory users and cannot tell user from
+# shared mailboxes without an extra mailbox-settings permission.
+MailboxPurpose = Literal["user", "shared", "room", "equipment", "other", "unknown"]
 
 # Well-known folders capture never reads (CLAUDE.md section 6.2). Sent Items
 # is skipped only when EMAIL_INCLUDE_SENT is false.
@@ -37,6 +39,14 @@ SKIPPED_WELL_KNOWN_FOLDERS = frozenset(
     {"deleteditems", "junkemail", "drafts", "outbox", "conversationhistory", "syncissues"}
 )
 SENT_ITEMS = "sentitems"
+WELL_KNOWN_FOLDERS = (*sorted(SKIPPED_WELL_KNOWN_FOLDERS), SENT_ITEMS)
+
+# Message fields capture reads (CLAUDE.md section 6.3).
+MESSAGE_SELECT = (
+    "id,internetMessageId,conversationId,changeKey,subject,from,sender,toRecipients,"
+    "ccRecipients,bccRecipients,receivedDateTime,sentDateTime,body,uniqueBody,"
+    "hasAttachments,webLink,isDraft,parentFolderId"
+)
 
 
 @dataclass(frozen=True)
@@ -111,12 +121,28 @@ class GraphClient(Protocol):
         """Start a round with ``link=None`` or continue from a next/delta link."""
         ...
 
+    def list_messages(self, mailbox_id: str, *, received_since: datetime) -> list[dict[str, Any]]:
+        """Messages received since a time, in every folder, as Graph JSON (MESSAGE_SELECT).
+
+        Used for bounded windows (``ci capture --hours``). Continuous capture
+        uses per-folder delta.
+        """
+        ...
+
+    def well_known_folder_ids(self, mailbox_id: str) -> dict[str, str]:
+        """Ids of the WELL_KNOWN_FOLDERS that exist in this mailbox."""
+        ...
+
     def get_message(self, mailbox_id: str, message_id: str) -> dict[str, Any]:
         """The message as Graph JSON for the fields in CLAUDE.md section 6.3."""
         ...
 
     def list_attachments(self, mailbox_id: str, message_id: str) -> list[dict[str, Any]]:
-        """Attachment metadata only (no ``contentBytes``) in E1."""
+        """Attachment metadata (no ``contentBytes``), including ``@odata.type``."""
+        ...
+
+    def get_attachment_bytes(self, mailbox_id: str, message_id: str, attachment_id: str) -> bytes:
+        """Raw bytes of a file attachment."""
         ...
 
 
