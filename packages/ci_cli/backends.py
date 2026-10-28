@@ -20,6 +20,7 @@ from ci_processing.classification import Classifier, FakeClassifier
 from ci_processing.embedding import Embedder, FakeEmbedder
 from ci_processing.originals import AzureBlobStore, DirectoryStore, OriginalStore
 from ci_processing.redaction import FakeRedactor, Redactor
+from ci_processing.routing import FakePersonRouter, PersonRouter
 from ci_processing.screening import FakeScreener, Screener
 
 
@@ -109,6 +110,20 @@ def original_store(settings: Settings) -> OriginalStore | None:
     return None
 
 
+def person_router(settings: Settings) -> PersonRouter:
+    """Step 2 of action items. It only runs for people with a profile in action_people."""
+    if settings.classifier_backend is ClassifierBackend.FAKE:
+        return FakePersonRouter()
+    settings.require("azure_openai_endpoint", "azure_openai_chat_deployment")
+    from ci_processing.azure import AzureOpenAIPersonRouter
+
+    return AzureOpenAIPersonRouter(
+        settings.azure_openai_endpoint or "",
+        settings.azure_openai_chat_deployment or "",
+        settings.azure_openai_api_version,
+    )
+
+
 def processing_backends(settings: Settings) -> Backends:
     return Backends(
         screener=screener(settings),
@@ -119,4 +134,5 @@ def processing_backends(settings: Settings) -> Backends:
         attachment_max_bytes=settings.attachment_max_bytes,
         originals=original_store(settings) if settings.attachment_store_originals else None,
         redactor=redactor(settings),
+        router=person_router(settings),
     )

@@ -34,6 +34,10 @@ The database comes from the standard ``PG*`` environment variables; locally,
                     [--processing-on|--processing-off]
     ci run-capture [--hours 24]               capture at the next 5-minute tick
 
+    ci people list                            whose action items get a per-person check
+    ci people set chuck_sr --name "Chuck Sr." --address chuckc@finishesetc.net
+                  [--role TEXT] [--not-to-confuse TEXT] [--disable]
+
 Production changes (``--dataset production``, ``mode set production``) also
 need ``--confirm-production``.
 """
@@ -60,7 +64,9 @@ from ci_core.operator import (
     exclude_participant,
     list_mailboxes,
     list_participant_exclusions,
+    list_people,
     set_mode,
+    set_person,
 )
 from ci_core.runtime import RuntimeConfigError, active_config, eligible_mailboxes
 from ci_core.settings import DeploymentEnvironment, SettingsError, load_settings
@@ -170,6 +176,16 @@ def _parser() -> argparse.ArgumentParser:
     processing.add_argument(
         "--processing-off", dest="processing_enabled", action="store_const", const=False
     )
+    people = sub.add_parser("people", help="whose action items get a per-person check")
+    people_action = people.add_subparsers(dest="action", required=True)
+    people_action.add_parser("list")
+    pset = people_action.add_parser("set")
+    pset.add_argument("key", help="short id, e.g. chuck_sr")
+    pset.add_argument("--name", required=True, help='as people write it, e.g. "Chuck Sr."')
+    pset.add_argument("--address", action="append", required=True, help="repeat for each")
+    pset.add_argument("--role", default="")
+    pset.add_argument("--not-to-confuse", default="", help="who they are not, e.g. Chuck Jr.")
+    pset.add_argument("--disable", action="store_true")
     run_now = sub.add_parser("run-capture", help="ask the ingestion app to capture now")
     run_now.add_argument("--hours", type=float, help="look-back (default: the schedule's window)")
     return parser
@@ -303,6 +319,27 @@ def _run(args: argparse.Namespace, conn: Connection) -> None:
 
     if args.command == "schedule":
         _schedule(args, conn, actor)
+        return
+    if args.command == "people":
+        if args.action == "set":
+            set_person(
+                conn,
+                actor,
+                args.key,
+                display_name=args.name,
+                addresses=args.address,
+                role=args.role,
+                not_to_confuse=args.not_to_confuse,
+                enabled=not args.disable,
+            )
+        for person in list_people(conn):
+            state = "on " if person["enabled"] else "off"
+            print(
+                f"{state} {person['key']:<14} {person['display_name']:<22} "
+                f"{', '.join(person['addresses'])}"
+            )
+            if person["not_to_confuse"]:
+                print(f"{'':19}not to confuse with: {person['not_to_confuse']}")
         return
     if args.command == "run-capture":
         ops.request_run(conn, actor, args.hours)

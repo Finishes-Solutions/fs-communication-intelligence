@@ -340,7 +340,8 @@ async function showMessage(id, holder) {
     h("h3", {}, m.subject || "(no subject)"),
     h("div", { class: "muted" }, `${m.sender || "?"} → ${m.mailbox} · ${when(m.received_at)}`),
     h("div", { class: "row" }, safeLink(m.web_link, "Open in Outlook"),
-      h("button", { onclick: () => { location.hash = `#lab?id=${encodeURIComponent(id)}`; } }, "Re-run in lab")),
+      h("button", { onclick: () => { location.hash = `#lab?id=${encodeURIComponent(id)}`; } }, "Re-run in lab"),
+      h("button", { onclick: () => { location.hash = `#check?id=${encodeURIComponent(id)}`; } }, "Check labels")),
     h("p", { class: "note" }, "Outlook opens the message only if your account can open that mailbox."),
     h("div", {}, chips(m.labels), chips(m.uncertain_labels, "warn"), m.review_flag ? h("span", { class: "chip warn" }, "review") : null),
     aiBlock(m),
@@ -369,19 +370,58 @@ async function actionablePage() {
     h("form", { class: "row", onsubmit: e => { e.preventDefault(); location.hash = `#actionable?${new URLSearchParams({ person: person.value, hours: hours.value })}`; } },
       field("Person (comma-separate several addresses; empty = everyone)", person), field("Window", hours),
       h("button", { class: "primary", type: "submit" }, "Show")),
-    h("p", { class: "note" }, "The same list Chuck's agents get from list_actionable. AI proposals, not approvals."), out);
+    h("p", { class: "note" }, "The same list Chuck's agents get from list_actionable. AI proposals, not approvals. ",
+      h("a", { href: `#check?${new URLSearchParams({ source: "actionable", person: person.value })}` }, "Check these one by one →")), out);
   const d = await api("/api/actionable?" + new URLSearchParams({ person: person.value, hours: hours.value }));
   const detail = h("div");
   const cols = (extra) => [["Received", r => short(r.received_at)],
     ["Message", r => h("div", {}, h("strong", {}, r.subject || "(no subject)"),
       h("div", { class: "muted" }, `${r.sender || "?"} → ${r.mailbox}`), extra(r) ? h("div", {}, extra(r)) : null)]];
-  out.replaceChildren(h("div", { class: "split" },
-    h("div", {},
-      h("h3", {}, `Action items (${d.actions.length})`),
-      table(cols(r => [r.action_ai, r.due_ai && `due: ${r.due_ai}`].filter(Boolean).join(" · ")), d.actions, r => showMessage(r.communication_id, detail)),
-      h("h3", {}, `Project risks (${d.risks.length})`),
-      table(cols(r => r.risk_ai), d.risks, r => showMessage(r.communication_id, detail))),
-    detail));
+  const actionLine = r => [r.action_ai, r.due_ai && `due: ${r.due_ai}`,
+    r.person_check_ai && `${r.person_check_ai.reason || ""} ${r.person_check_ai.probability != null ? Number(r.person_check_ai.probability).toFixed(2) : ""}`.trim()]
+    .filter(Boolean).join(" · ");
+  const who = d.person_check ? `for ${d.person_check.name}` : d.person ? `for ${d.person}` : "(everyone)";
+  out.replaceChildren(
+    h("p", { class: "note" }, d.person_check
+      ? `Step 2 person check is on for ${d.person_check.name}: only emails it judged to be theirs are listed. "Possible" are the ones it was unsure about.`
+      : d.person ? "No person profile matches, so a simpler rule decides (named in the AI's 'action for', or sent to them alone). Add a profile below for the person check." : ""),
+    h("div", { class: "split" },
+      h("div", {},
+        h("h3", {}, `Action items ${who} (${d.actions.length})`),
+        table(cols(actionLine), d.actions, r => showMessage(r.communication_id, detail)),
+        (d.possible || []).length ? h("div", {}, h("h3", {}, `Possible (${d.possible.length})`),
+          table(cols(actionLine), d.possible, r => showMessage(r.communication_id, detail))) : null,
+        h("h3", {}, `Project risks (${d.risks.length})`),
+        table(cols(r => r.risk_ai), d.risks, r => showMessage(r.communication_id, detail))),
+      detail),
+    await peoplePanel());
+}
+
+async function peoplePanel() {
+  const d = await api("/api/people");
+  const f = {
+    key: h("input", { placeholder: "chuck_sr" }), display_name: h("input", { placeholder: "Chuck Sr." }),
+    addresses: h("input", { placeholder: "chuckc@finishesetc.net, other@…", class: "wide" }),
+    role: h("input", { placeholder: "e.g. CEO and owner; approves draws, contracts, change orders", class: "wide" }),
+    not_to_confuse: h("textarea", { placeholder: "e.g. Chuck Jr. (address), operations; also called Chuck. Mail to him is not Chuck Sr.'s.", class: "short" }),
+    enabled: h("input", { type: "checkbox", checked: true }),
+  };
+  const fill = p => { f.key.value = p.key; f.display_name.value = p.display_name; f.addresses.value = p.addresses.join(", ");
+    f.role.value = p.role; f.not_to_confuse.value = p.not_to_confuse; f.enabled.checked = p.enabled; };
+  async function save() {
+    await post("/api/people", { key: f.key.value.trim(), display_name: f.display_name.value, addresses: f.addresses.value,
+      role: f.role.value, not_to_confuse: f.not_to_confuse.value, enabled: f.enabled.checked }, "PUT");
+    toast("Saved. New and reprocessed emails use it; run ci process --remask --limit 0 to apply it to existing mail."); route();
+  }
+  return h("div", { class: "panel" },
+    h("h3", {}, "People with a person check (step 2)"),
+    h("p", { class: "note" }, "Each person gets a separate AI check of whether an email is really their action item. Describe who they are not (for example Chuck Jr.), so similar names aren't mixed up."),
+    table([["On", p => p.enabled ? "yes" : "no"], ["Key", p => p.key], ["Name", p => p.display_name], ["Addresses", p => p.addresses.join(", ")],
+      ["Not to confuse with", p => h("span", { class: "muted small" }, p.not_to_confuse || "—")], ["", p => h("button", { onclick: () => fill(p) }, "Edit")]], d.people),
+    h("div", { class: "grid2" }, field("Key", f.key), field("Name as people write it", f.display_name)),
+    field("Email addresses (comma-separated)", f.addresses), field("Role", f.role),
+    field("Not to be confused with", f.not_to_confuse),
+    h("div", { class: "row" }, h("label", { class: "inline" }, f.enabled, "Person check on"), h("button", { class: "primary", onclick: save }, "Save person")));
 }
 
 async function unpublishedPage() {
@@ -645,6 +685,9 @@ function labResult(r, person, message) {
       { index: "good", review: "warn", restricted: "bad", held: "warn", not_indexed: "muted" }[r.routing.disposition] || "muted"],
     ["Routing", r.routing.action_item ? "action item" : r.routing.risk_item ? "risk" : "none", r.routing.action_item || r.routing.risk_item ? "good" : "muted"],
   ];
+  if (r.person_check) steps.push([`Person check: ${r.person_check.person}`,
+    `${r.person_check.decision}${r.person_check.probability != null ? " " + Number(r.person_check.probability).toFixed(2) : ""} · ${r.person_check.reason || ""}`,
+    { yes: "good", review: "warn", no: "muted", unresolved: "warn" }[r.person_check.decision] || "muted"]);
   const onlyInteresting = h("input", { type: "checkbox", checked: true });
   const labelsBox = h("div");
   const stored = r.stored ? new Set(r.stored.labels) : null;
@@ -690,9 +733,144 @@ function labResult(r, person, message) {
     message ? h("div", { class: "panel" }, h("h3", {}, "Files"), filesBlock(message.communication_id, message)) : null);
 }
 
+// ---------- label check ------------------------------------------------------
+
+const REASON_TEXT = { not_for_person: "Someone else's", fyi_only: "FYI only", automated: "Automated",
+  group_email: "Group email", already_handled: "Already handled", other: "Other" };
+
+async function checkPage() {
+  const p = new URLSearchParams(location.hash.split("?")[1] || "");
+  const person = h("input", { value: p.get("person") ?? DEFAULT_PERSON, class: "wide" });
+  const source = h("select", {}, [["actionable", "Action items for the person"], ["recent", "Recent emails"],
+    ["risks", "Project risks"], ["label", "Emails with a label…"]]
+    .map(([v, t]) => h("option", { value: v, selected: v === (p.get("source") || "actionable") }, t)));
+  const label = labelSelect(p.get("label") || "action_required");
+  const status = h("span", { class: "muted small" });
+  const card = h("div", { class: "check-card" }, h("div", { class: "empty" }, h("p", { class: "muted" }, "Loading…")));
+  const calib = h("div", {}, h("p", { class: "muted" }, "Loading…"));
+  const syncLabel = () => { label.hidden = source.value !== "label"; };
+  source.addEventListener("change", syncLabel); syncLabel();
+
+  async function next() {
+    const q = new URLSearchParams({ source: source.value, person: person.value });
+    if (source.value === "label" && label.value) q.set("label", label.value);
+    const r = await api("/api/review/next?" + q);
+    status.textContent = `${r.remaining} of ${r.in_source} in this list not checked yet`;
+    if (!r.communication_id) {
+      card.replaceChildren(h("div", { class: "empty" }, h("div", { class: "big" }, "All checked"),
+        h("p", { class: "muted" }, "Nothing left in this list. Pick another list above.")));
+      return;
+    }
+    await load(r.communication_id);
+  }
+  async function load(id) {
+    card.replaceChildren(h("div", { class: "empty" }, h("div", { class: "spinner" })));
+    const d = await api(`/api/feedback/${encodeURIComponent(id)}`);
+    card.replaceChildren(checkCard(id, d, person.value.split(",")[0].trim().toLowerCase(), next, loadCalibration));
+  }
+  async function loadCalibration() {
+    try { calib.replaceChildren(calibrationView(await api("/api/calibration"))); }
+    catch (e) { calib.replaceChildren(h("p", { class: "status-failed" }, e.message)); }
+  }
+
+  show(
+    h("div", { class: "lab-head" }, h("div", {}, h("h2", {}, "Label check"),
+      h("p", { class: "muted" }, "Mark whether each label really applies. Your answers measure how accurate the AI is and set better thresholds."))),
+    h("form", { class: "row", onsubmit: e => { e.preventDefault(); store.set("check_person", person.value); next(); } },
+      field("Check", source), label, field("Action items for", person),
+      h("button", { class: "primary", type: "submit" }, "Next email"), status),
+    h("div", { class: "check" }, card, h("div", { class: "panel" }, h("h3", {}, "How accurate is it so far?"), calib)));
+  if (p.get("id")) await load(p.get("id")); else await next();
+  loadCalibration();
+}
+
+function checkCard(id, d, person, next, refresh) {
+  const m = d.email;
+  const scores = Object.fromEntries((m.scores || []).map(s => [s.label, s]));
+  const state = { labels: { ...d.labels }, action: d.action_for[person] || null };
+  const saved = h("span", { class: "muted small" });
+  async function save(kind, subject, applies, reason) {
+    saved.textContent = "Saving…";
+    try {
+      await api(`/api/feedback/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify({ kind, subject, applies, reason }) });
+      saved.textContent = "Saved"; refresh();
+    } catch (e) { saved.textContent = e.message; }
+  }
+  function pair(current, onSet, yesText, noText) {
+    const yes = h("button", { class: "judge" + (current === true ? " on-yes" : "") }, yesText);
+    const no = h("button", { class: "judge" + (current === false ? " on-no" : "") }, noText);
+    yes.addEventListener("click", () => onSet(current === true ? null : true));
+    no.addEventListener("click", () => onSet(current === false ? null : false));
+    return h("div", { class: "judge-pair" }, yes, no);
+  }
+  const actionBox = h("div");
+  function drawAction() {
+    const cur = state.action ? state.action.applies : null;
+    actionBox.replaceChildren(h("div", { class: "action-q" },
+      h("div", {}, h("strong", {}, `Is this an action item for ${person}?`),
+        h("div", { class: "muted small" }, (m.action_for_ai || []).length ? `AI says it's for: ${m.action_for_ai.join(", ")}` : "AI named nobody specific.")),
+      pair(cur, v => { state.action = v === null ? null : { applies: v, reason: null }; drawAction(); save("action_for", person, v, null); }, "Yes, his", "No"),
+      cur === false ? h("div", { class: "reasons" }, h("span", { class: "muted small" }, "Why not?"),
+        d.reasons.map(r => h("button", { class: "sample" + (state.action.reason === r ? " on" : ""),
+          onclick: () => { state.action.reason = r; drawAction(); save("action_for", person, false, r); } }, REASON_TEXT[r] || r))) : null));
+  }
+  if (person) drawAction();
+  const rows = GROUPS.flatMap(([name, members]) => {
+    const list = (LABELS.length ? LABELS.map(l => l.name) : Object.keys(scores))
+      .filter(n => members ? members.includes(n) : n.startsWith("cat_"));
+    return [h("div", { class: "lgroup-title" }, name), ...list.map(n => {
+      const s = scores[n] || {};
+      const holder = h("div");
+      const draw = () => holder.replaceChildren(pair(state.labels[n] ?? null, v => {
+        if (v === null) delete state.labels[n]; else state.labels[n] = v; draw(); save("label", n, v, null);
+      }, "Applies", "Doesn't"));
+      draw();
+      const q = (LABELS.find(l => l.name === n) || {}).question || "";
+      return h("div", { class: "check-row" },
+        h("div", { class: "lname" }, h("strong", {}, n.replace(/^cat_/, "")), h("div", { class: "muted small" }, q)),
+        h("span", { class: `chip d-${s.decision || "unresolved"}` }, `AI: ${s.decision || "—"}${s.probability != null ? " " + Number(s.probability).toFixed(2) : ""}`),
+        holder);
+    })];
+  });
+  const body = (m.text || []).find(t => t.source === "body");
+  const bodyPre = h("pre", { class: "text", hidden: true }, body ? body.text : "(no body text)");
+  return h("div", { class: "panel" },
+    h("div", { class: "row spread" }, h("h3", {}, m.subject || "(no subject)"), saved),
+    h("div", { class: "muted" }, `${m.sender || "?"} → ${m.mailbox} · ${when(m.received_at)}`),
+    h("div", { class: "muted small" }, "To: " + m.participants.filter(p => p.role === "to").map(p => p.email_normalized).join(", ")
+      + (m.participants.some(p => p.role === "cc") ? " · Cc: " + m.participants.filter(p => p.role === "cc").map(p => p.email_normalized).join(", ") : "")),
+    aiBlock(m),
+    h("div", { class: "row" }, h("button", { onclick: () => { bodyPre.hidden = !bodyPre.hidden; } }, "Show email text"),
+      safeLink(m.web_link, "Open in Outlook")),
+    bodyPre,
+    person ? actionBox : null,
+    h("h3", {}, "Labels"), h("div", { class: "check-rows" }, rows),
+    h("div", { class: "row spread" }, h("span", { class: "muted small" }, "Click an answer again to clear it."),
+      h("button", { class: "primary", onclick: next }, "Next email →")));
+}
+
+function calibrationView(c) {
+  const pct = v => v == null ? "—" : `${Math.round(v * 100)}%`;
+  const actions = c.actions.length ? table([["Person", r => r.person], ["Checked", r => r.judged],
+    ["Really theirs", r => `${r.correct} (${pct(r.precision)})`],
+    ["Why not", r => h("div", {}, counts(Object.fromEntries(Object.entries(r.reasons).map(([k, v]) => [REASON_TEXT[k] || k, v]))))]], c.actions)
+    : h("p", { class: "muted" }, "No action items checked yet.");
+  const judged = c.labels.filter(l => l.judged);
+  return h("div", {},
+    h("h4", {}, "Action items"), actions,
+    h("h4", {}, "Labels"),
+    judged.length ? table([["Label", l => l.label], ["Checked", l => l.judged],
+      ["Right when AI says yes", l => pct(l.precision)], ["Found of the real ones", l => pct(l.recall)],
+      ["Unsure", l => l.uncertain],
+      ["Suggested yes ≥", l => l.suggestion ? h("span", { title: `precision ${pct(l.suggestion.precision)}, recall ${pct(l.suggestion.recall)}` },
+        `${l.suggestion.yes_at_or_above} (now ${l.yes_at_or_above})`) : h("span", { class: "muted small" }, `needs ${l.needed} more`)]], judged)
+      : h("p", { class: "muted" }, "No labels checked yet."),
+    h("p", { class: "note" }, `A threshold suggestion appears once a label has ${c.min_sample} checked emails with at least 5 of each answer. Suggestions are not applied automatically.`));
+}
+
 // ---------- router -----------------------------------------------------------
 
-const PAGES = { overview, schedule: schedulePage, mailboxes: mailboxesPage, messages: messagesPage,
+const PAGES = { check: checkPage, overview, schedule: schedulePage, mailboxes: mailboxesPage, messages: messagesPage,
   actionable: actionablePage, unpublished: unpublishedPage, lab: labPage };
 
 async function route() {

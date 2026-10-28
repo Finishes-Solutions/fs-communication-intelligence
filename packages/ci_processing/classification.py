@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
-POLICY_VERSION = "labels-2026-10-28-uncalibrated"
+POLICY_VERSION = "labels-2026-10-28b-uncalibrated"  # b: stricter action items
 
 
 class Decision(StrEnum):
