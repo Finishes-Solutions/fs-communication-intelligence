@@ -184,6 +184,8 @@ def process(args: argparse.Namespace) -> None:
     if args.retry_failed:
         with connect(role="ci_ingest") as conn:
             print(f"requeued {retry_failed(conn)} failed version(s)")
+    if args.limit == 0:  # requeue only; the Function App's process timer picks them up
+        return
     counts = process_all(
         lambda: connect(role="ci_ingest"),
         backends.processing_backends(settings),

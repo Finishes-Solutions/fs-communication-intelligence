@@ -1,4 +1,6 @@
-# Run: Last 24 Hours of Company Email
+# Run: Last 24 Hours of Company Email (laptop route)
+
+> **Superseded for the hosted setup by [DEPLOY_AZURE.md](DEPLOY_AZURE.md)** (2026-10-28): mail is read by the ingestion managed identity in a Function App and the MCP endpoint is hosted. Keep this page only for running the pipeline from a Mac, for example for debugging. Don't create the certificate app registration below unless you need that.
 
 Goal: capture every mailbox's mail from the last 24 hours, extract attachment text, screen and classify it, make it searchable, and produce Chuck's list of actionable items and risks, from Claude (MCP) or a Markdown report.
 
