@@ -214,3 +214,16 @@ def exclude_participant(
     if row is None:
         raise OperatorError(f"{pattern} is already excluded")
     audit(conn, actor, "participant_exclude", "exclusion", row["id"], {"reason_code": reason})
+
+
+def approve_all_enrolled(conn: Connection, dataset: Dataset, actor: str) -> int:
+    """Approve every reachable (``enrolled``) mailbox not yet approved; exclusions still win."""
+    column = {"test": "test_approved", "production": "production_approved"}[dataset]
+    rows = conn.execute(
+        "SELECT m.primary_smtp_address AS address FROM source_scopes s"  # noqa: S608
+        f" JOIN email_mailboxes m ON m.scope_id = s.id WHERE s.scope_state = 'enrolled'"
+        f" AND NOT s.{column} ORDER BY 1"
+    ).fetchall()
+    for r in rows:
+        approve_mailbox(conn, r["address"], dataset, actor)
+    return len(rows)

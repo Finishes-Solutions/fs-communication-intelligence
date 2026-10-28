@@ -1,0 +1,421 @@
+"""The admin console API: who gets in, what each page returns, and that content
+comes only through the caller's own grants. Tokens are signed with a throwaway
+RSA key standing in for Entra's; everything else is the production code path.
+"""
+
+import time
+from collections.abc import Iterator
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import Any
+
+import jwt
+import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
+from starlette.testclient import TestClient
+
+from ci_admin.api import ADMIN_ROLE, ADMIN_SCOPE, build_admin_app
+from ci_admin.lab import LabBackends
+from ci_cli.seed import seed
+from ci_core.db import AppRole, Connection, connect
+from ci_core.settings import Settings
+from ci_email.capture import capture_window
+from ci_email.fixture import FixtureGraphClient
+from ci_email.process import (
+    Backends,
+    process_all,
+    requeue_failed_attachments,
+    store_missing_originals,
+)
+from ci_processing.classification import FakeClassifier
+from ci_processing.embedding import FakeEmbedder
+from ci_processing.originals import DirectoryStore
+from ci_processing.screening import FakeScreener
+from ci_retrieval.entra import EntraTokenVerifier
+from ci_retrieval.identity import READER_ALL
+
+TENANT = "11111111-1111-1111-1111-111111111111"
+API_ID = "22222222-2222-2222-2222-222222222222"
+API_URI = f"api://{API_ID}"
+BASE = "https://func-fs-ci-adm-dev.azurewebsites.net"
+KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+PAT = "pat.example@finishessolutions.example"
+
+
+class StaticKeys:
+    def get_signing_key_from_jwt(self, token: str) -> SimpleNamespace:
+        return SimpleNamespace(key=KEY.public_key())
+
+
+def token(**overrides: Any) -> str:
+    now = int(time.time())
+    claims = {
+        "iss": f"https://login.microsoftonline.com/{TENANT}/v2.0",
+        "aud": API_ID,
+        "tid": TENANT,
+        "oid": "matthew-oid",
+        "preferred_username": "Matthew@FinishesSolutions.example",
+        "scp": ADMIN_SCOPE,
+        "roles": [READER_ALL, ADMIN_ROLE],
+        "azp": "admin-spa",
+        "iat": now,
+        "exp": now + 3600,
+    } | overrides
+    return jwt.encode({k: v for k, v in claims.items() if v is not None}, KEY, algorithm="RS256")
+
+
+def auth(**overrides: Any) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token(**overrides)}"}
+
+
+@pytest.fixture(scope="module")
+def files(tmp_path_factory: pytest.TempPathFactory) -> DirectoryStore:
+    return DirectoryStore(tmp_path_factory.mktemp("originals"))
+
+
+@pytest.fixture(scope="module")
+def database_ready(database: str, files: DirectoryStore) -> Iterator[str]:
+    def connector(role: AppRole | None = None) -> Connection:
+        return connect(dbname=database, role=role)
+
+    with connector() as conn:
+        seed(conn, "pytest")
+        conn.commit()
+    graph = FixtureGraphClient.from_directory()
+    capture_window(
+        connector,
+        graph,
+        hours=744,
+        include_sent=True,
+        profile={"p": 1},
+        now=datetime(2026, 10, 28, tzinfo=UTC),
+    )
+    process_all(
+        lambda: connector("ci_ingest"),
+        Backends(
+            FakeScreener(),
+            FakeClassifier(),
+            FakeEmbedder(),
+            graph=graph,
+            extraction_enabled=True,
+            originals=files,
+        ),
+        workers=1,
+    )
+    yield database
+
+
+@pytest.fixture
+def client(database_ready: str, files: DirectoryStore) -> Iterator[TestClient]:
+    settings = Settings(
+        deployment_environment="development",
+        attachment_unsupported_policy="publish_partial",
+        entra_tenant_id=TENANT,
+        search_api_client_id=API_ID,
+        search_api_app_id_uri=API_URI,
+        admin_spa_client_id="admin-spa",
+    )
+    app = build_admin_app(
+        settings,
+        FakeEmbedder(),
+        verifier=EntraTokenVerifier(
+            TENANT, API_ID, API_URI, keys=StaticKeys(), required_scope=ADMIN_SCOPE
+        ),
+        connector=lambda role: connect(dbname=database_ready, role=role),  # type: ignore[arg-type]
+        lab_backends=lambda: LabBackends(FakeScreener(), FakeClassifier()),
+        originals=files,
+    )
+    with TestClient(app, base_url=BASE) as c:
+        yield c
+
+
+def latest_audit(database: str, action: str) -> dict[str, Any] | None:
+    with connect(dbname=database) as conn:
+        return conn.execute(
+            "SELECT actor_id, details FROM audit_events WHERE action = %s ORDER BY id DESC LIMIT 1",
+            (action,),
+        ).fetchone()
+
+
+@pytest.mark.parametrize(
+    ("headers", "status"),
+    [
+        ({}, 401),
+        ({"Authorization": "Basic abc"}, 401),
+        ({"Authorization": "Bearer not-a-token"}, 401),
+        (auth(scp="Communications.Search"), 401),  # an MCP client token is not an admin token
+        (auth(aud="some-other-api"), 401),
+        (auth(roles=[READER_ALL]), 403),  # signed in, but not an admin
+        (auth(), 200),
+    ],
+)
+def test_only_admins_get_in(client: TestClient, headers: dict[str, str], status: int) -> None:
+    assert client.get("/api/overview", headers=headers).status_code == status
+
+
+def test_page_and_sign_in_config_are_public_and_locked_down(client: TestClient) -> None:
+    page = client.get("/")
+    assert page.status_code == 200 and "app.js" in page.text
+    csp = page.headers["content-security-policy"]
+    assert "script-src 'self'" in csp and "frame-ancestors 'none'" in csp
+    assert page.headers["x-content-type-options"] == "nosniff"
+    config = client.get("/config.json").json()
+    assert config == {
+        "tenant_id": TENANT,
+        "client_id": "admin-spa",
+        "scope": f"{API_URI}/{ADMIN_SCOPE}",
+        "environment": "development",
+    }
+    assert client.get("/api/overview").headers["www-authenticate"].startswith("Bearer")
+
+
+def test_overview_counts(client: TestClient) -> None:
+    data = client.get("/api/overview", headers=auth()).json()
+    states = {v["processing_state"] for v in data["versions"]}
+    assert "published" in states and "rejected" in states
+    assert data["mode"]["mode"] == "test" and data["mode"]["eligible_mailboxes"] > 0
+    assert data["schedule"]["capture_enabled"] is False
+    assert any(lb["label"] == "invoice_receipt" for lb in data["labels"])
+
+
+def test_schedule_changes_are_validated_and_audited(
+    client: TestClient, database_ready: str
+) -> None:
+    bad = client.put("/api/schedule", headers=auth(), json={"capture_interval_min": 7})
+    assert bad.status_code == 400
+    narrow = client.put(
+        "/api/schedule",
+        headers=auth(),
+        json={"capture_interval_min": 240, "capture_window_hours": 1},
+    )
+    assert narrow.status_code == 400 and "window must cover" in narrow.json()["error"]
+    unknown = client.put("/api/schedule", headers=auth(), json={"last_capture_started_at": None})
+    assert unknown.status_code == 400
+    ok = client.put(
+        "/api/schedule",
+        headers=auth(),
+        json={"capture_enabled": True, "capture_interval_min": 60, "capture_window_hours": 2},
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["schedule"]["capture_enabled"] is True
+    row = latest_audit(database_ready, "schedule_change")
+    assert row is not None and row["actor_id"] == "matthew@finishessolutions.example"
+    assert row["details"]["capture_enabled"] is True
+    run = client.post("/api/runs/capture", headers=auth(), json={"hours": 24})
+    assert run.status_code == 200
+    schedule = client.get("/api/schedule", headers=auth()).json()
+    assert schedule["schedule"]["run_requested_hours"] == 24
+    assert schedule["next"] == "run requested"
+    client.put("/api/schedule", headers=auth(), json={"capture_enabled": False})
+
+
+def test_mailbox_scope_actions(client: TestClient, database_ready: str) -> None:
+    listed = client.get("/api/mailboxes", headers=auth()).json()
+    address = next(m["address"] for m in listed["mailboxes"] if not m["excluded"])
+    bad = client.post(
+        "/api/mailboxes/exclude", headers=auth(), json={"address": address, "reason": "No Way!"}
+    )
+    assert bad.status_code == 400
+    done = client.post(
+        "/api/mailboxes/exclude", headers=auth(), json={"address": address, "reason": "privacy"}
+    )
+    assert done.status_code == 200
+    after = client.get("/api/mailboxes", headers=auth()).json()
+    assert next(m for m in after["mailboxes"] if m["address"] == address)["excluded"] is True
+    assert latest_audit(database_ready, "scope_exclude") is not None
+    client.post("/api/mailboxes/unexclude", headers=auth(), json={"address": address})
+    production = client.post(
+        "/api/mailboxes/include", headers=auth(), json={"address": address, "dataset": "production"}
+    )
+    assert production.status_code == 400  # needs confirm = 'production'
+    assert client.post("/api/mailboxes/explode", headers=auth(), json={}).status_code == 404
+
+
+def test_messages_detail_and_attachments(client: TestClient) -> None:
+    listed = client.get("/api/messages?since_days=0", headers=auth()).json()
+    assert listed["results"], listed
+    with_attachment = client.get("/api/messages?q=invoice&since_days=0", headers=auth()).json()[
+        "results"
+    ]
+    assert with_attachment
+    detail = client.get(
+        f"/api/messages/{with_attachment[0]['communication_id']}", headers=auth()
+    ).json()
+    assert {"participants", "attachments", "text", "web_link"} <= detail.keys()
+    missing = client.get("/api/messages/00000000-0000-0000-0000-000000000000", headers=auth())
+    assert missing.status_code == 404
+    # An admin without a reader role sees no mail at all: the console uses the caller's grants.
+    blind = client.get("/api/messages?since_days=0", headers=auth(roles=[ADMIN_ROLE])).json()
+    assert blind["results"] == []
+
+
+def test_unpublished_is_metadata_only(client: TestClient) -> None:
+    data = client.get("/api/unpublished", headers=auth()).json()
+    assert data["items"]
+    assert any(i["hold_reason_code"].startswith("restricted") for i in data["items"])
+    for item in data["items"]:
+        assert "title" not in item and "subject" not in item
+
+
+def test_actionable_matches_the_mcp_tool(client: TestClient) -> None:
+    data = client.get(f"/api/actionable?person={PAT}&hours=1440", headers=auth()).json()
+    assert "Invoice 4471 for Lot 12 grading - payment due Friday" in {
+        a["subject"] for a in data["actions"]
+    }
+
+
+def test_lab_routes_without_storing(client: TestClient, database_ready: str) -> None:
+    invoice = client.post(
+        "/api/lab/classify",
+        headers=auth(),
+        json={
+            "subject": "Invoice 9001 for Lot 4 framing",
+            "sender": "billing@vendor.example",
+            "to": PAT,
+            "body": "Please review the attached invoice and confirm approval by Friday.",
+            "person": PAT,
+        },
+    ).json()
+    assert invoice["routing"]["searchable"] is True
+    assert invoice["routing"]["action_item"] is True
+    assert "invoice_receipt" in invoice["yes_labels"]
+    restricted = client.post(
+        "/api/lab/classify",
+        headers=auth(),
+        json={"subject": "Payroll", "body": "Employee SSN 123-45-6789", "person": PAT},
+    ).json()
+    assert restricted["routing"]["searchable"] is False
+    assert restricted["routing"]["disposition"] == "restricted"
+    assert client.post("/api/lab/classify", headers=auth(), json={}).status_code == 400
+    row = latest_audit(database_ready, "lab_classify")
+    assert row is not None and set(row["details"]) == {"input_sha256"}
+
+
+def test_lab_reruns_a_stored_message(client: TestClient) -> None:
+    target = client.get(f"/api/actionable?person={PAT}&hours=1440", headers=auth()).json()
+    communication_id = target["actions"][0]["communication_id"]
+    result = client.post(
+        "/api/lab/reclassify",
+        headers=auth(),
+        json={"communication_id": communication_id, "person": PAT},
+    ).json()
+    assert result["changed_labels"] == []  # same fake classifier, same answer
+    assert result["routing"]["action_item"] is True
+    missing = client.post(
+        "/api/lab/reclassify",
+        headers=auth(),
+        json={"communication_id": "00000000-0000-0000-0000-000000000000"},
+    )
+    assert missing.status_code == 404
+
+
+def test_requeue_failed(client: TestClient, database_ready: str) -> None:
+    response = client.post("/api/requeue-failed", headers=auth())
+    assert response.status_code == 200 and response.json()["requeued"] == 0
+    assert latest_audit(database_ready, "requeue_failed") is not None
+
+
+def invoice_detail(client: TestClient) -> dict[str, Any]:
+    found = client.get("/api/messages?q=invoice%204471&since_days=0", headers=auth()).json()
+    first = found["results"][0]["communication_id"]
+    detail: dict[str, Any] = client.get(f"/api/messages/{first}", headers=auth()).json()
+    return detail
+
+
+def test_original_files_are_served_only_for_authorized_messages(client: TestClient) -> None:
+    detail = invoice_detail(client)
+    pdf = next(a for a in detail["attachments"] if a["name"] == "Invoice-4471.pdf")
+    assert pdf["file_id"]
+    # The signature image is neither kept nor listed.
+    assert [a["name"] for a in detail["attachments"]] == ["Invoice-4471.pdf"]
+    url = f"/api/messages/{detail['communication_id']}/files/{pdf['file_id']}"
+    response = client.get(url, headers=auth())
+    assert response.status_code == 200 and response.content.startswith(b"%PDF")
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["content-disposition"].startswith("attachment;")
+    assert response.headers["content-security-policy"] == "sandbox; default-src 'none'"
+    assert client.get(url).status_code == 401
+    assert client.get(url, headers=auth(roles=[READER_ALL])).status_code == 403
+    # An admin with no reader role, a hash from another message and a malformed id: 404.
+    assert client.get(url, headers=auth(roles=[ADMIN_ROLE])).status_code == 404
+    other = client.get("/api/messages?since_days=0", headers=auth()).json()["results"]
+    elsewhere = next(r for r in other if r["communication_id"] != detail["communication_id"])
+    wrong = f"/api/messages/{elsewhere['communication_id']}/files/{pdf['file_id']}"
+    assert client.get(wrong, headers=auth()).status_code == 404
+    bad = f"/api/messages/{detail['communication_id']}/files/..%2F..%2Fetc"
+    assert client.get(bad, headers=auth()).status_code == 404
+
+
+def test_missing_originals_are_backfilled(database_ready: str, files: DirectoryStore) -> None:
+    def ingest() -> Connection:
+        return connect(dbname=database_ready, role="ci_ingest")
+
+    with connect(dbname=database_ready) as conn:
+        cleared = conn.execute(
+            "UPDATE email_attachments SET original_stored_at = NULL"
+            " WHERE original_stored_at IS NOT NULL RETURNING sha256"
+        ).fetchall()
+        conn.commit()
+    assert cleared
+    for path in files.root.rglob("*"):
+        if path.is_file():
+            path.unlink()
+    counts = store_missing_originals(
+        ingest,
+        Backends(
+            FakeScreener(),
+            FakeClassifier(),
+            FakeEmbedder(),
+            graph=FixtureGraphClient.from_directory(),
+            extraction_enabled=True,
+            originals=files,
+        ),
+        limit=500,
+    )
+    assert counts["originals_backfilled"] >= 1 and not counts["original_download_failed"]
+    assert all(files.get(r["sha256"]) is not None for r in cleared if r["sha256"])
+
+
+def test_failed_attachments_are_reread_and_messages_republished(
+    database_ready: str, files: DirectoryStore
+) -> None:
+    def ingest() -> Connection:
+        return connect(dbname=database_ready, role="ci_ingest")
+
+    with connect(dbname=database_ready) as conn:
+        conn.execute(
+            "UPDATE email_attachments SET extraction_status = 'failed'"
+            " WHERE name = 'Invoice-4471.pdf'"
+        )
+        conn.commit()
+    with ingest() as conn:
+        requeued = requeue_failed_attachments(conn)
+        conn.commit()
+    assert requeued >= 1
+    counts = process_all(
+        ingest,
+        Backends(
+            FakeScreener(),
+            FakeClassifier(),
+            FakeEmbedder(),
+            graph=FixtureGraphClient.from_directory(),
+            extraction_enabled=True,
+            originals=files,
+        ),
+        workers=1,
+    )
+    assert counts.get("failed", 0) == 0 and sum(counts.values()) == requeued
+    with connect(dbname=database_ready) as conn:
+        rows = conn.execute(
+            "SELECT a.extraction_status, v.processing_state,"
+            " (SELECT count(*) FROM chunks c WHERE c.version_id = v.id"
+            "   AND c.chunk_kind = 'attachment_text') AS attachment_chunks"
+            " FROM email_attachments a JOIN communication_versions v ON v.id = a.version_id"
+            " WHERE a.name = 'Invoice-4471.pdf'"
+        ).fetchall()
+    assert rows and all(
+        r["extraction_status"] == "extracted"
+        and r["processing_state"] == "published"
+        and r["attachment_chunks"] > 0
+        for r in rows
+    )

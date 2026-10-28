@@ -109,24 +109,23 @@ READERS="matthews@finishessolutions.com chuckc@finishesetc.net" bash scripts/azu
 
 This registers the search API (scope `Communications.Search`, app roles `Communications.Reader.All` / `.Own`, assignment required). It gives each address in `READERS` the **Reader.All** role, which means **all enrolled company mail**; use `.Own` in the portal for someone who should only see their own mailbox. It also creates one client app each for Claude, ChatGPT and Copilot Studio, and points the search Function App at the API.
 
-It prints connector settings and **one client secret per platform, once**. Paste each secret straight into that platform's connector screen. Never paste it into chat, email or GitHub. Rerun the script to rotate secrets.
+It prints the connector settings and each platform's client ID. It writes **a new client secret per platform** to `~/fs-ci-mcp-client-secrets.txt`, readable only by you, and invalidates the previous secrets. Paste each secret straight into its platform's connector screen, then delete the file. Never paste a secret into chat, email or GitHub; if one leaks, rerun the script to rotate them all. Consent is granted through Microsoft Graph, because `az ad app permission admin-consent` doesn't accept Cloud Shell's sign-in.
 
 ## 7. First run: the last 24 hours
 
-The ingestion app is deployed with `CAPTURE_HOURS=24` and a capture schedule that only fires on 1 January, so nothing runs by itself. Set up helpers:
+The ingestion app checks every 5 minutes whether a capture is due. The schedule lives in the database (table `ops_settings`; change it in the admin console, §12, or with `ci schedule`) and starts **off**. The app settings `CAPTURE_ENABLED` and `PROCESSING_ENABLED` are hard off switches above it. Turn the app switch on:
 
 ```bash
-ING=func-fs-ci-ing-dev-1026; RG=fs-communication-intelligence; HOST=$(az functionapp show -g $RG -n $ING --query defaultHostName -o tsv); KEY=$(az functionapp keys list -g $RG -n $ING --query masterKey -o tsv)
-run_capture() { curl -s -o /dev/null -w "capture triggered: HTTP %{http_code}\n" -X POST "https://$HOST/admin/functions/capture" -H "x-functions-key: $KEY" -H "Content-Type: application/json" -d '{}'; }
+az functionapp config appsettings set -g fs-communication-intelligence -n func-fs-ci-ing-dev-1026 --settings CAPTURE_ENABLED=true -o none
 ```
 
-Turn capture on and trigger it once. With nothing approved yet, it only records the mailbox list and refuses to capture. Check: `HTTP 202`.
+Ask for one capture of the last 24 hours. It starts at the next 5-minute tick. With nothing approved yet, it only records the mailbox list and refuses to capture:
 
 ```bash
-az functionapp config appsettings set -g $RG -n $ING --settings CAPTURE_ENABLED=true -o none && sleep 60 && run_capture
+ci run-capture --hours 24
 ```
 
-Wait a minute, then review every mailbox. Mailboxes outside the Exchange scope show `no_exchange_access`.
+Wait about 5 minutes, then review every mailbox. Mailboxes outside the Exchange scope show `no_exchange_access`.
 
 ```bash
 ci scope list
@@ -142,10 +141,10 @@ ci scope exclude someone@finishessolutions.com --reason personal_mailbox
 ci scope include --all-enrolled && ci mode show
 ```
 
-Capture the 24 hours and start processing (every 5 minutes, about 8 minutes per run):
+Capture the 24 hours again, and turn processing on (it runs every 5 minutes, up to 8 minutes each time):
 
 ```bash
-run_capture && az functionapp config appsettings set -g $RG -n $ING --settings PROCESSING_ENABLED=true -o none
+ci run-capture --hours 24 && az functionapp config appsettings set -g fs-communication-intelligence -n func-fs-ci-ing-dev-1026 --settings PROCESSING_ENABLED=true -o none
 ```
 
 Watch progress (codes and counts only):
@@ -154,40 +153,48 @@ Watch progress (codes and counts only):
 ci stats
 ```
 
-Logs: portal → `func-fs-ci-ing-dev-1026` → **Monitoring → Logs** or **Log stream**. Once the cause of a failure is fixed, requeue the failed messages (the process timer picks them up):
+Logs: portal → `func-fs-ci-ing-dev-1026` → **Monitoring → Logs** or **Log stream**. Each capture and processing pass is also recorded with its counts (`ci schedule show`, or **Schedule & runs** in the console). Once the cause of a failure is fixed, requeue the failed messages; the process timer picks them up:
 
 ```bash
 ci process --retry-failed --limit 0
 ```
 
-If Cloud Shell can't reach the database (timeout), add its address: `az postgres flexible-server firewall-rule create -g $RG --server-name psql-fs-ci-dev-1026b --name cloudshell --start-ip-address $(curl -s https://api.ipify.org) --end-ip-address $(curl -s https://api.ipify.org)`.
+Attachments that failed to read (for example before the 2026-10-28 fix that let the reader find its PDF and Excel libraries in Azure) can be read again. This reprocesses their messages with the attachment text included; each one is unsearchable for a few minutes while that happens:
+
+```bash
+ci process --retry-attachments --limit 0
+```
+
+If Cloud Shell can't reach the database (timeout), add its address: `az postgres flexible-server firewall-rule create -g fs-communication-intelligence --server-name psql-fs-ci-dev-1026b --name cloudshell --start-ip-address $(curl -s https://api.ipify.org) --end-ip-address $(curl -s https://api.ipify.org)`.
 
 ## 8. Test
 
 - `ci stats`: published, held/rejected by reason, failed codes, label counts, attachment extraction.
 - Give your own command-line identity read access once: `ci grant add --me`. Agents use the app roles from step 6 instead.
 - `mkdir -p local/out && ci actionable --person chuckc@finishesetc.net --hours 24 --out local/out/chuck.md`. This is real content: keep it out of Git and share deliberately.
-- Hand-check about 30 action items and 30 random published messages, and note wrong labels. The thresholds are uncalibrated.
+- Hand-check about 30 action items and 30 random published messages, and note wrong labels. The thresholds are uncalibrated. The console's **Lab** re-runs any message and explains its routing.
 - Connect the agents (§10) and ask the same questions.
 
 ## 9. Turn on hourly capture
 
+In the console (**Schedule & runs**) or from Cloud Shell:
+
 ```bash
-az functionapp config appsettings set -g $RG -n $ING --settings CAPTURE_HOURS=2 "CAPTURE_SCHEDULE=0 5 * * * *" -o none
+ci schedule set --on --every 60 --window 2
 ```
 
-That captures at 5 past every hour. The 2-hour window overlaps the previous run, and repeats are skipped. New mailboxes (new hires) appear as `enrolled` but are **not** captured until approved; run `ci scope include --all-enrolled` when you add people.
+That captures every hour, looking back 2 hours. The overlap is deliberate, and repeats are skipped. Options: `--every 15|30|60|120|240|720|1440`, `--hours 6-20` (active hours, Central time by default), `--weekdays-only`, `--processing-off`. The look-back must cover the interval, or mail between runs would be missed. New mailboxes (new hires) appear as `enrolled` but are **not** captured until approved; run `ci scope include --all-enrolled` (or **Approve all enrolled** in the console) when you add people.
 
-Stop everything at once (search also returns nothing while paused):
+Stop scheduled capture: `ci schedule set --off`. Stop everything at once (search also returns nothing while paused):
 
 ```bash
 ci mode set paused
 ```
 
-Stop only the timers:
+Hard stop for the timers, whatever the schedule says:
 
 ```bash
-az functionapp config appsettings set -g $RG -n $ING --settings CAPTURE_ENABLED=false PROCESSING_ENABLED=false -o none
+az functionapp config appsettings set -g fs-communication-intelligence -n func-fs-ci-ing-dev-1026 --settings CAPTURE_ENABLED=false PROCESSING_ENABLED=false -o none
 ```
 
 ## 10. Connect Claude, ChatGPT and Copilot Studio
@@ -208,9 +215,47 @@ The hosted endpoint is written to the MCP standard (Streamable HTTP; OAuth prote
 - **Other tools: yes.** These include monday.com, SharePoint, Outlook calendar, Teams, Word/Excel output, and Power Automate flows to post a daily digest. Each acts with the signed-in user's own permissions in that system. The agent can combine them, for example: find actions via MCP, check the monday board, draft a report.
 - If you later want Azure AI Search (for semantic ranking at higher volume), it goes behind this same API (ADR-012's `SearchBackend`), never handed to agents directly.
 
+## 12. Admin console
+
+A web page at `https://func-fs-ci-adm-dev-1026.azurewebsites.net/` for console admins (you, for now):
+
+- **Overview:** mode, schedule, backlog, message states and reasons, labels, attachment extraction, failures, and recent runs. Also **Run capture now** (any look-back) and **Requeue failed**.
+- **Schedule & runs:** how often capture runs, its look-back, active hours, weekdays only, processing on/off. Below that, every run with its counts.
+- **Mailboxes:** filter, approve or unapprove, exclude or un-exclude (with a reason), approve all enrolled, change mode, and exclude a person or domain in every mailbox.
+- **Messages:** search or list published mail by mailbox, sender, label and date. A message shows the AI summary, action and risk, labels, people, the body, and its **files**: preview (PDF, images, text), download, or the extracted text. Signature images and logos aren't processed or shown: every inline image, and any attached image of 100 KB or less. There's also an **Open in Outlook** link, which works only for mailboxes your account can open.
+- **Action items:** the same list agents get from `list_actionable`, for any person or window.
+- **Not published:** held, restricted, bulk and failed messages, with metadata and reason only, never the subject or text.
+- **Communication Lab:** write an email (or start from a sample: invoice, change order, lien notice, failed inspection, newsletter, phishing, SSN, prompt injection), or pick a stored one. It runs the real screening, classifier, policy and routing and stores nothing. It shows a verdict ("Action item", "Project risk", "Restricted"…), each pipeline step, why, the AI proposal, every label against its thresholds, the difference from what was stored, and the message's files. Each run calls Azure OpenAI once.
+
+**Original files.** From the deploy that includes this, processing keeps each attachment's original file in the private container `attachments` of `stfscievidev1026`. Each distinct file is stored once, and inline signature images are skipped. Each processing pass also backfills up to 100 files for mail processed earlier. Files are **not malware-scanned** (your decision, 2026-10-28), so open unexpected downloads with care. The console serves a file only when you may read its message; restricted, held and bulk mail never get file access.
+
+Access takes both the delegated scope `Communications.Console` and the app role `Communications.Admin` on the search API registration. Everyone else gets 403. Content goes through the same authorized search as the agents, so the console shows exactly what your Reader role allows. Every change and every lab run is written to `audit_events` (lab runs record the input hash only). The app has its own identity (`id-fs-ci-admin-dev`), with database roles `ci_operator` and `ci_search` and no mailbox access.
+
+**One command does everything**: Azure resources, sign-in, file storage, database changes, GitHub secrets, merging the pull request, waiting for the deploy and checking the result. Run it from Cloud Shell in the repository folder (it asks you to sign in to GitHub once):
+
+```bash
+cd ~/fs-communication-intelligence && git fetch origin && git checkout matthew/nice-lovelace-4sqyit && git pull --ff-only origin matthew/nice-lovelace-4sqyit && bash scripts/azure/5-admin-console-live.sh
+```
+
+The console is the web page and its API in one Function App (`func-fs-ci-adm-dev-1026`): same address, no separate Azure Static Web Apps resource, and no cross-site setup.
+
+The steps it runs, if you'd rather go one at a time. First see what already exists (this changes nothing):
+
+```bash
+CHECK_ONLY=1 bash scripts/azure/4-admin-console.sh
+```
+
+Then run it. It creates only what's missing, sets up file storage, applies the database migrations and creates the console's database login:
+
+```bash
+CHAT_DEPLOYMENT=gpt-4.1-mini ADMINS="matthews@finishessolutions.com" bash scripts/azure/4-admin-console.sh
+```
+
+Add the two secrets it prints (`ADMIN_FUNCTION_APP`, `ADMIN_PUBLIC_URL`) to the GitHub environment `development`, then merge the pull request (or rerun **Deploy (development)**). The migrations (`0005`, `0006`) must be applied **before** the new ingestion code deploys; otherwise the capture and processing timers fail every tick until they are. To add another admin later, rerun the script with their address in `ADMINS`.
+
 ## What isn't done yet
 
 - Per-folder delta sync and new-mail notifications (the hourly window is the stopgap); deletions and moves after capture aren't tracked.
 - REST endpoints (MCP only for now), dead-letter alerts and dashboards, and infrastructure as Bicep (these scripts are the interim).
 - monday.com Executive Hub feed.
-- OCR and malware scanning for attachments (the extraction exception to L11 still applies).
+- OCR and malware scanning for attachments (the extraction and original-file exceptions to L11 still apply).

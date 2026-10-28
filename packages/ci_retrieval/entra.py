@@ -3,7 +3,8 @@
 A token is accepted only if it is an RS256 v2.0 token signed by a current key
 of the configured tenant, issued by that tenant, addressed to the search API
 (client id or App ID URI), unexpired, and carries the delegated scope
-``Communications.Search`` (``scp``). App-only tokens (no ``scp``) are refused:
+``Communications.Search`` (``scp``; the admin console requires
+``Communications.Console`` instead). App-only tokens (no ``scp``) are refused:
 every call acts for a signed-in person. Reader authority comes from the
 token's app roles (``roles``) and the person's object id (``oid``), never from
 tool arguments (CLAUDE.md L8).
@@ -45,11 +46,14 @@ class EntraTokenVerifier:
         api_client_id: str,
         api_app_id_uri: str,
         keys: SigningKeySource | None = None,
+        *,
+        required_scope: str = SEARCH_SCOPE,
     ) -> None:
         self.tenant_id = tenant_id.lower()
         self.issuer = f"https://login.microsoftonline.com/{self.tenant_id}/v2.0"
         self.audiences = [api_client_id, api_app_id_uri]
-        self.scope_uri = f"{api_app_id_uri.rstrip('/')}/{SEARCH_SCOPE}"
+        self.required_scope = required_scope
+        self.scope_uri = f"{api_app_id_uri.rstrip('/')}/{required_scope}"
         self._keys = keys or jwt.PyJWKClient(
             f"https://login.microsoftonline.com/{self.tenant_id}/discovery/v2.0/keys",
             cache_keys=True,
@@ -71,7 +75,9 @@ class EntraTokenVerifier:
         except jwt.PyJWTError, ValueError:
             return None
         scopes = str(claims.get("scp", "")).split()
-        if str(claims.get("tid", "")).lower() != self.tenant_id or SEARCH_SCOPE not in scopes:
+        if str(claims.get("tid", "")).lower() != self.tenant_id:
+            return None
+        if self.required_scope not in scopes:
             return None
         upn = claims.get("preferred_username") or claims.get("upn")
         return EntraAccessToken(

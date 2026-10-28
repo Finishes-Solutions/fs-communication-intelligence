@@ -133,6 +133,13 @@ class Settings(BaseSettings):
     # to L11 approved by Matthew on 2026-10-28 for the first real-mail run.
     attachment_extraction_enabled: bool = False
     attachment_max_bytes: int = 25 * 1024 * 1024
+    # Keep original attachment files in Blob Storage (evidence account, container
+    # "attachments"), without malware scanning: approved by Matthew on 2026-10-28
+    # (CLAUDE.md section 3a). Locally they go to LOCAL_ORIGINALS_DIR instead.
+    attachment_store_originals: bool = False
+    evidence_blob_account: str | None = None
+    evidence_blob_container: str = "attachments"
+    local_originals_dir: str = "local/originals"
 
     # Ingestion Function App switches. Capture and processing stay off until
     # someone turns them on; the database mode (runtime_config) still applies.
@@ -148,6 +155,10 @@ class Settings(BaseSettings):
     search_public_url: str | None = None  # e.g. https://func-fs-ci-search-dev.azurewebsites.net
     search_api_client_id: str | None = None  # the search API app registration
     search_api_app_id_uri: str | None = None  # e.g. api://<client id>
+
+    # Admin console (apps/admin): the public SPA client the browser signs in
+    # with. Tokens are for the search API registration, scope Communications.Console.
+    admin_spa_client_id: str | None = None
 
     # Local-only principal for the MCP server and CLI (AUTH_MODE=local_test).
     local_test_principal_oid: str = "00000000-0000-0000-0000-00000000c0de"

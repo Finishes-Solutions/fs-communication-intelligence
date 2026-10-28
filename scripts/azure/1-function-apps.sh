@@ -81,14 +81,23 @@ GH_P="$(mi "$GH_MI" principalId)"
 for name in "$ING_APP" "$SRCH_APP"; do
   role "$GH_P" "Website Contributor" "$(az functionapp show -g "$RG" -n "$name" --query id -o tsv)"
 done
-SUBJECT="repo:$REPO:environment:development"
-if ! az identity federated-credential list -g "$RG" --identity-name "$GH_MI" \
-     --query "[?subject=='$SUBJECT']" -o tsv | grep -q .; then
-  az identity federated-credential create -g "$RG" --identity-name "$GH_MI" -n github-development \
-    --issuer https://token.actions.githubusercontent.com --subject "$SUBJECT" \
-    --audiences api://AzureADTokenExchange --only-show-errors >/dev/null
-fi
-echo "  federation ok ($SUBJECT)"
+# GitHub sends either the name-based subject or, for organizations using
+# immutable IDs, "repo:<owner>@<owner id>/<repo>@<repo id>:...". Trust both.
+IDS="$(curl -fsS "https://api.github.com/repos/$REPO" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["owner"]["id"], d["id"])')"
+read -r OWNER_ID REPO_ID <<<"$IDS"
+ID_SUBJECT="repo:${REPO%%/*}@$OWNER_ID/${REPO#*/}@$REPO_ID:environment:development"
+for pair in "github-development:repo:$REPO:environment:development" \
+            "github-development-ids:$ID_SUBJECT"; do
+  name="${pair%%:*}"; subject="${pair#*:}"
+  if ! az identity federated-credential list -g "$RG" --identity-name "$GH_MI" \
+       --query "[?subject=='$subject']" -o tsv | grep -q .; then
+    az identity federated-credential create -g "$RG" --identity-name "$GH_MI" -n "$name" \
+      --issuer https://token.actions.githubusercontent.com --subject "$subject" \
+      --audiences api://AzureADTokenExchange --only-show-errors >/dev/null
+  fi
+  echo "  federation ok ($subject)"
+done
 
 cat <<OUT
 

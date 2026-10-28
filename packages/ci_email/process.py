@@ -25,8 +25,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
+
 from ci_core.db import Connection, required
 from ci_email.graph import GraphClient, GraphError
+from ci_processing.azure import AzureServiceError
 from ci_processing.chunking import chunk_text
 from ci_processing.classification import (
     LABELS,
@@ -36,7 +39,13 @@ from ci_processing.classification import (
     Classifier,
 )
 from ci_processing.embedding import Embedder
-from ci_processing.extraction import Extraction, ExtractionStatus, extract
+from ci_processing.extraction import (
+    Extraction,
+    ExtractionStatus,
+    extract,
+    is_signature_image,
+)
+from ci_processing.originals import OriginalStore, OriginalStoreError
 from ci_processing.policy import Disposition, Outcome, classification_outcome, screening_gate
 from ci_processing.screening import Screener
 
@@ -57,6 +66,7 @@ class Backends:
     graph: GraphClient | None = None
     extraction_enabled: bool = False
     attachment_max_bytes: int = 25 * 1024 * 1024
+    originals: OriginalStore | None = None  # keep original files (CLAUDE.md section 3a)
 
 
 def _sha(text: str) -> str:
@@ -91,8 +101,9 @@ def _extract_attachments(conn: Connection, job: dict[str, Any], backends: Backen
     for a in rows:
         result: Extraction
         digest: str | None = None
-        if a["is_inline"] and (a["content_type"] or "").startswith("image/"):
-            result = Extraction(ExtractionStatus.UNSUPPORTED)  # signature images; no OCR yet
+        stored = False
+        if is_signature_image(a["name"], a["content_type"], a["size_bytes"], a["is_inline"]):
+            result = Extraction(ExtractionStatus.SKIPPED)  # never downloaded or kept
         elif a["size_bytes"] > backends.attachment_max_bytes:
             result = Extraction(ExtractionStatus.TOO_LARGE)
         else:
@@ -105,6 +116,7 @@ def _extract_attachments(conn: Connection, job: dict[str, Any], backends: Backen
                 result = Extraction(ExtractionStatus.FAILED)
             else:
                 digest = hashlib.sha256(data).hexdigest()
+                stored = _store_original(conn, backends, digest, data, a["content_type"])
                 reused = conn.execute(
                     "SELECT a.extraction_status, t.content FROM email_attachments a"
                     " LEFT JOIN version_texts t ON t.version_id = a.version_id"
@@ -123,12 +135,14 @@ def _extract_attachments(conn: Connection, job: dict[str, Any], backends: Backen
                     )
         conn.execute(
             "UPDATE email_attachments SET extraction_status = %s, sha256 = %s, extractor = %s,"
-            " extracted_chars = %s WHERE version_id = %s AND native_attachment_id = %s",
+            " extracted_chars = %s, original_stored_at = CASE WHEN %s THEN now() END"
+            " WHERE version_id = %s AND native_attachment_id = %s",
             (
                 result.status.value,
                 digest,
                 "extract-v1-no-ocr",
                 len(result.text) or None,
+                stored,
                 job["version_id"],
                 a["native_attachment_id"],
             ),
@@ -146,6 +160,89 @@ def _extract_attachments(conn: Connection, job: dict[str, Any], backends: Backen
                     result.truncated or len(result.text) > ATTACHMENT_CAP,
                 ),
             )
+
+
+def _store_original(
+    conn: Connection, backends: Backends, digest: str, data: bytes, content_type: str | None
+) -> bool:
+    """Keep the original file once per distinct content. A store failure never fails the
+    message: the file is retried by :func:`store_missing_originals`."""
+    if backends.originals is None:
+        return False
+    if conn.execute(
+        "SELECT 1 FROM email_attachments WHERE sha256 = %s AND original_stored_at IS NOT NULL"
+        " LIMIT 1",
+        (digest,),
+    ).fetchone():
+        return True
+    try:
+        backends.originals.put(digest, data, content_type)
+    except (OriginalStoreError, httpx.HTTPError) as exc:
+        log.warning("original not stored: %s", type(exc).__name__)
+        return False
+    return True
+
+
+def store_missing_originals(
+    connect: Callable[[], Connection], backends: Backends, limit: int = 100
+) -> Counter[str]:
+    """Store originals for published messages processed before storage was on (or
+    whose upload failed). Bounded per call; signature images and oversized files are skipped."""
+    counts: Counter[str] = Counter()
+    if backends.originals is None or backends.graph is None:
+        return counts
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT a.version_id::text, a.native_attachment_id, a.content_type, a.sha256,
+                   c.native_id, s.native_scope_id
+            FROM email_attachments a
+            JOIN communication_versions v ON v.id = a.version_id
+            JOIN communications c ON c.id = v.communication_id
+            JOIN email_messages em ON em.communication_id = c.id
+            JOIN source_scopes s ON s.id = em.mailbox_scope_id
+            WHERE a.original_stored_at IS NULL AND v.processing_state = 'published'
+              AND a.extraction_status <> 'not_attempted' AND a.size_bytes <= %s
+              AND a.extraction_status <> 'skipped'
+            ORDER BY random() LIMIT %s
+            """,
+            (backends.attachment_max_bytes, limit),
+        ).fetchall()
+        conn.commit()
+        for r in rows:
+            known = (
+                r["sha256"]
+                and conn.execute(
+                    "SELECT 1 FROM email_attachments WHERE sha256 = %s"
+                    " AND original_stored_at IS NOT NULL LIMIT 1",
+                    (r["sha256"],),
+                ).fetchone()
+            )
+            if not known:
+                try:
+                    data = backends.graph.get_attachment_bytes(
+                        r["native_scope_id"], r["native_id"], r["native_attachment_id"]
+                    )
+                except GraphError:
+                    counts["original_download_failed"] += 1
+                    continue
+                digest = hashlib.sha256(data).hexdigest()
+                if not _store_original(conn, backends, digest, data, r["content_type"]):
+                    counts["original_store_failed"] += 1
+                    continue
+                conn.execute(
+                    "UPDATE email_attachments SET sha256 = %s WHERE version_id = %s"
+                    " AND native_attachment_id = %s",
+                    (digest, r["version_id"], r["native_attachment_id"]),
+                )
+            conn.execute(
+                "UPDATE email_attachments SET original_stored_at = now() WHERE version_id = %s"
+                " AND native_attachment_id = %s",
+                (r["version_id"], r["native_attachment_id"]),
+            )
+            conn.commit()
+            counts["originals_backfilled"] += 1
+    return counts
 
 
 def _texts(conn: Connection, version_id: str) -> tuple[str, list[dict[str, Any]]]:
@@ -382,6 +479,8 @@ def process_one(conn: Connection, backends: Backends) -> str | None:
         return disposition.value
     except Exception as exc:  # recorded as a content-free code, then the run continues
         code = type(exc).__name__[:60]
+        if isinstance(exc, AzureServiceError):  # its message is service, status and code only
+            code = f"{code}: {exc}"[:120]
         log.warning("processing failed for version %s: %s", job["version_id"], code)
         conn.execute(
             "UPDATE communication_versions SET processing_state = 'failed', last_error_code = %s"
@@ -428,6 +527,51 @@ def process_all(
         for result in pool.map(lambda _: worker(), range(max(1, workers))):
             counts.update(result)
     return counts
+
+
+def requeue_failed_attachments(conn: Connection) -> int:
+    """Reprocess every message with an attachment whose extraction failed or timed out.
+
+    The version's derived data (chunks, classification, screening records) is
+    removed and it goes back to ``fetched``, so the process timer extracts the
+    attachments again and re-screens, re-classifies and re-publishes with their
+    text. Until then the message is not searchable (minutes). Returns the number
+    of messages requeued; the caller commits.
+    """
+    versions = [
+        r["version_id"]
+        for r in conn.execute(
+            "SELECT DISTINCT a.version_id FROM email_attachments a"
+            " JOIN communication_versions v ON v.id = a.version_id"
+            " WHERE a.extraction_status IN ('failed', 'timeout')"
+            " AND v.processing_state IN ('published', 'held', 'rejected')"
+        ).fetchall()
+    ]
+    if not versions:
+        return 0
+    conn.execute(
+        "UPDATE classification_runs SET reused_from = NULL WHERE reused_from IN"
+        " (SELECT id FROM classification_runs WHERE version_id = ANY(%s))",
+        (versions,),
+    )
+    for table in ("chunks", "classification_runs", "policy_decisions"):
+        conn.execute(f"DELETE FROM {table} WHERE version_id = ANY(%s)", (versions,))  # noqa: S608
+    conn.execute(
+        "DELETE FROM version_texts WHERE version_id = ANY(%s) AND text_kind = 'attachment'",
+        (versions,),
+    )
+    conn.execute(
+        "UPDATE email_attachments SET extraction_status = 'not_attempted', extractor = NULL,"
+        " extracted_chars = NULL WHERE version_id = ANY(%s)"
+        " AND extraction_status IN ('failed', 'timeout')",
+        (versions,),
+    )
+    conn.execute(
+        "UPDATE communication_versions SET processing_state = 'fetched', hold_reason_code = NULL,"
+        " last_error_code = NULL WHERE id = ANY(%s)",
+        (versions,),
+    )
+    return len(versions)
 
 
 def retry_failed(conn: Connection) -> int:

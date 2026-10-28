@@ -1,6 +1,6 @@
 name: Deploy (development)
 
-# Builds both Function Apps and deploys them to the dev environment with GitHub
+# Builds the Function Apps and deploys them to the dev environment with GitHub
 # OIDC (no stored Azure credentials). Runs on manual dispatch and on pushes to
 # main that touch deployable code. Database migrations are NOT run here: the dev
 # PostgreSQL server only accepts named IPs and Azure services, so apply them with
@@ -14,6 +14,9 @@ name: Deploy (development)
 #   INGESTION_FUNCTION_APP name of the ingestion Function App
 #   SEARCH_FUNCTION_APP    name of the search Function App
 #   SEARCH_PUBLIC_URL      https://<search app default host name>
+# Optional (the admin console deploys only when both are set):
+#   ADMIN_FUNCTION_APP     name of the admin console Function App
+#   ADMIN_PUBLIC_URL       https://<admin app default host name>
 
 on:
   workflow_dispatch:
@@ -43,6 +46,9 @@ jobs:
     name: Build, test, deploy
     runs-on: ubuntu-24.04
     environment: development
+    env:
+      ADMIN_APP: ${{ secrets.ADMIN_FUNCTION_APP }}
+      ADMIN_URL: ${{ secrets.ADMIN_PUBLIC_URL }}
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v6
@@ -56,6 +62,7 @@ jobs:
         run: |
           bash scripts/build-function-app.sh ingestion dist
           bash scripts/build-function-app.sh search dist
+          bash scripts/build-function-app.sh admin dist
 
       - name: Sign in to Azure (OIDC)
         uses: azure/login@v2
@@ -80,6 +87,15 @@ jobs:
           sku: flexconsumption
           remote-build: false
 
+      - name: Deploy admin console
+        if: env.ADMIN_APP != ''
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ secrets.ADMIN_FUNCTION_APP }}
+          package: dist/admin.zip
+          sku: flexconsumption
+          remote-build: false
+
       - name: Smoke test the MCP endpoint
         env:
           BASE: ${{ secrets.SEARCH_PUBLIC_URL }}
@@ -94,3 +110,18 @@ jobs:
           done
           [ "$code" = "401" ] || { echo "expected 401 from /mcp without a token, got $code"; exit 1; }
           curl -sf -o /dev/null "$BASE/.well-known/oauth-protected-resource/mcp" && echo "OAuth metadata: ok"
+
+      - name: Smoke test the admin console
+        if: env.ADMIN_URL != ''
+        env:
+          BASE: ${{ secrets.ADMIN_PUBLIC_URL }}
+        run: |
+          # The page and its sign-in config are public; every /api call must refuse without a token.
+          for attempt in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/overview") || code=000
+            [ "$code" = "401" ] && break
+            echo "attempt $attempt: HTTP $code (app may still be starting)"; sleep 20
+          done
+          [ "$code" = "401" ] || { echo "expected 401 from /api/overview without a token, got $code"; exit 1; }
+          curl -sf "$BASE/" | grep -q 'app.js' && echo "console page: ok"
+          curl -sf -o /dev/null "$BASE/config.json" && echo "sign-in config: ok"
