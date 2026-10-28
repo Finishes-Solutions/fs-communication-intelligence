@@ -165,7 +165,29 @@ Attachments that failed to read (for example before the 2026-10-28 fix that let 
 ci process --retry-attachments --limit 0
 ```
 
+**Masking (2026-10-28).** Bank, routing, card and government ID numbers and credentials (passwords, one-time codes, API keys, tokens, reset links) are now masked, e.g. `[USBankAccountNumber]` or `[credential]`, before an email is classified, indexed or shown. The email itself stays searchable, flagged for review. Health information is still hidden entirely. Mail processed before this change still has the old outcome (hidden, or indexed unmasked). Once the deploy with masking has finished, reprocess everything under the new rules, then turn processing back on if you paused it:
+
+```bash
+ci process --remask --limit 0
+```
+
+```bash
+ci schedule set --processing-on
+```
+
+Each message is unsearchable for a few minutes while it is reprocessed. `SENSITIVE_DATA_POLICY=restrict` on the ingestion app brings back the old rule. The original attachment files kept in Blob Storage are not masked; only the admin console can open them.
+
 If Cloud Shell can't reach the database (timeout), add its address: `az postgres flexible-server firewall-rule create -g fs-communication-intelligence --server-name psql-fs-ci-dev-1026b --name cloudshell --start-ip-address $(curl -s https://api.ipify.org) --end-ip-address $(curl -s https://api.ipify.org)`.
+
+### Backfill further back
+
+A requested capture can reach back up to 93 days. Give a start date (midnight Central time) instead of hours:
+
+```bash
+ci run-capture --since 2026-09-01
+```
+
+The ingestion app stops a single run after 2 hours. If a large backfill is cut off, request it again: it resumes, because emails already stored are skipped. Keep processing paused (`ci schedule set --processing-off`) while capturing if you want to change settings before the AI runs.
 
 ## 8. Test
 
@@ -223,12 +245,12 @@ A web page at `https://func-fs-ci-adm-dev-1026.azurewebsites.net/` for console a
 - **Schedule & Runs:** how often capture runs, its look-back, active hours, weekdays only, processing on/off. Below that, every run with its counts.
 - **Mailboxes:** filter, approve or unapprove, exclude or un-exclude (with a reason), approve all enrolled, change mode, and exclude a person or domain in every mailbox.
 - **Messages:** search or list published mail by mailbox, sender, label and date. A message shows the AI summary, action and risk, labels, people, the body, and its **files**: preview (PDF, images, text), download, or the extracted text. Signature images and logos aren't processed or shown: every inline image, and any attached image of 100 KB or less. There's also an **Open in Outlook** link, which works only for mailboxes your account can open.
-- **Action Items:** the same list agents get from `list_actionable`, for any person or window.
+- **Action Items:** the same list agents get from `list_actionable`, for any person or window. With a person profile (below), it shows that person's confident items plus a separate **Possible** list, and has a panel to edit profiles.
 - **Not Published:** held, restricted, bulk and failed messages, with metadata and reason only, never the subject or text.
 - **Labels:** shown by name ("Payment", "Needs Approval") or by stored key (`cat_payment_billing`, `approval_required`); switch with **Labels: Names / Keys** in the sidebar. Hovering a label shows the other form. The choice is remembered in that browser.
-- **Risk Analysis:** emails labelled Project Risk in the last 7, 30, 90 or 365 days: count and change against the period before, a chart per day or week, counts by category, sender company (email domain) and mailbox, how many are also urgent or need approval, and a feed with the AI's one-line risk and the full message. It also shows the risk label's measured precision and recall from Label Review. It uses only the stored label and risk text: there is no project name, risk type or severity yet, so nothing is grouped by those.
-- **Reports:** pick a dataset (messages, action items, project risks, run history, mailboxes, or label review results), a date range, filters and columns, and optionally group by mailbox, sender, sender company, label, day, week or month. Preview on screen, then export to CSV or Excel (up to 5,000 rows). Templates cover common reports; **Save Report** keeps a report in this browser with its date range relative ("last 30 days"). Reports hold metadata and AI proposals only (subject, sender, mailbox, date, labels, summary, action, risk). **Email bodies and attachment text are never exported.** Every preview and export is written to `audit_events` with the message ids it included. Cells that a spreadsheet could run as a formula are neutralized (subjects are untrusted).
-- **Label Review:** shows a message and asks, for each of the 21 labels, whether it applies (Yes/No), next to what the AI said. **Random Sample** is the mode that gives honest numbers; **Uncertain First** and **One Label** help tune thresholds but over-represent hard cases. **Results** shows precision (when the AI says yes, how often it's right) and recall (how many true cases it marks yes) per label, with sample sizes, and flags any label with fewer than 20 reviews on either side. Answers are stored in `label_reviews` (label decisions only, never text) and audited. A message's **Review Labels** button opens it for review.
+- **Risk Analysis:** emails labelled Project Risk in the last 7, 30, 90 or 365 days: count and change against the period before, a chart per day or week, counts by category, property/project, sender company (email domain) and mailbox, how many are also urgent or need approval, and a feed with the AI's one-line risk and the full message. It also shows the risk label's measured precision and recall from Label Review. There is no risk type or severity yet, so nothing is grouped by those.
+- **Reports:** pick a dataset (messages, action items, project risks, run history, mailboxes, or label review results), a date range, filters and columns, and optionally group by mailbox, sender, sender company, label, property/project, legal entity, day, week or month. Preview on screen, then export to CSV or Excel (up to 5,000 rows). The action-items dataset is exactly the Action Items list (including the person check when the person has a profile). Templates cover common reports; **Save Report** keeps a report in this browser with its date range relative ("last 30 days"). Reports hold metadata and AI proposals only (subject, sender, mailbox, date, labels, properties, entities, summary, action, risk). **Email bodies and attachment text are never exported.** Every preview and export is written to `audit_events` with the message ids it included. Cells that a spreadsheet could run as a formula are neutralized (subjects are untrusted).
+- **Label Review** (formerly Label check): go through emails one at a time (from a person's action items, recent mail, project risks, or a label) and mark each label *Yes* / *No* next to what the AI said, and whether it's really an action item for the person, with a reason when it isn't (someone else's, FYI only, automated, group email, already handled). **Results** shows how often the AI is right per label (precision and recall) and, once a label has 20 checked emails with at least 5 of each answer, the "yes" threshold that would have scored best, plus how often listed action items were really each person's. Suggestions are never applied automatically. A message's **Review Labels** button opens it for review.
 - **Communication Lab:** write an email (or start from a sample: invoice, change order, lien notice, failed inspection, newsletter, phishing, SSN, prompt injection), or pick a stored one. It runs the real screening, classifier, policy and routing and stores nothing. It shows a verdict ("Action item", "Project risk", "Restricted"…), each pipeline step, why, the AI proposal, every label against its thresholds, the difference from what was stored, and the message's files. Each run calls Azure OpenAI once.
 
 **Original files.** From the deploy that includes this, processing keeps each attachment's original file in the private container `attachments` of `stfscievidev1026`. Each distinct file is stored once, and inline signature images are skipped. Each processing pass also backfills up to 100 files for mail processed earlier. Files are **not malware-scanned** (your decision, 2026-10-28), so open unexpected downloads with care. The console serves a file only when you may read its message; restricted, held and bulk mail never get file access.
@@ -255,13 +277,48 @@ Then run it. It creates only what's missing, sets up file storage, applies the d
 CHAT_DEPLOYMENT=gpt-4.1-mini ADMINS="matthews@finishessolutions.com" bash scripts/azure/4-admin-console.sh
 ```
 
-**Risk Analysis, Reports and Label Review need migration `0008_label_reviews.sql`.** Apply it once from your Mac, before or right after merging (ingestion is unaffected; until it's applied those three pages show an error and the rest of the console works):
+Add the two secrets it prints (`ADMIN_FUNCTION_APP`, `ADMIN_PUBLIC_URL`) to the GitHub environment `development`, then merge the pull request (or rerun **Deploy (development)**). The migrations (`0005`, `0006`) must be applied **before** the new ingestion code deploys; otherwise the capture and processing timers fail every tick until they are. To add another admin later, rerun the script with their address in `ADMINS`.
+
+### Action items in two steps, and person profiles
+
+1. **Step 1, the classifier,** tags whether an email asks *someone* to act (`action_required`, `approval_required`). It is told to say no for FYI, newsletters, marketing, automated notifications and requests to a whole group.
+2. **Step 2, the person check,** runs for each person with a profile. A separate AI call decides whether the email is really *that person's* action item. It sees the profile (name, addresses, role, and who they are **not**), who the email went to directly and who was only copied. It returns a probability, the person's own action line and a reason. Rules answer first without the AI: no request, possible bulk mail, automated sender, sent by the person, or not sent to them at all.
+
+A person's list (console, MCP `list_actionable`, `ci actionable`) is step 2's confident "yes". Its unsure answers are listed separately as **possible**. Someone without a profile falls back to a simpler rule: named by the classifier, or the email was sent to them alone.
+
+Set up Chuck Sr. once (console: **Action items → People with a person check**, or Cloud Shell). Give every company address of his (one `--address` each; not the `chuckjr` one), and say who he is not:
 
 ```bash
-make azure-migrate AZ_PSQL=psql
+ci people set chuck_sr --name "Chuck Sr." --address chuckc@finishesetc.net --not-to-confuse "Chuck Jr., whose email address contains chuckjr. Requests addressed to Chuck Jr. or sent to his chuckjr address are not Chuck Sr.'s, even when the email just says Chuck."
 ```
 
-Add the two secrets it prints (`ADMIN_FUNCTION_APP`, `ADMIN_PUBLIC_URL`) to the GitHub environment `development`, then merge the pull request (or rerun **Deploy (development)**). The migrations (`0005`, `0006`) must be applied **before** the new ingestion code deploys; otherwise the capture and processing timers fail every tick until they are. To add another admin later, rerun the script with their address in `ADMINS`.
+Only Chuck Sr. has a list for now; Chuck Jr. has no profile of his own.
+
+Changing a profile only affects mail processed afterwards. To apply it to mail already processed, run `ci process --remask --limit 0` (this re-runs everything, including the classifier).
+
+### Properties, projects and legal entities
+
+The classifier also returns the **properties/projects** an email is about (up to 5) and the **legal entities** it names (up to 8: LLCs, LPs, trusts, funds, companies), exactly as written in the email or its attachments, never inferred. They appear in Messages, the Label check, the Lab, and agent results (`properties_ai`, `entities_ai`). Filter by them in **Messages** (Property, Entity boxes) or from agents (`search_email` / `list_email` with `property` or `entity`): a partial, case-insensitive match, so `property=willow` finds "Willow Creek Retail".
+
+Without a list, names appear as each email writes them ("WC Retail", "Willow Creek"). When you have the official lists, add them once; the classifier then prefers the canonical name, and aliases are mapped to it:
+
+```bash
+ci names add property "Willow Creek Retail" --alias "WC Retail" --alias "Willow Creek"
+```
+
+```bash
+ci names add entity "Capital Company LLC"
+```
+
+`ci names list` shows them, `ci names remove property "Willow Creek Retail"` removes one. New names apply to mail processed afterwards; `ci process --remask --limit 0` re-runs earlier mail.
+
+**Deploying this change:** it adds tables and columns (migrations `0008` to `0011`). Apply them **before** merging, or the new code fails on every processing run until they exist:
+
+```bash
+cd ~/fs-communication-intelligence && git fetch origin && git checkout matthew/nice-lovelace-4sqyit && git pull --ff-only origin matthew/nice-lovelace-4sqyit && make azure-migrate AZ_PSQL=psql && git checkout main
+```
+
+Then merge, set up the profile as above, and re-run the processed mail with `ci process --remask --limit 0`.
 
 ## What isn't done yet
 

@@ -7,16 +7,18 @@ already published and visible to the caller, re-run against the current
 classifier and compared with what was stored. Only the input hash is audited.
 
 Routing mirrors ``ci_retrieval.search.list_actionable``: an email is an action
-item for a person when ``action_required`` or ``approval_required`` is yes and
-the classifier named one of the person's addresses in ``action_for``, or named
-nobody and the message arrived in one of the person's mailboxes. A
+item for a person when ``action_required`` or ``approval_required`` is yes, it
+is not possible bulk mail, not from an automated sender and not sent by the
+person, and the classifier named one of the person's addresses in
+``action_for`` (or named nobody and it was sent to the person alone). A
 ``project_risk`` yes makes it a risk item for everyone with access.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from ci_processing.classification import (
@@ -25,10 +27,14 @@ from ci_processing.classification import (
     ClassificationResult,
     Classifier,
     Decision,
+    KnownName,
+    with_known_names,
 )
 from ci_processing.policy import Disposition, Outcome, classification_outcome, screening_gate
+from ci_processing.redaction import Redaction, RedactionUnavailable, Redactor
+from ci_processing.routing import PersonProfile, PersonRouter, rule_out
 from ci_processing.screening import Screener
-from ci_retrieval.search import ACTION_LABELS, RISK_LABELS
+from ci_retrieval.search import ACTION_LABELS, AUTOMATED_SENDER, BULK_LABELS, RISK_LABELS
 
 # Same caps the processing worker uses (ci_email.process), so a re-run of a
 # stored message sends the classifier the same input.
@@ -42,6 +48,8 @@ MAX_LAB_CHARS = 60_000
 class LabBackends:
     screener: Screener
     classifier: Classifier
+    redactor: Redactor | None = None  # None: SENSITIVE_DATA_POLICY=restrict
+    router: PersonRouter | None = None  # step 2 of action items, for people with a profile
 
 
 def addresses(value: str | Sequence[str] | None) -> list[str]:
@@ -58,6 +66,8 @@ def routing(
     *,
     received_by: Sequence[str] = (),
     direction: str = "in",
+    sender: str = "",
+    to: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Where this message would surface, with the reason in plain words."""
     searchable = outcome.disposition in (Disposition.INDEX, Disposition.REVIEW)
@@ -83,12 +93,21 @@ def routing(
         why.append("Indexed but flagged for review (" + ", ".join(outcome.reason_codes) + ").")
     assert result is not None  # noqa: S101 - searchable implies it was classified
     yes = result.yes_labels()
+    decisions = result.decisions()
     asks = sorted(yes & set(ACTION_LABELS))
+    bulkish = [n for n in BULK_LABELS if decisions[n] is not Decision.NO]
+    sender = sender.lower()
     if not asks:
         why.append("Not an action item: neither action_required nor approval_required is yes.")
+    elif bulkish:
+        why.append(f"Not an action item: may be bulk mail ({', '.join(bulkish)} not ruled out).")
+    elif re.match(AUTOMATED_SENDER, sender):
+        why.append("Not an action item: sent by an automated address.")
     elif not person:
         out["action_item"] = True
         why.append(f"Action item ({', '.join(asks)}); no person given to route it to.")
+    elif sender in person:
+        why.append("Not an action item for the person: they sent it.")
     elif set(result.action_for) & set(person):
         out["action_item"] = True
         why.append("Action item for the person: the classifier named them in action_for.")
@@ -98,11 +117,13 @@ def routing(
             + ", ".join(result.action_for)
             + "."
         )
-    elif direction == "in" and set(received_by) & set(person):
+    elif direction == "in" and set(received_by) & set(person) and to and set(to) <= set(person):
         out["action_item"] = True
-        why.append("Action item for the person: nobody was named and it arrived in their mailbox.")
+        why.append("Action item for the person: nobody was named and it was sent to them alone.")
     else:
-        why.append("Action item, but nobody was named and it did not arrive in their mailbox.")
+        why.append(
+            "Not an action item for the person: nobody was named and it was not sent to them alone."
+        )
     if yes & set(RISK_LABELS):
         out["risk_item"] = True
         why.append("Project risk: listed under risks for everyone with access.")
@@ -131,8 +152,14 @@ def run(
     *,
     received_by: Sequence[str] = (),
     direction: str = "in",
+    profile: PersonProfile | None = None,
+    known: Sequence[KnownName] = (),
 ) -> dict[str, Any]:
-    """Screen, then classify (only if screening allows, as in processing), then route."""
+    """Screen, then classify (only if screening allows, as in processing), then route.
+
+    With a ``profile`` (step 2 of action items), the person check decides
+    whether it is that person's action item, exactly as processing would.
+    """
     screen_text = "\n\n".join(
         [item.subject, item.body_text, *(text for _, text in item.attachments)]
     )
@@ -142,11 +169,48 @@ def run(
         for c in screening.checks
     ]
     gate = screening_gate(screening)
-    result = None if gate is not None else backends.classifier.classify(item)
-    outcome = gate or classification_outcome(result)  # type: ignore[arg-type]
+    masked: dict[str, int] = {}
+    if gate is None and backends.redactor is not None:
+        try:
+            item, masked = _masked(backends.redactor, item)
+        except RedactionUnavailable:
+            gate = Outcome(Disposition.HELD, ("redaction_pending",))
+    result = (
+        None
+        if gate is not None
+        else with_known_names(backends.classifier.classify(item, known), known)
+    )
+    if gate is not None:
+        outcome = gate
+    else:
+        assert result is not None  # noqa: S101 - classified when screening allowed
+        outcome = classification_outcome(result, mask_sensitive=backends.redactor is not None)
+    route = routing(
+        result,
+        outcome,
+        person,
+        received_by=received_by,
+        direction=direction,
+        sender=item.sender,
+        to=addresses(item.to),
+    )
+    person_check = None
+    if profile is not None and result is not None and route["searchable"]:
+        person_check = _person_check(backends, result, item, profile, received_by)
+        route["action_item"] = person_check["decision"] == "yes"
+        route["why"] = [w for w in route["why"] if "action item" not in w.lower()]
+        route["why"].insert(0, person_check["why"])
+    if masked:
+        route["why"].insert(
+            0,
+            "Masked before classification and indexing: "
+            + ", ".join(f"{k} x{n}" for k, n in sorted(masked.items()))
+            + ".",
+        )
     return {
         "input_sha256": item.sha256(),
         "screening": checks,
+        "masked": masked,
         "classified": result is not None,
         "model": result.model if result else None,
         "policy_version": result.policy_version if result else None,
@@ -162,8 +226,59 @@ def run(
         "action_for_ai": list(result.action_for) if result else [],
         "due_ai": result.due_text if result else None,
         "risk_ai": result.risk_text if result else None,
-        "routing": routing(result, outcome, person, received_by=received_by, direction=direction),
+        "properties_ai": list(result.properties) if result else [],
+        "entities_ai": list(result.entities) if result else [],
+        "routing": route,
+        "person_check": person_check,
     }
+
+
+def _person_check(
+    backends: LabBackends,
+    result: ClassificationResult,
+    item: ClassificationInput,
+    profile: PersonProfile,
+    received_by: Sequence[str],
+) -> dict[str, Any]:
+    mailbox = next((m for m in received_by if m in {a.lower() for a in profile.addresses}), "")
+    ruled_out = rule_out(result, item, profile, mailbox)
+    if ruled_out or backends.router is None:
+        reason = ruled_out or "no_router"
+        return {
+            "person": profile.display_name,
+            "decision": "no",
+            "probability": None,
+            "action": None,
+            "reason": reason,
+            "by": "rules",
+            "why": f"Step 2 for {profile.display_name}: not theirs by the rules ({reason}).",
+        }
+    route = backends.router.route(item, profile)
+    shown = "?" if route.probability is None else f"{route.probability:.2f}"
+    return {
+        "person": profile.display_name,
+        "decision": route.decision.value,
+        "probability": route.probability,
+        "action": route.action,
+        "reason": route.reason,
+        "by": route.model,
+        "why": f"Step 2 for {profile.display_name}: {route.decision.value} ({shown},"
+        f" {route.reason or 'no reason'}).",
+    }
+
+
+def _masked(
+    redactor: Redactor, item: ClassificationInput
+) -> tuple[ClassificationInput, dict[str, int]]:
+    """The same masking processing applies, before classification."""
+    result: Redaction = redactor.redact(
+        [item.subject, item.body_text, *(text for _, text in item.attachments)]
+    )
+    subject, body, *texts = result.texts
+    attachments = tuple(
+        (name, text) for (name, _), text in zip(item.attachments, texts, strict=True)
+    )
+    return replace(item, subject=subject, body_text=body, attachments=attachments), result.counts
 
 
 def pasted_input(body: dict[str, Any]) -> ClassificationInput:

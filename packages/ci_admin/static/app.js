@@ -70,6 +70,8 @@ const ICONS = {
   review: ["M18 6 7 17l-5-5", "m22 10-7.5 7.5L13 16"],
   save: ["M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z", "M17 21v-8H7v8", "M7 3v5h8"],
   x: ["M18 6 6 18", "m6 6 12 12"],
+  building: ["M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18z", "M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2", "M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2", "M10 6h4", "M10 10h4", "M10 14h4", "M10 18h4"],
+  scale: ["m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1z", "m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1z", "M7 21h10", "M12 3v18", "M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"],
   up: ["m18 15-6-6-6 6"],
   down: ["m6 9 6 6 6-6"],
 };
@@ -316,7 +318,7 @@ async function overview() {
   const published = (d.versions || []).filter(v => v.processing_state === "published")
     .reduce((n, v) => n + v.versions, 0);
   const s = d.schedule;
-  const hours = h("input", { type: "number", min: "0.25", max: "744", step: "0.25", value: s.capture_window_hours, style: "width:110px" });
+  const hours = h("input", { type: "number", min: "0.25", max: "2232", step: "0.25", value: s.capture_window_hours, style: "width:110px" });
   const requeue = guard(async () => { const r = await post("/api/requeue-failed"); toast(`${r.requeued} failed messages requeued.`); route(); });
   const failed = (d.failures || []).reduce((n, f) => n + f.versions, 0);
   show(
@@ -511,11 +513,23 @@ function labelSelect(value) {
   }));
 }
 
+// Properties/projects and legal entities the AI found in the email, as written there
+// (or the registry's canonical name).
+function nameChips(m, limit) {
+  const props = m.properties_ai || [], ents = m.entities_ai || [];
+  if (!props.length && !ents.length) return null;
+  const cut = list => (limit ? list.slice(0, limit) : list);
+  return h("div", { class: "badges names" },
+    cut(props).map(n => h("span", { class: "badge name-prop", title: "Property / project" }, icon("building"), n)),
+    cut(ents).map(n => h("span", { class: "badge name-ent", title: "Legal entity" }, icon("scale"), n)));
+}
+
 function msgRow(r, onPick, extra) {
   const el = h("button", { class: "msg", type: "button" },
     h("div", { class: "msg-top" }, h("span", { class: "msg-from" }, r.sender || "Unknown sender"), h("span", { class: "msg-time" }, short(r.received_at))),
     h("div", { class: "msg-subject" }, r.subject || "(no subject)"),
     extra || (r.summary_ai ? h("div", { class: "msg-summary" }, r.summary_ai) : null),
+    nameChips(r, 2),
     (r.labels || []).length || r.review_flag ? h("div", { class: "badges" },
       r.review_flag ? badge("Review", "warn") : null, labelBadges((r.labels || []).slice(0, 4)),
       (r.labels || []).length > 4 ? badge(`+${r.labels.length - 4}`) : null) : null);
@@ -532,6 +546,8 @@ async function messagesPage() {
     q: h("input", { placeholder: "Search words or ask a question", value: p.get("q") || "" }),
     mailbox: h("input", { placeholder: "Mailbox", value: p.get("mailbox") || "", style: "width:150px" }),
     sender: h("input", { placeholder: "Sender", value: p.get("sender") || "", style: "width:150px" }),
+    property: h("input", { placeholder: "Property / project", value: p.get("property") || "", style: "width:160px" }),
+    entity: h("input", { placeholder: "Legal entity", value: p.get("entity") || "", style: "width:140px" }),
     label: labelSelect(p.get("label") || ""),
     since_days: h("select", {}, [["1", "Last day"], ["3", "Last 3 days"], ["7", "Last week"], ["30", "Last 30 days"], ["0", "Any time"]]
       .map(([v, t]) => h("option", { value: v, selected: v === (p.get("since_days") ?? "7") }, t))),
@@ -548,7 +564,8 @@ async function messagesPage() {
   show(pageHead("Messages", "Published mail you are authorized to read. Summaries and labels are AI proposals."),
     card({},
       h("form", { class: "toolbar", onsubmit: e => { e.preventDefault(); go(); } },
-        searchBox(f.q), f.mailbox, f.sender, f.label, f.since_days, h("button", { class: "btn primary", type: "submit" }, "Search"))),
+        searchBox(f.q), f.mailbox, f.sender, f.property, f.entity, f.label, f.since_days,
+        h("button", { class: "btn primary", type: "submit" }, "Search"))),
     h("div", { class: "inbox" }, results, detail),
     note("Restricted, held and bulk mail never appears here; see Not Published for counts."));
   const q = new URLSearchParams();
@@ -586,6 +603,7 @@ function messageView(id, m) {
           h("button", { class: "btn sm", onclick: () => { location.hash = `#review?id=${encodeURIComponent(id)}`; } }, icon("review"), "Review Labels"),
           h("button", { class: "btn sm", onclick: () => { location.hash = `#lab?id=${encodeURIComponent(id)}`; } }, icon("lab"), "Re-Run in Lab")))),
     aiBlock(m) ? h("div", { class: "reader-section" }, aiBlock(m)) : null,
+    nameChips(m) ? h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "Properties and Entities"), nameChips(m)) : null,
     hasLabels ? h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "Labels"),
       h("div", { class: "badges" }, m.review_flag ? badge("Review", "warn", true) : null,
         labelBadges(m.labels), labelBadges(m.uncertain_labels, "warn"))) : null,
@@ -601,7 +619,8 @@ function messageView(id, m) {
 
 function aiBlock(m) {
   const rows = [["Summary", m.summary_ai], ["Action", m.action_ai], ["Action For", (m.action_for_ai || []).join(", ")],
-    ["Due", m.due_ai], ["Project Risk", m.risk_ai]].filter(([, v]) => v);
+    ["Due", m.due_ai], ["Project Risk", m.risk_ai], ["Properties", (m.properties_ai || []).join(" · ")],
+    ["Entities", (m.entities_ai || []).join(" · ")]].filter(([, v]) => v);
   if (!rows.length) return null;
   return h("div", { class: "ai" }, h("div", { class: "ai-head" }, icon("spark"), "AI Proposal"),
     h("dl", { class: "kv" }, rows.flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])));
@@ -613,24 +632,28 @@ async function actionablePage() {
   const hours = h("select", {}, [["24", "Last 24 hours"], ["72", "Last 3 days"], ["168", "Last week"], ["720", "Last 30 days"]]
     .map(([v, t]) => h("option", { value: v, selected: v === (p.get("hours") || "24") }, t)));
   const out = h("div", {}, h("div", { class: "card" }, h("div", { class: "empty" }, h("div", { class: "spinner" }), "Loading…")));
-  show(pageHead("Action Items & Project Risks", "The same list Chuck's agents get from list_actionable. AI proposals, not approvals."),
-    card({},
-      h("form", { class: "toolbar", onsubmit: e => { e.preventDefault(); location.hash = `#actionable?${new URLSearchParams({ person: person.value, hours: hours.value })}`; } },
-        h("div", { class: "search", style: "flex:1 1 320px" }, icon("users"), person), hours,
-        h("button", { class: "btn primary", type: "submit" }, "Show")),
-      h("div", { class: "muted small", style: "margin-top:8px" }, "Separate several addresses for one person with commas. Leave empty for everyone.")),
-    out);
-  const d = await api("/api/actionable?" + new URLSearchParams({ person: person.value, hours: hours.value }));
+  show(pageHead("Action Items & Project Risks", "The same list Chuck's agents get from list_actionable. AI proposals, not approvals.",
+    h("a", { class: "btn", href: `#review?${new URLSearchParams({ source: "actionable", person: person.value })}` }, icon("review"), "Review These One by One")),
+  card({},
+    h("form", { class: "toolbar", onsubmit: e => { e.preventDefault(); location.hash = `#actionable?${new URLSearchParams({ person: person.value, hours: hours.value })}`; } },
+      h("div", { class: "search", style: "flex:1 1 320px" }, icon("users"), person), hours,
+      h("button", { class: "btn primary", type: "submit" }, "Show")),
+    h("div", { class: "muted small", style: "margin-top:8px" }, "A profile key or the person's addresses, comma-separated. Leave empty for everyone.")),
+  out);
+  const [d, people] = await Promise.all([
+    api("/api/actionable?" + new URLSearchParams({ person: person.value, hours: hours.value })), peoplePanel()]);
   const detail = h("div", { class: "card reader" }, h("div", { class: "placeholder" },
     h("div", { class: "empty" }, h("div", { class: "i-wrap" }, icon("check")), h("div", { class: "empty-title" }, "Select an Item"),
       h("div", { class: "small" }, "The full message opens here."))));
+  const checkBadge = r => r.person_check_ai ? badge(`Person check${r.person_check_ai.probability != null ? " " + Number(r.person_check_ai.probability).toFixed(2) : ""}${r.person_check_ai.reason ? " · " + nice(r.person_check_ai.reason) : ""}`, "info") : null;
   const list = (rows, kind) => rows.length ? h("div", { class: "items" }, rows.map(r => {
     const el = h("button", { class: "item", type: "button" },
-      h("span", { class: "item-icon " + (kind === "risk" ? "warn" : "good") }, icon(kind === "risk" ? "alert" : "check")),
+      h("span", { class: "item-icon " + (kind === "risk" || kind === "possible" ? "warn" : "good") }, icon(kind === "risk" ? "alert" : kind === "possible" ? "info" : "check")),
       h("div", { style: "min-width:0" },
         h("div", { class: "item-title" }, r.subject || "(no subject)"),
         h("div", { class: "item-sub" }, `${r.sender || "?"} → ${r.mailbox}`),
-        h("div", { class: "item-text" }, kind === "risk" ? r.risk_ai : r.action_ai)),
+        h("div", { class: "item-text" }, kind === "risk" ? r.risk_ai : r.action_ai),
+        kind !== "risk" && r.person_check_ai ? h("div", { class: "badges", style: "margin-top:8px" }, checkBadge(r)) : null),
       h("div", { style: "text-align:right" }, h("div", { class: "msg-time" }, short(r.received_at)),
         kind !== "risk" && r.due_ai ? h("div", { style: "margin-top:6px" }, badge(`Due ${r.due_ai}`, "warn")) : null));
     el.addEventListener("click", () => {
@@ -639,11 +662,49 @@ async function actionablePage() {
     });
     return el;
   })) : emptyState(kind === "risk" ? "No Project Risks" : "No Action Items", "Nothing in this window.", kind === "risk" ? "shield" : "ok");
-  out.replaceChildren(h("div", { class: "inbox", style: "margin-top:20px" },
-    h("div", {},
-      card({ title: "Action Items", actions: badge(num(d.actions.length), "good"), flush: true }, list(d.actions, "action")),
-      card({ title: "Project Risks", actions: badge(num(d.risks.length), "warn"), flush: true }, list(d.risks, "risk"))),
-    detail));
+  const who = d.person_check ? d.person_check.name : d.person || "Everyone";
+  const how = d.person_check
+    ? `The person check is on for ${d.person_check.name}: only emails it judged to be theirs are listed. "Possible" are the ones it was unsure about.`
+    : d.person ? "No person profile matches, so a simpler rule decides (named in the AI's \u201caction for\u201d, or sent to them alone). Add a profile below for the person check." : null;
+  out.replaceChildren(
+    how ? note(how, d.person_check ? null : "warn") : null,
+    h("div", { class: "inbox", style: "margin-top:20px" },
+      h("div", {},
+        card({ title: `Action Items for ${who}`, actions: badge(num(d.actions.length), "good"), flush: true }, list(d.actions, "action")),
+        (d.possible || []).length ? card({ title: "Possible", sub: "The person check was unsure.", actions: badge(num(d.possible.length), "warn"), flush: true }, list(d.possible, "possible")) : null,
+        card({ title: "Project Risks", actions: badge(num(d.risks.length), "warn"), flush: true }, list(d.risks, "risk"))),
+      detail),
+    people);
+}
+
+// Step-2 person profiles: who someone is and who they must not be confused with.
+async function peoplePanel() {
+  const d = await api("/api/people");
+  const f = {
+    key: h("input", { placeholder: "chuck_sr" }), display_name: h("input", { placeholder: "Chuck Sr." }),
+    addresses: h("input", { placeholder: "chuckc@finishesetc.net, other@…", class: "wide" }),
+    role: h("input", { placeholder: "e.g. CEO and owner; approves draws, contracts, change orders", class: "wide" }),
+    not_to_confuse: h("textarea", { placeholder: "e.g. Chuck Jr. (address), operations; also called Chuck. Mail to him is not Chuck Sr.'s.", style: "min-height:80px" }),
+    enabled: h("input", { type: "checkbox", checked: true }),
+  };
+  const fill = p => { f.key.value = p.key; f.display_name.value = p.display_name; f.addresses.value = p.addresses.join(", ");
+    f.role.value = p.role; f.not_to_confuse.value = p.not_to_confuse; f.enabled.checked = p.enabled; f.key.focus(); };
+  const save = guard(async () => {
+    await post("/api/people", { key: f.key.value.trim(), display_name: f.display_name.value, addresses: f.addresses.value,
+      role: f.role.value, not_to_confuse: f.not_to_confuse.value, enabled: f.enabled.checked }, "PUT");
+    toast("Saved. New and reprocessed emails use it; run ci process --remask --limit 0 to apply it to existing mail."); route();
+  });
+  return card({ title: "People With a Person Check", class: "spaced",
+    sub: "Each person gets a separate AI check of whether an email is really their action item. Describe who they are not (for example Chuck Jr.), so similar names aren't mixed up." },
+  table([["On", p => p.enabled ? badge("On", "good", true) : badge("Off")], ["Key", p => h("span", { class: "mono" }, p.key)],
+    ["Name", p => p.display_name], ["Addresses", p => p.addresses.join(", ")],
+    ["Not to Confuse With", p => h("span", { class: "muted small" }, p.not_to_confuse || "—")],
+    ["", p => h("button", { class: "btn sm", onclick: () => fill(p) }, "Edit")]], d.people, null,
+  emptyState("No Profiles Yet", "Add one below to turn on the person check.", "users")),
+  h("div", { class: "form-grid", style: "margin-top:20px" }, field("Key", f.key), field("Name as People Write It", f.display_name)),
+  h("div", { style: "display:flex;flex-direction:column;gap:14px;margin-top:14px" },
+    field("Email Addresses", f.addresses, "(comma-separated)"), field("Role", f.role), field("Not to Be Confused With", f.not_to_confuse),
+    h("div", { class: "toolbar" }, switchEl(f.enabled, "Person check on"), h("button", { class: "btn primary", onclick: save }, "Save Person"))));
 }
 
 async function unpublishedPage() {
@@ -910,6 +971,9 @@ function labResult(r, person, message) {
       { index: "good", review: "warn", restricted: "bad", held: "warn", not_indexed: "muted" }[r.routing.disposition] || "muted"],
     ["Routing", r.routing.action_item ? "Action item" : r.routing.risk_item ? "Risk" : "None", r.routing.action_item || r.routing.risk_item ? "good" : "muted"],
   ];
+  if (r.person_check) steps.push([`Person Check: ${r.person_check.person}`,
+    `${r.person_check.decision}${r.person_check.probability != null ? " " + Number(r.person_check.probability).toFixed(2) : ""} · ${r.person_check.reason || ""}`,
+    { yes: "good", review: "warn", no: "muted", unresolved: "warn" }[r.person_check.decision] || "muted"]);
   const onlyInteresting = h("input", { type: "checkbox", checked: true });
   const labelsBox = h("div");
   const stored = r.stored ? new Set(r.stored.labels) : null;
@@ -933,7 +997,8 @@ function labResult(r, person, message) {
   onlyInteresting.addEventListener("change", drawLabels);
   if (r.classified) drawLabels();
   const ai = [["Summary", r.summary_ai], ["Action", r.action_ai], ["Action For", (r.action_for_ai || []).join(", ")],
-    ["Due", r.due_ai], ["Project Risk", r.risk_ai]].filter(([, x]) => x);
+    ["Due", r.due_ai], ["Project Risk", r.risk_ai], ["Properties", (r.properties_ai || []).join(" · ")],
+    ["Entities", (r.entities_ai || []).join(" · ")]].filter(([, x]) => x);
   return h("div", { class: "lab-out" },
     h("div", { class: "card" },
       h("div", { class: `verdict v-${v.tone}` },
@@ -1020,9 +1085,10 @@ async function risksPage() {
   const mb = h("input", { placeholder: "All mailboxes", value: mailbox, style: "width:220px" });
   const [d, m] = await Promise.all([
     api("/api/risks?" + new URLSearchParams({ days, mailbox, category })),
-    api("/api/reviews/metrics?sample=random").catch(() => null),
+    api("/api/calibration").catch(() => null),
   ]);
   const quality = m && m.labels.find(x => x.label === "project_risk");
+  const enough = quality && quality.judged >= m.min_sample;
   const change = d.previous_total ? Math.round(((d.total - d.previous_total) / d.previous_total) * 100) : null;
   const unit = Number(days) <= 14 ? "day" : "week";
   const signals = d.co_signals || {};
@@ -1073,14 +1139,16 @@ async function risksPage() {
         bars(d.by_company.map(r => [r.domain, r.risks, "warn"]), emptyState("No Senders", null, "users")))),
     h("div", { class: "cols" },
       card({ title: "By Mailbox", sub: "Click one to filter." }, bars(clickable(d.by_mailbox, "mailbox", "mailbox"), emptyState("No Mailboxes", null, "inbox"))),
-      card({ title: "How Good Is the Risk Label?", sub: "From your random-sample label reviews." },
-        quality && quality.precision_n ? h("div", {},
+      card({ title: "How Good Is the Risk Label?", sub: "From your Label Review answers." },
+        quality && quality.judged ? h("div", {},
           h("div", { class: "quality" },
-            h("div", {}, h("div", { class: "stat-value" }, pct(quality.precision)), h("div", { class: "muted small" }, `Precision · ${quality.precision_n} AI-yes reviewed`)),
-            h("div", {}, h("div", { class: "stat-value" }, pct(quality.recall)), h("div", { class: "muted small" }, `Recall · ${quality.recall_n} true risks reviewed`))),
-          quality.enough ? null : note(`Fewer than ${m.min_sample} reviews on each side, so these numbers can swing a lot.`, "warn"))
-          : h("div", {}, h("p", { class: "muted", style: "margin:0 0 12px" }, "Not measured yet. Until you review a random sample, treat these counts as the classifier's guess."),
-            h("a", { class: "btn sm", href: "#review" }, icon("review"), "Start Label Review")))),
+            h("div", {}, h("div", { class: "stat-value" }, pct(quality.precision)), h("div", { class: "muted small" }, "Precision: right when it says risk")),
+            h("div", {}, h("div", { class: "stat-value" }, pct(quality.recall)), h("div", { class: "muted small" }, `Recall: of ${num(quality.applies)} real risks checked`))),
+          enough ? null : note(`Only ${num(quality.judged)} checked so far; these numbers settle after about ${m.min_sample}.`, "warn"))
+          : h("div", {}, h("p", { class: "muted", style: "margin:0 0 12px" }, "Not measured yet. Until you review some emails, treat these counts as the classifier's guess."),
+            h("a", { class: "btn sm", href: "#review?source=risks" }, icon("review"), "Review Project Risks")))),
+    card({ title: "By Property / Project", sub: "Names as written in the email, or the registry's canonical name. Top 15." },
+      bars(d.by_property.map(r => [r.property, r.risks, "warn"]), emptyState("No Property Names", "The AI found no property or project names in these risks.", "building"))),
     h("div", { class: "inbox", style: "margin-top:20px" },
       card({ title: "Risk Feed", actions: badge(num(d.items.length), "warn"), flush: true }, feed), detail),
     note("Built from the yes/no Project Risk label and the AI's one-line description. There is no project name, risk type or severity yet, so nothing is grouped by those. AI proposals, not decisions."));
@@ -1092,10 +1160,12 @@ const REPORT_DATASETS = [["messages", "Messages"], ["actions", "Action Items"], 
   ["runs", "Run History"], ["mailboxes", "Mailboxes"], ["review_metrics", "Label Review Results"]];
 const MAIL_SETS = ["messages", "actions", "risks"];
 const GROUP_OPTIONS = [["", "No Grouping (One Row per Message)"], ["mailbox", "Mailbox"], ["sender", "Sender"],
-  ["sender_domain", "Sender Company (Domain)"], ["label", "Label"], ["day", "Day"], ["week", "Week"], ["month", "Month"]];
+  ["sender_domain", "Sender Company (Domain)"], ["label", "Label"], ["property", "Property / Project"], ["entity", "Legal Entity"],
+  ["day", "Day"], ["week", "Week"], ["month", "Month"]];
 const RANGES = [["7", "Last 7 days"], ["30", "Last 30 days"], ["90", "Last 90 days"], ["365", "Last 12 months"], ["all", "All time"], ["custom", "Custom dates"]];
 const TEMPLATES = [
   ["Project Risks, Last 30 Days", { dataset: "risks", range: "30" }],
+  ["Risks by Property", { dataset: "risks", group_by: "property", range: "90" }],
   ["Action Items by Mailbox", { dataset: "actions", group_by: "mailbox", range: "30", person: "" }],
   ["Mail Volume by Week", { dataset: "messages", group_by: "week", range: "90" }],
   ["Top Sender Companies", { dataset: "messages", group_by: "sender_domain", range: "30" }],
@@ -1115,7 +1185,7 @@ function reportBody(spec) {
     until: custom ? spec.until || null : null,
     mailbox: spec.mailbox || null, sender: spec.sender || null, label: spec.label || null,
     person: spec.dataset === "actions" ? spec.person || null : null,
-    columns: spec.columns || null, review_sample: spec.review_sample || "random", label_mode: LABEL_MODE,
+    columns: spec.columns || null, label_mode: LABEL_MODE,
   };
 }
 
@@ -1150,17 +1220,16 @@ async function reportsPage() {
     mailbox: h("input", { placeholder: "Any mailbox" }), sender: h("input", { placeholder: "Any sender" }),
     label: h("select", {}, h("option", { value: "" }, "Any label"), LABELS.map(l => { const o = labelEl(l.name, "option"); o.value = l.name; return o; })),
     person: h("input", { placeholder: "Everyone (or name@company.com)" }),
-    review_sample: h("select", {}, h("option", { value: "random" }, "Random-sample reviews only"), h("option", { value: "all" }, "All reviews")),
   };
   const rows = {
     group_by: field("Group By", f.group_by), dates: h("div", { class: "grid2" }, field("From", f.since), field("To", f.until)),
     mailbox: field("Mailbox", f.mailbox), sender: field("Sender", f.sender), label: field("Label", f.label),
-    person: field("Whose Action Items", f.person), review_sample: field("Reviews", f.review_sample), range: field("Date Range", f.range),
+    person: field("Whose Action Items", f.person), range: field("Date Range", f.range),
   };
   const columnsBox = h("div", { class: "column-picks" });
 
   function load(next) {
-    Object.assign(spec, { group_by: "", range: "30", since: "", until: "", mailbox: "", sender: "", label: "", person: "", review_sample: "random", columns: null }, next);
+    Object.assign(spec, { group_by: "", range: "30", since: "", until: "", mailbox: "", sender: "", label: "", person: "", columns: null }, next);
     for (const k of Object.keys(f)) f[k].value = spec[k] ?? "";
     sync();
     run();
@@ -1169,7 +1238,6 @@ async function reportsPage() {
     const mail = MAIL_SETS.includes(spec.dataset);
     rows.group_by.hidden = !mail; rows.mailbox.hidden = !(mail || spec.dataset === "mailboxes");
     rows.sender.hidden = rows.label.hidden = !mail; rows.person.hidden = spec.dataset !== "actions";
-    rows.review_sample.hidden = spec.dataset !== "review_metrics";
     rows.range.hidden = !(mail || spec.dataset === "runs"); rows.dates.hidden = rows.range.hidden || spec.range !== "custom";
   }
   for (const [k, el] of Object.entries(f)) {
@@ -1228,7 +1296,7 @@ async function reportsPage() {
       h("button", { class: "sample", type: "button", onclick: () => load(t) }, name)))),
     h("div", { class: "lab builder", style: "margin-top:20px" },
       h("div", { class: "card lab-in" }, h("div", { class: "card-body" },
-        field("Dataset", f.dataset), rows.group_by, rows.range, rows.dates, rows.mailbox, rows.sender, rows.label, rows.person, rows.review_sample,
+        field("Dataset", f.dataset), rows.group_by, rows.range, rows.dates, rows.mailbox, rows.sender, rows.label, rows.person,
         h("div", {}, h("div", { class: "section-title" }, "Columns"), columnsBox),
         h("div", { class: "actions" }, h("button", { class: "btn primary", onclick: run }, icon("refresh"), "Refresh"),
           h("button", { class: "btn", onclick: save }, icon("save"), "Save Report")),
@@ -1241,151 +1309,184 @@ async function reportsPage() {
 
 // ---------- label review -----------------------------------------------------------
 
+// Reviewer ground truth ("Label check" in earlier versions): /api/review/next picks an
+// unchecked email, /api/feedback saves answers, /api/calibration scores the AI.
+const REASON_TEXT = { not_for_person: "Someone Else's", fyi_only: "FYI Only", automated: "Automated",
+  group_email: "Group Email", already_handled: "Already Handled", other: "Other" };
+const REVIEW_SOURCES = [["actionable", "Action Items for a Person"], ["recent", "Recent Mail"], ["risks", "Project Risks"], ["label", "One Label"]];
+
 async function reviewPage() {
   const p = hashParams();
   const tab = p.get("tab") || "review";
   const tabs = h("div", { class: "seg" }, [["review", "Review"], ["results", "Results"]].map(([v, t]) =>
     h("button", { class: v === tab ? "on" : "", onclick: () => { location.hash = v === "review" ? "#review" : "#review?tab=results"; } }, t)));
-  if (tab === "results") return reviewResults(tabs, p.get("sample") || "random");
+  if (tab === "results") return reviewResults(tabs);
 
   const browseId = p.get("id");
-  const mode = browseId ? "browse" : p.get("mode") || "random";
-  const label = p.get("label") || "";
-  const go = changes => { location.hash = "#review?" + new URLSearchParams({ mode, label, ...changes }); };
-  const modeSeg = h("div", { class: "seg" }, [["random", "Random Sample"], ["uncertain", "Uncertain First"], ["label", "One Label"]].map(([v, t]) =>
-    h("button", { class: v === mode ? "on" : "", onclick: () => go({ mode: v }) }, t)));
-  const labelPick = h("select", { onchange: e => go({ mode: "label", label: e.target.value }) },
-    h("option", { value: "" }, "Pick a label…"), LABELS.map(l => { const o = labelEl(l.name, "option"); o.value = l.name; o.selected = l.name === label; return o; }));
-  const help = {
-    random: "Random messages. Only these give honest precision and recall, so start here.",
-    uncertain: "Messages with a label the AI was unsure about. Good for tuning thresholds; skews the numbers toward hard cases.",
-    label: "Messages the AI marked yes or unsure for one label. Good for checking one label; skews its numbers.",
-    browse: "One message you opened. Counted in “all reviews” results, not in the random sample.",
-  }[mode];
+  const source = p.get("source") || "actionable";
+  const label = p.get("label") || "action_required";
+  const personVal = p.get("person") ?? store.get("check_person") ?? DEFAULT_PERSON;
+  const go = changes => { location.hash = "#review?" + new URLSearchParams({ source, label, person: personInput.value, ...changes }); };
+  const personInput = h("input", { value: personVal, placeholder: "Whose action items?" });
+  const sourceSeg = h("div", { class: "seg" }, REVIEW_SOURCES.map(([v, t]) =>
+    h("button", { class: v === source ? "on" : "", onclick: () => go({ source: v }) }, t)));
+  const labelPick = h("select", { onchange: e => go({ label: e.target.value }) },
+    LABELS.map(l => { const o = labelEl(l.name, "option"); o.value = l.name; o.selected = l.name === label; return o; }));
+  const status = h("span", { class: "muted small" });
   const reader = h("div", { class: "card reader" });
   const panel = h("div", { class: "card review-panel" });
-  show(pageHead("Label Review", "Say whether each label is right. Your answers measure how good the classifier is, label by label.", tabs),
-    card({}, h("div", { class: "toolbar" }, browseId ? badge("Single Message", "info") : modeSeg,
-      mode === "label" ? labelPick : null,
-      browseId ? h("a", { class: "btn sm", href: "#review" }, "Back to Random Sample") : null),
-    h("div", { class: "muted small", style: "margin-top:8px" }, help)),
+  const help = {
+    actionable: "Emails on this person's action-item list. Also asks whether each one is really theirs.",
+    recent: "Recent mail, picked at random. The fairest sample for judging accuracy.",
+    risks: "Emails labelled Project Risk. Good for checking that label; over-represents risky mail.",
+    label: "Emails the AI marked with one label. Good for checking that label; over-represents it.",
+  }[source];
+  show(pageHead("Label Review", "Say whether each label is right. Your answers measure how accurate the AI is and suggest better thresholds.", tabs),
+    card({}, browseId
+      ? h("div", { class: "toolbar" }, badge("Single Message", "info"), h("a", { class: "btn sm", href: "#review" }, "Back to Review"))
+      : h("form", { class: "toolbar", onsubmit: e => { e.preventDefault(); store.set("check_person", personInput.value); go({}); } },
+        sourceSeg, source === "label" ? labelPick : null,
+        h("div", { class: "search", style: "flex:1 1 240px" }, icon("users"), personInput),
+        h("button", { class: "btn", type: "submit" }, "Apply"), status),
+    browseId ? null : h("div", { class: "muted small", style: "margin-top:8px" }, help)),
     h("div", { class: "review" }, reader, panel));
-  if (mode === "label" && !label) {
-    reader.replaceChildren(h("div", { class: "placeholder" }, h("div", { class: "empty" }, h("div", { class: "i-wrap" }, icon("review")),
-      h("div", { class: "empty-title" }, "Pick a Label"), h("div", { class: "small" }, "Then review messages the AI marked for it."))));
-    panel.hidden = true;
-    return;
-  }
-  let queue = [];
-  let position = 0;
+
   let reviewed = 0;
-  async function refill() {
-    if (browseId) { queue = position ? [] : [{ communication_id: browseId }]; return; }
-    const q = new URLSearchParams({ mode, limit: "20" });
-    if (label) q.set("label", label);
-    queue = (await api("/api/reviews/queue?" + q)).items;
-    position = 0;
-  }
+  let done = false;
   async function next() {
-    if (position >= queue.length) await refill();
-    const item = queue[position];
-    if (!item) {
+    let id = browseId;
+    if (!browseId) {
+      const q = new URLSearchParams({ source, person: personInput.value });
+      if (source === "label") q.set("label", label);
+      const r = await api("/api/review/next?" + q);
+      status.textContent = `${num(r.remaining)} of ${num(r.in_source)} in this list not reviewed yet`;
+      id = r.communication_id;
+    } else if (done) id = null;
+    if (!id) {
       reader.replaceChildren(h("div", { class: "placeholder" }, h("div", { class: "empty" }, h("div", { class: "i-wrap" }, icon("ok")),
-        h("div", { class: "empty-title" }, browseId ? "Done" : "Nothing Left in This Sample"),
-        h("div", { class: "small" }, `You reviewed ${reviewed} message${reviewed === 1 ? "" : "s"} this session.`),
+        h("div", { class: "empty-title" }, browseId ? "Done" : "All Reviewed"),
+        h("div", { class: "small" }, browseId ? "Your answers are saved." : `Nothing left in this list. You reviewed ${reviewed} this session; pick another list above.`),
         h("a", { class: "btn sm", style: "margin-top:12px", href: "#review?tab=results" }, "See Results"))));
       panel.hidden = true;
       return;
     }
-    position += 1;
     panel.hidden = false;
     reader.replaceChildren(h("div", { class: "placeholder" }, h("div", {}, h("div", { class: "spinner" }), "Loading…")));
-    const [m, l] = await Promise.all([api(`/api/messages/${encodeURIComponent(item.communication_id)}`),
-      api(`/api/reviews/messages/${encodeURIComponent(item.communication_id)}`)]);
-    reader.replaceChildren(messageView(item.communication_id, m));
-    drawPanel(item.communication_id, l);
+    const d = await api(`/api/feedback/${encodeURIComponent(id)}`);
+    reader.replaceChildren(messageView(id, d.email));
+    drawPanel(id, d);
   }
-  function drawPanel(id, l) {
-    const mine = { ...l.mine };
+  function drawPanel(id, d) {
+    const person = personInput.value.split(",")[0].trim().toLowerCase();
+    const scores = Object.fromEntries((d.email.scores || []).map(s => [s.label, s]));
+    const mine = { ...d.labels };
+    let action = d.action_for[person] || null;
     const progress = h("span", { class: "muted small" });
-    const answered = () => LABELS.filter(x => mine[x.name]).length;
+    const answered = () => LABELS.filter(x => x.name in mine).length;
     const paintProgress = () => { progress.textContent = `${answered()} of ${LABELS.length} answered`; };
-    async function answer(name, value, rowEl) {
-      const v = mine[name] === value ? null : value;
-      const r = await post("/api/reviews", { communication_id: id, label: name, answer: v, sample: mode }, "PUT");
-      Object.keys(mine).forEach(k => delete mine[k]); Object.assign(mine, r.mine);
-      paintRow(rowEl, name); paintProgress();
+    const save = (body) => api(`/api/feedback/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) });
+
+    const actionBox = h("div");
+    function drawAction() {
+      const cur = action ? action.applies : null;
+      const set = guard(async (v, reason) => {
+        action = v === null ? null : { applies: v, reason: reason || null };
+        drawAction();
+        await save({ kind: "action_for", subject: person, applies: v, reason: reason || null });
+      });
+      actionBox.replaceChildren(h("div", { class: "action-q" },
+        h("div", { class: "action-q-text" }, h("div", { style: "font-weight:600" }, `Is This an Action Item for ${person}?`),
+          h("div", { class: "muted small" }, (d.email.action_for_ai || []).length ? `AI says it's for ${d.email.action_for_ai.join(", ")}.` : "The AI named nobody specific.")),
+        h("div", { class: "answer" },
+          h("button", { type: "button", class: "yes" + (cur === true ? " on" : ""), onclick: () => set(cur === true ? null : true) }, "Yes"),
+          h("button", { type: "button", class: "no" + (cur === false ? " on" : ""), onclick: () => set(cur === false ? null : false) }, "No")),
+        cur === false ? h("div", { class: "reasons" }, h("span", { class: "muted small" }, "Why not?"),
+          d.reasons.map(r => h("button", { type: "button", class: "sample" + (action.reason === r ? " on" : ""), onclick: () => set(false, r) }, REASON_TEXT[r] || nice(r)))) : null));
     }
+    if (person) drawAction();
+
     function paintRow(rowEl, name) {
-      rowEl.querySelectorAll("button[data-v]").forEach(b => b.classList.toggle("on", mine[name] === b.dataset.v));
-      rowEl.classList.toggle("answered", !!mine[name]);
+      rowEl.querySelectorAll("button[data-v]").forEach(b => b.classList.toggle("on", name in mine && String(mine[name]) === b.dataset.v));
     }
+    const answer = async (name, value, rowEl) => {
+      const v = mine[name] === value ? null : value;
+      if (v === null) delete mine[name]; else mine[name] = v;
+      paintRow(rowEl, name); paintProgress();
+      await save({ kind: "label", subject: name, applies: v });
+    };
     const groups = GROUPS.map(([gname, members]) => {
       const list = LABELS.filter(x => members ? members.includes(x.name) : x.name.startsWith("cat_"));
       return h("div", { class: "lgroup" }, h("div", { class: "lgroup-title" }, gname), list.map(x => {
-        const ai = l.labels[x.name] || { decision: "unresolved", probability: null };
+        const ai = scores[x.name] || { decision: "unresolved", probability: null };
         const rowEl = h("div", { class: "rv-row" },
           h("div", { class: "rv-name" }, h("div", { style: "font-weight:500" }, labelEl(x.name)), h("div", { class: "muted small" }, x.question)),
           h("div", { class: "rv-ai", title: "What the AI said" }, badge(`AI ${nice(ai.decision).toLowerCase()}`, { yes: "good", review: "warn", unresolved: "bad" }[ai.decision] || ""),
-            h("span", { class: "muted small" }, ai.probability === null ? "" : ai.probability.toFixed(2))),
+            h("span", { class: "muted small" }, ai.probability == null ? "" : Number(ai.probability).toFixed(2))),
           h("div", { class: "answer" },
-            h("button", { type: "button", "data-v": "yes", class: "yes", onclick: guard(() => answer(x.name, "yes", rowEl)) }, "Yes"),
-            h("button", { type: "button", "data-v": "no", class: "no", onclick: guard(() => answer(x.name, "no", rowEl)) }, "No")));
+            h("button", { type: "button", "data-v": "true", class: "yes", onclick: guard(() => answer(x.name, true, rowEl)) }, "Yes"),
+            h("button", { type: "button", "data-v": "false", class: "no", onclick: guard(() => answer(x.name, false, rowEl)) }, "No")));
         paintRow(rowEl, x.name);
         return rowEl;
       }));
     });
     const restNo = guard(async () => {
-      const open = LABELS.filter(x => !mine[x.name] && l.labels[x.name]);
-      for (const x of open) {
-        const r = await post("/api/reviews", { communication_id: id, label: x.name, answer: "no", sample: mode }, "PUT");
-        Object.assign(mine, r.mine);
+      for (const x of LABELS.filter(l => !(l.name in mine))) {
+        await save({ kind: "label", subject: x.name, applies: false });
+        mine[x.name] = false;
       }
-      drawPanel(id, { ...l, mine });
+      drawPanel(id, { ...d, labels: mine, action_for: action ? { ...d.action_for, [person]: action } : d.action_for });
     });
     panel.replaceChildren(
-      h("div", { class: "card-head" }, h("div", {}, h("h2", {}, "Does Each Label Apply?"), h("div", { class: "sub" }, "Judge from the email, not from the AI's answer.")), progress),
-      h("div", { class: "card-body" }, groups),
+      h("div", { class: "card-head" }, h("div", {}, h("h2", {}, "Does Each Label Apply?"), h("div", { class: "sub" }, "Judge from the email, not from the AI's answer. Click an answer again to clear it.")), progress),
+      h("div", { class: "card-body" }, person ? actionBox : null, groups),
       h("div", { class: "card-foot review-foot" },
         h("button", { class: "btn", onclick: restNo }, "Mark Unanswered as No"),
         h("button", { class: "btn primary", onclick: guard(async () => {
           if (answered()) reviewed += 1;
+          done = true;
           await next();
-        }) }, browseId ? "Done" : "Next Message")));
+        }) }, browseId ? "Done" : "Next Email")));
     paintProgress();
   }
   await next();
 }
 
-async function reviewResults(tabs, sample) {
-  const d = await api(`/api/reviews/metrics?sample=${sample}`);
-  const byLabel = Object.fromEntries(d.labels.map(x => [x.label, x]));
-  const sampleSeg = h("div", { class: "seg" }, [["random", "Random Sample"], ["all", "All Reviews"]].map(([v, t]) =>
-    h("button", { class: v === sample ? "on" : "", onclick: () => { location.hash = `#review?tab=results&sample=${v}`; } }, t)));
-  const rate = (value, n) => value === null ? h("span", { class: "muted" }, "—") : h("div", { class: "rate" },
-    h("div", { class: "rate-top" }, h("span", { class: "strong" }, pct(value)), h("span", { class: "muted small" }, `of ${n}`)),
-    // Colored only once there are enough reviews to mean something.
-    h("div", { class: "bar " + (n < d.min_sample ? "" : value >= 0.9 ? "good" : value >= 0.7 ? "warn" : "bad") },
-      h("span", { style: `width:${Math.max(2, value * 100)}%;${n < d.min_sample ? "background:var(--faint)" : ""}` })));
-  const rows = LABELS.map(l => byLabel[l.name] || { label: l.name, reviewed: 0, precision: null, recall: null, precision_n: 0, recall_n: 0, uncertain_yes: 0, uncertain_no: 0, enough: false });
+async function reviewResults(tabs) {
+  const c = await api("/api/calibration");
+  const judged = c.labels.reduce((n, l) => n + l.judged, 0);
+  const ready = c.labels.filter(l => l.suggestion).length;
+  const actionChecks = c.actions.reduce((n, a) => n + a.judged, 0);
+  const rate = (value, n) => value === null || value === undefined ? h("span", { class: "muted" }, "—") : h("div", { class: "rate" },
+    h("div", { class: "rate-top" }, h("span", { class: "strong" }, pct(value))),
+    // Colored only once there are enough checks to mean something.
+    h("div", { class: "bar " + (n < c.min_sample ? "" : value >= 0.9 ? "good" : value >= 0.7 ? "warn" : "bad") },
+      h("span", { style: `width:${Math.max(2, value * 100)}%;${n < c.min_sample ? "background:var(--faint)" : ""}` })));
   show(
-    pageHead("Label Review", "Say whether each label is right. Your answers measure how good the classifier is, label by label.", tabs),
+    pageHead("Label Review", "Say whether each label is right. Your answers measure how accurate the AI is and suggest better thresholds.", tabs),
     h("div", { class: "grid" },
-      stat("Messages Reviewed", "mail", num(d.messages), sample === "random" ? "Random sample" : "All reviews"),
-      stat("Label Answers", "review", num(d.reviews), "One per label per message"),
-      stat("Reviewers", "users", num(d.reviewers), "People who answered")),
-    card({ title: "Results by Label", flush: true, sub: `Precision: when the AI says yes, how often it is right. Recall: of the emails where the label truly applies, how many the AI marked yes. A rate needs at least ${d.min_sample} reviews on each side before you rely on it.`,
-      actions: [sampleSeg, ...exportButtons({ dataset: "review_metrics", review_sample: sample })] },
+      stat("Label Answers", "review", num(judged), "One per label per email"),
+      stat("Threshold Suggestions", "spark", num(ready), `Labels with ${c.min_sample}+ checked emails`),
+      stat("Action Items Checked", "check", num(actionChecks), `${num(c.actions.length)} ${c.actions.length === 1 ? "person" : "people"}`),
+      stat("Policy Version", "shield", c.policy_version, "Thresholds the AI uses now")),
+    card({ title: "Action Items: Really Theirs?", flush: true, sub: "Of the listed action items you checked, how many were really the person's, and why not when they weren't." },
+      table([["Person", r => r.person], ["Checked", r => num(r.judged), "num"], ["Really Theirs", r => `${num(r.correct)} (${pct(r.precision)})`],
+        ["Why Not", r => h("div", { class: "badges" }, Object.entries(r.reasons).map(([k, v]) => badge(`${REASON_TEXT[k] || nice(k)} ${v}`, "outline")))]],
+      c.actions, null, emptyState("Nothing Checked Yet", "Review a person's action items to fill this in.", "check"))),
+    card({ title: "Labels", flush: true, sub: "Precision: when the AI says yes, how often it is right. Recall: of the emails where the label truly applies, how many the AI marked yes. Bars turn green, amber or red once a label has enough checks.",
+      actions: exportButtons({ dataset: "review_metrics" }) },
     table([
-      ["Label", r => h("div", {}, h("div", { style: "font-weight:500" }, labelEl(r.label)))],
-      ["Reviewed", r => num(r.reviewed), "num"],
-      ["Precision", r => rate(r.precision, r.precision_n)],
-      ["Recall", r => rate(r.recall, r.recall_n)],
-      ["AI Unsure, You Said", r => r.uncertain_yes + r.uncertain_no ? `${r.uncertain_yes} yes · ${r.uncertain_no} no` : h("span", { class: "muted" }, "—")],
-      ["Status", r => !r.reviewed ? badge("No Reviews") : r.enough ? badge("Enough to Judge", "good", true) : badge("Too Few", "warn", true)],
-    ], rows)),
-    note(sample === "random" ? "Only random-sample reviews are counted, so these are honest estimates of real-world accuracy."
-      : "Includes uncertain-first and one-label reviews, which over-represent hard cases. Use the random sample for real-world accuracy.", sample === "random" ? null : "warn"));
+      ["Label", r => h("div", { style: "font-weight:500" }, labelEl(r.label))],
+      ["Checked", r => num(r.judged), "num"],
+      ["Precision", r => rate(r.precision, r.judged)],
+      ["Recall", r => rate(r.recall, r.judged)],
+      ["AI Unsure", r => r.uncertain ? num(r.uncertain) : h("span", { class: "muted" }, "—"), "num"],
+      ["Yes Threshold", r => r.suggestion
+        ? h("div", { title: `At the suggestion: precision ${pct(r.suggestion.precision)}, recall ${pct(r.suggestion.recall)}` },
+          h("span", { class: "strong" }, `${r.suggestion.yes_at_or_above}`), h("span", { class: "muted small" }, ` suggested · now ${r.yes_at_or_above}`))
+        : h("span", { class: "muted small" }, `${r.yes_at_or_above} now`)],
+      ["Status", r => r.suggestion ? badge("Suggestion Ready", "good", true) : !r.judged ? badge("Not Checked") : badge(`Needs ${r.needed} More`, "warn", true)],
+    ], c.labels)),
+    note(`A threshold suggestion appears once a label has ${c.min_sample} checked emails with at least 5 of each answer. Suggestions are never applied automatically. Lists like Project Risks or One Label over-represent their label; Recent Mail is the fairest sample.`));
 }
 
 // ---------- router -----------------------------------------------------------
@@ -1402,7 +1503,7 @@ const NAV = [
 const NAV_GROUPS = ["Operations", "Mail", "Insights", "Tools"];
 const PAGES = { overview, schedule: schedulePage, mailboxes: mailboxesPage, messages: messagesPage,
   actionable: actionablePage, unpublished: unpublishedPage, lab: labPage,
-  risks: risksPage, reports: reportsPage, review: reviewPage };
+  risks: risksPage, reports: reportsPage, review: reviewPage, check: reviewPage };
 
 function drawNav() {
   const nav = document.getElementById("tabs");
@@ -1417,7 +1518,8 @@ function drawNav() {
 
 async function route() {
   const name = (location.hash.slice(1).split("?")[0]) || "overview";
-  document.querySelectorAll(".nav a").forEach(a => a.classList.toggle("active", a.getAttribute("href") === "#" + name));
+  const navName = name === "check" ? "review" : name; // "Label check" became Label Review
+  document.querySelectorAll(".nav a").forEach(a => a.classList.toggle("active", a.getAttribute("href") === "#" + navName));
   try { await (PAGES[name] || overview)(); }
   catch (e) {
     if (e.message !== "signing in") {

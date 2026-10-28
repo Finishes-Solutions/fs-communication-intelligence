@@ -20,7 +20,12 @@ from ci_core.settings import GraphBackend, Settings, load_settings
 from ci_email.capture import NORMALIZER_VERSION, capture_window
 from ci_email.fixture import FixtureGraphClient
 from ci_email.inventory import sync_inventory
-from ci_email.process import process_all, requeue_failed_attachments, retry_failed
+from ci_email.process import (
+    process_all,
+    requeue_failed_attachments,
+    requeue_for_remask,
+    retry_failed,
+)
 from ci_processing.chunking import CHUNKER_VERSION
 from ci_processing.classification import POLICY_VERSION
 from ci_retrieval import search as retrieval
@@ -183,6 +188,11 @@ def process(args: argparse.Namespace) -> None:
             count = requeue_failed_attachments(conn)
             conn.commit()
         print(f"requeued {count} message(s) whose attachments failed to read")
+    if args.remask:
+        with connect(role="ci_ingest") as conn:
+            count = requeue_for_remask(conn)
+            conn.commit()
+        print(f"requeued {count} message(s) to be reprocessed under the masking rules")
     if args.limit == 0:  # requeue only; the Function App's process timer picks them up
         return
     counts = process_all(

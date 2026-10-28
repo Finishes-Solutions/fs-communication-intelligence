@@ -1,6 +1,6 @@
 # Database Design
 
-Status: schema in [`db/migrations`](../db/migrations): `0001_foundation.sql` (source-neutral), `0002_email.sql` (email extension), then `0003`–`0008` (processing, project risk, operations, attachment originals, signature images, label reviews). CI applies them to PostgreSQL 18 + pgvector 0.8.2 on every pull request and runs the behavior checks in [`db/tests`](../db/tests). They have not been applied to any Azure database.
+Status: schema in [`db/migrations`](../db/migrations): `0001_foundation.sql` (source-neutral), `0002_email.sql` (email extension), then `0003`–`0011` (processing, project risk, operations, attachment originals, signature images, label feedback, action people, properties and entities, longer backfill). CI applies them to PostgreSQL 18 + pgvector 0.8.2 on every pull request and runs the behavior checks in [`db/tests`](../db/tests). They have not been applied to any Azure database.
 
 Related: [Function Apps](FUNCTION_APPS.md) · [Search and Agents](SEARCH_AND_AGENTS.md) · [Email Deduplication](EMAIL_DEDUPLICATION.md)
 

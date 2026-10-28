@@ -353,7 +353,7 @@ dl.kv dd { margin: 0; overflow-wrap: anywhere; }
 .v-bad .v-icon { background: var(--bad-bg); color: var(--bad); }
 .v-title { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
 .v-text { color: var(--muted); }
-.steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; }
+.steps { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 0; }
 .step { padding: 14px 18px; border-right: 1px solid var(--line); overflow-wrap: anywhere; min-width: 0; }
 .step:last-child { border-right: 0; }
 .step-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 13px; font-weight: 500; }
@@ -421,7 +421,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.35); }
   .side-foot { margin: 0 0 0 auto; border: 0; padding: 0; }
   main { padding: 24px 16px 48px; }
   .cols { grid-template-columns: 1fr; }
-  .steps { grid-template-columns: 1fr 1fr; }
+  .steps { grid-auto-flow: row; grid-template-columns: 1fr 1fr; }
   .step:nth-child(2) { border-right: 0; }
   .step:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
   .setting { flex-direction: column; align-items: flex-start; gap: 10px; }
@@ -509,3 +509,16 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.35); }
 .report-table .table-wrap { max-height: 70vh; overflow: auto; }
 .report-table th { position: sticky; top: 0; z-index: 1; }
 a.btn { text-decoration: none; }
+.inbox + .card, .card.spaced, .note + .inbox + .card { margin-top: 20px; }
+
+/* ---------- property and entity names, action question ---------- */
+.badges.names { margin-top: 8px; }
+.badge.name-prop { background: var(--info-bg); color: var(--info-text); }
+.badge.name-ent { background: transparent; border: 1px solid var(--line-strong); color: var(--text-2); }
+.badge svg.i { width: 12px; height: 12px; }
+.badge { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.action-q { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; justify-content: space-between;
+  background: var(--subtle); border-radius: var(--radius); padding: 12px 14px; margin: 8px 0 12px; }
+.action-q-text { min-width: 0; flex: 1 1 220px; }
+.reasons { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; width: 100%; }
+.sample.on { background: var(--text); color: #fff; border-color: var(--text); }

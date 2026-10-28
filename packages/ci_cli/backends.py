@@ -9,6 +9,7 @@ from ci_core.settings import (
     GraphAuth,
     GraphBackend,
     ScreenerBackend,
+    SensitiveDataPolicy,
     Settings,
     SettingsError,
 )
@@ -18,6 +19,8 @@ from ci_email.process import Backends
 from ci_processing.classification import Classifier, FakeClassifier
 from ci_processing.embedding import Embedder, FakeEmbedder
 from ci_processing.originals import AzureBlobStore, DirectoryStore, OriginalStore
+from ci_processing.redaction import FakeRedactor, Redactor
+from ci_processing.routing import FakePersonRouter, PersonRouter
 from ci_processing.screening import FakeScreener, Screener
 
 
@@ -57,14 +60,30 @@ def embedder(settings: Settings) -> Embedder:
 
 
 def screener(settings: Settings) -> Screener:
+    # With masking, sensitive numbers are masked by the redactor, not rejected here.
+    check_pii = settings.sensitive_data_policy is SensitiveDataPolicy.RESTRICT
     if settings.screener is ScreenerBackend.FAKE:
-        return FakeScreener()
+        return FakeScreener(check_pii=check_pii)
     settings.require("azure_language_endpoint", "azure_content_safety_endpoint")
     from ci_processing.azure import AzureScreener
 
     return AzureScreener(
-        settings.azure_language_endpoint or "", settings.azure_content_safety_endpoint or ""
+        settings.azure_language_endpoint or "",
+        settings.azure_content_safety_endpoint or "",
+        check_pii=check_pii,
     )
+
+
+def redactor(settings: Settings) -> Redactor | None:
+    """None when SENSITIVE_DATA_POLICY=restrict (messages are restricted instead)."""
+    if settings.sensitive_data_policy is SensitiveDataPolicy.RESTRICT:
+        return None
+    if settings.screener is ScreenerBackend.FAKE:
+        return FakeRedactor()
+    settings.require("azure_language_endpoint")
+    from ci_processing.azure import AzureRedactor
+
+    return AzureRedactor(settings.azure_language_endpoint or "")
 
 
 def classifier(settings: Settings) -> Classifier:
@@ -91,6 +110,20 @@ def original_store(settings: Settings) -> OriginalStore | None:
     return None
 
 
+def person_router(settings: Settings) -> PersonRouter:
+    """Step 2 of action items. It only runs for people with a profile in action_people."""
+    if settings.classifier_backend is ClassifierBackend.FAKE:
+        return FakePersonRouter()
+    settings.require("azure_openai_endpoint", "azure_openai_chat_deployment")
+    from ci_processing.azure import AzureOpenAIPersonRouter
+
+    return AzureOpenAIPersonRouter(
+        settings.azure_openai_endpoint or "",
+        settings.azure_openai_chat_deployment or "",
+        settings.azure_openai_api_version,
+    )
+
+
 def processing_backends(settings: Settings) -> Backends:
     return Backends(
         screener=screener(settings),
@@ -100,4 +133,6 @@ def processing_backends(settings: Settings) -> Backends:
         extraction_enabled=settings.attachment_extraction_enabled,
         attachment_max_bytes=settings.attachment_max_bytes,
         originals=original_store(settings) if settings.attachment_store_originals else None,
+        redactor=redactor(settings),
+        router=person_router(settings),
     )

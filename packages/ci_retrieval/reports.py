@@ -19,28 +19,37 @@ from ci_retrieval.search import (
     _AUTH,
     _PUBLISHED,
     ACTION_LABELS,
+    ACTION_RULE_WHERE,
     NO_FILTERS,
     RISK_LABELS,
+    ROUTED_WHERE,
     Filters,
     _audit,
     _params,
     _scope,
+    action_rule_params,
     authorize,
+    person_profile,
 )
 
 Dataset = Literal["messages", "actions", "risks"]
 DATASETS: tuple[Dataset, ...] = ("messages", "actions", "risks")
-GROUPS = ("mailbox", "sender", "sender_domain", "label", "day", "week", "month")
+GROUPS = (
+    "mailbox",
+    "sender",
+    "sender_domain",
+    "label",
+    "property",
+    "entity",
+    "day",
+    "week",
+    "month",
+)
 REVIEW_MODES = ("random", "uncertain", "label")
 MAX_ROWS = 5000
 CATEGORY_PREFIX = "cat_"
 CO_SIGNALS = ("urgent", "approval_required", "action_required", "invoice_receipt")
 
-_ACTION_WHERE = """AND cl.yes_labels && %(action_labels)s::text[]
-    AND (%(people)s::text[] IS NULL OR cl.action_for && %(people)s::text[]
-         OR (cardinality(cl.action_for) = 0
-             AND e.mailbox_address = ANY(%(people)s::text[])
-             AND e.direction = 'in'))"""
 _RISK_WHERE = "AND cl.yes_labels && %(risk_labels)s::text[]"
 
 
@@ -58,6 +67,8 @@ def _messages(extra_where: str, keep_copies: bool = False) -> str:
                coalesce(cl.uncertain_labels, '{{}}') AS uncertain_labels,
                cl.disposition, cl.summary, cl.action_text,
                coalesce(cl.action_for, '{{}}') AS action_for, cl.due_text, cl.risk_text,
+               coalesce(cl.properties, '{{}}') AS properties,
+               coalesce(cl.entities, '{{}}') AS entities,
                (SELECT count(*) FROM published_email_attachments a
                  WHERE a.communication_id = pc.id
                    AND a.extraction_status <> 'skipped') AS attachments
@@ -70,17 +81,26 @@ def _messages(extra_where: str, keep_copies: bool = False) -> str:
     """  # noqa: S608 - fragments are constants; values are bound parameters
 
 
-def _dataset_where(dataset: str, person: str | None) -> tuple[str, dict[str, Any]]:
+def _dataset_where(
+    conn: Connection, dataset: str, person: str | None
+) -> tuple[str, dict[str, Any]]:
+    """Extra WHERE and parameters for a dataset.
+
+    Action items follow ``list_actionable`` exactly: the person's step-2 check
+    when they have a profile, otherwise the step-1 rule.
+    """
     if dataset not in DATASETS:
         raise ValueError(f"dataset must be one of {', '.join(DATASETS)}")
     people = sorted({a.strip().lower() for a in (person or "").split(",") if a.strip()}) or None
-    extra = {
-        "action_labels": list(ACTION_LABELS),
-        "risk_labels": list(RISK_LABELS),
-        "people": people,
-    }
-    where = {"messages": "", "actions": _ACTION_WHERE, "risks": _RISK_WHERE}[dataset]
-    return where, extra
+    extra: dict[str, Any] = {"risk_labels": list(RISK_LABELS), "action_labels": list(ACTION_LABELS)}
+    if dataset == "risks":
+        return _RISK_WHERE, extra
+    if dataset == "actions":
+        profile = person_profile(conn, person)
+        if profile is not None:
+            return ROUTED_WHERE, extra | {"person_key": profile["key"], "decision": "yes"}
+        return ACTION_RULE_WHERE, extra | action_rule_params(people)
+    return "", extra
 
 
 def _row(r: dict[str, Any]) -> dict[str, Any]:
@@ -99,6 +119,8 @@ def _row(r: dict[str, Any]) -> dict[str, Any]:
         "action_for_ai": list(r["action_for"]),
         "due_ai": r["due_text"],
         "risk_ai": r["risk_text"],
+        "properties_ai": list(r["properties"]),
+        "entities_ai": list(r["entities"]),
         "attachments": int(r["attachments"]),
         "web_link": r["source_url"],
     }
@@ -116,7 +138,7 @@ def report_rows(
 ) -> dict[str, Any]:
     """Rows of a report, newest first, with the total before the limit."""
     limit = max(1, min(limit, MAX_ROWS))
-    where, extra = _dataset_where(dataset, person)
+    where, extra = _dataset_where(conn, dataset, person)
     auth = authorize(conn, principal)
     rows: list[dict[str, Any]] = []
     total = 0
@@ -151,6 +173,8 @@ def _group_sql(group_by: str) -> tuple[str, str]:
         "sender": ("", "coalesce(m.sender, '(unknown)')"),
         "sender_domain": ("", "coalesce(nullif(split_part(m.sender, '@', 2), ''), '(unknown)')"),
         "label": (", unnest(m.yes_labels) AS lbl", "lbl"),
+        "property": (", unnest(m.properties) AS prop", "prop"),
+        "entity": (", unnest(m.entities) AS ent", "ent"),
         "day": ("", f"date_trunc('day', {local})::date::text"),
         "week": ("", f"date_trunc('week', {local})::date::text"),
         "month": ("", f"date_trunc('month', {local})::date::text"),
@@ -175,7 +199,7 @@ def report_groups(
     """
     if group_by not in GROUPS:
         raise ValueError(f"group_by must be one of {', '.join(GROUPS)}")
-    where, extra = _dataset_where(dataset, person)
+    where, extra = _dataset_where(conn, dataset, person)
     join, key = _group_sql(group_by)
     auth = authorize(conn, principal)
     groups: list[dict[str, Any]] = []
@@ -223,10 +247,12 @@ def risk_overview(
     tz: str = "America/Chicago",
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Project-risk emails in a window, with counts by week, category, company and mailbox.
+    """Project-risk emails in a window, with counts by period, category, property,
+    company and mailbox.
 
-    Built only from stored labels and the AI's one-line risk text: there is no
-    project, risk type or severity yet, so nothing here groups by those.
+    Built from stored labels, the AI's one-line risk text and the property names
+    it extracted (as written in the email, or the registry's canonical name).
+    There is no risk type or severity, so nothing here groups by those.
     """
     days = max(1, min(days, 366))
     end = now or datetime.now(UTC)
@@ -242,6 +268,7 @@ def risk_overview(
         "by_category": [],
         "by_company": [],
         "by_mailbox": [],
+        "by_property": [],
         "co_signals": {},
         "items": [],
     }
@@ -298,6 +325,14 @@ def risk_overview(
             for r in conn.execute(
                 "SELECT coalesce(nullif(split_part(m.sender, '@', 2), ''), '(unknown)') AS domain,"  # noqa: S608
                 f" count(*) AS n FROM {risky} GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 10",
+                base,
+            ).fetchall()
+        ]
+        out["by_property"] = [
+            {"property": r["property"], "risks": int(r["n"])}
+            for r in conn.execute(
+                f"SELECT p AS property, count(*) AS n FROM {risky}, unnest(m.properties) p"  # noqa: S608
+                " GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 15",
                 base,
             ).fetchall()
         ]

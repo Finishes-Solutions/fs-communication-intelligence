@@ -22,6 +22,7 @@ The database comes from the standard ``PG*`` environment variables; locally,
     ci capture --hours 24                     store mail received in the last N hours
     ci process [--limit N] [--retry-failed]   extract, screen, classify, embed, publish
     ci process --retry-attachments --limit 0  re-read failed attachments (the app reprocesses)
+    ci process --remask --limit 0             reprocess everything under the masking rules
     ci stats                                  counts by state, outcome, label, extraction
     ci search "QUERY" [--mailbox ADDRESS]     authorized search as the signed-in person
     ci actionable [--person ADDRESS] [--hours 24] [--out FILE.md]
@@ -31,7 +32,17 @@ The database comes from the standard ``PG*`` environment variables; locally,
     ci schedule set [--on|--off] [--every 60] [--window 2] [--hours 6-20]
                     [--weekdays-only|--every-day] [--time-zone America/Chicago]
                     [--processing-on|--processing-off]
-    ci run-capture [--hours 24]               capture at the next 5-minute tick
+    ci run-capture [--hours 24 | --since 2026-09-01]
+                                              capture at the next 5-minute tick (up to 93 days)
+
+    ci names list                             canonical property and legal-entity names
+    ci names add property "Willow Creek Retail" --alias "WC Retail" --alias "Willow Creek"
+    ci names add entity "Capital Company LLC"
+    ci names remove property|entity NAME
+
+    ci people list                            whose action items get a per-person check
+    ci people set chuck_sr --name "Chuck Sr." --address chuckc@finishesetc.net
+                  [--role TEXT] [--not-to-confuse TEXT] [--disable]
 
 Production changes (``--dataset production``, ``mode set production``) also
 need ``--confirm-production``.
@@ -54,12 +65,17 @@ from ci_core import ops
 from ci_core.db import Connection, connect
 from ci_core.operator import (
     OperatorError,
+    add_name,
     approve_mailbox,
     exclude_mailbox,
     exclude_participant,
     list_mailboxes,
+    list_names,
     list_participant_exclusions,
+    list_people,
+    remove_name,
     set_mode,
+    set_person,
 )
 from ci_core.runtime import RuntimeConfigError, active_config, eligible_mailboxes
 from ci_core.settings import DeploymentEnvironment, SettingsError, load_settings
@@ -121,6 +137,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="re-read attachments that failed and reprocess their messages",
     )
+    process.add_argument(
+        "--remask",
+        action="store_true",
+        help="reprocess every processed message so the current masking rules apply",
+    )
     sub.add_parser("stats")
     search = sub.add_parser("search")
     search.add_argument("query")
@@ -164,8 +185,32 @@ def _parser() -> argparse.ArgumentParser:
     processing.add_argument(
         "--processing-off", dest="processing_enabled", action="store_const", const=False
     )
+    people = sub.add_parser("people", help="whose action items get a per-person check")
+    people_action = people.add_subparsers(dest="action", required=True)
+    people_action.add_parser("list")
+    pset = people_action.add_parser("set")
+    pset.add_argument("key", help="short id, e.g. chuck_sr")
+    pset.add_argument("--name", required=True, help='as people write it, e.g. "Chuck Sr."')
+    pset.add_argument("--address", action="append", required=True, help="repeat for each")
+    pset.add_argument("--role", default="")
+    pset.add_argument("--not-to-confuse", default="", help="who they are not, e.g. Chuck Jr.")
+    pset.add_argument("--disable", action="store_true")
+    names = sub.add_parser("names", help="canonical property and legal-entity names")
+    names_action = names.add_subparsers(dest="action", required=True)
+    names_action.add_parser("list")
+    nadd = names_action.add_parser("add", help="add a name, or replace its aliases")
+    nadd.add_argument("kind", choices=["property", "entity"])
+    nadd.add_argument("name")
+    nadd.add_argument("--alias", action="append", default=[], help="repeat for each")
+    nremove = names_action.add_parser("remove")
+    nremove.add_argument("kind", choices=["property", "entity"])
+    nremove.add_argument("name")
     run_now = sub.add_parser("run-capture", help="ask the ingestion app to capture now")
-    run_now.add_argument("--hours", type=float, help="look-back (default: the schedule's window)")
+    run_when = run_now.add_mutually_exclusive_group()
+    run_when.add_argument("--hours", type=float, help="look-back (default: the schedule's window)")
+    run_when.add_argument(
+        "--since", help="capture from this date, midnight Central time (YYYY-MM-DD, max 93 days)"
+    )
     return parser
 
 
@@ -298,9 +343,41 @@ def _run(args: argparse.Namespace, conn: Connection) -> None:
     if args.command == "schedule":
         _schedule(args, conn, actor)
         return
+    if args.command == "people":
+        if args.action == "set":
+            set_person(
+                conn,
+                actor,
+                args.key,
+                display_name=args.name,
+                addresses=args.address,
+                role=args.role,
+                not_to_confuse=args.not_to_confuse,
+                enabled=not args.disable,
+            )
+        for person in list_people(conn):
+            state = "on " if person["enabled"] else "off"
+            print(
+                f"{state} {person['key']:<14} {person['display_name']:<22} "
+                f"{', '.join(person['addresses'])}"
+            )
+            if person["not_to_confuse"]:
+                print(f"{'':19}not to confuse with: {person['not_to_confuse']}")
+        return
+    if args.command == "names":
+        if args.action == "add":
+            add_name(conn, actor, args.kind, args.name, args.alias)
+        elif args.action == "remove":
+            remove_name(conn, actor, args.kind, args.name)
+        for n in list_names(conn):
+            also = f"  (also: {', '.join(n['aliases'])})" if n["aliases"] else ""
+            print(f"{n['kind']:<9} {n['canonical']}{also}")
+        return
     if args.command == "run-capture":
-        ops.request_run(conn, actor, args.hours)
-        print("capture requested; the ingestion app starts it within about 5 minutes")
+        hours = ops.hours_since(args.since, datetime.now(UTC)) if args.since else args.hours
+        ops.request_run(conn, actor, hours)
+        looking = f" ({hours:g} hours back)" if hours else ""
+        print(f"capture requested{looking}; the ingestion app starts it within about 5 minutes")
         return
 
     if args.action == "show":

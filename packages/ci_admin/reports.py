@@ -26,7 +26,7 @@ from openpyxl import Workbook  # type: ignore[import-untyped]
 from openpyxl.cell import WriteOnlyCell  # type: ignore[import-untyped]
 from openpyxl.styles import Font  # type: ignore[import-untyped]
 
-from ci_admin import reviews
+from ci_admin import calibration
 from ci_core.db import Connection
 from ci_core.operator import OperatorError, audit, list_mailboxes
 from ci_core.ops import recent_runs
@@ -93,6 +93,8 @@ MAIL_COLUMNS = (
     Column("action_for_ai", "Action For"),
     Column("due_ai", "Due"),
     Column("risk_ai", "AI Project Risk"),
+    Column("properties_ai", "Properties / Projects"),
+    Column("entities_ai", "Legal Entities"),
     Column("attachments", "Attachments", "number"),
     Column("web_link", "Outlook Link"),
     Column("communication_id", "Message ID"),
@@ -100,7 +102,7 @@ MAIL_COLUMNS = (
 GROUP_COLUMNS = (
     Column("key", "Group"),
     Column("messages", "Messages", "number"),
-    Column("actions", "Action Items", "number"),
+    Column("actions", "Asking for Action", "number"),
     Column("risks", "Project Risks", "number"),
     Column("flagged", "Flagged for Review", "number"),
     Column("first_at", "First", "datetime"),
@@ -126,19 +128,14 @@ MAILBOX_COLUMNS = (
 )
 METRIC_COLUMNS = (
     Column("label", "Label", "labels"),
-    Column("reviewed", "Reviewed", "number"),
+    Column("judged", "Checked", "number"),
+    Column("applies", "Applies", "number"),
     Column("precision", "Precision", "rate"),
-    Column("precision_n", "Precision Sample", "number"),
     Column("recall", "Recall", "rate"),
-    Column("recall_n", "Recall Sample", "number"),
-    Column("true_positive", "AI Yes, Person Yes", "number"),
-    Column("false_positive", "AI Yes, Person No", "number"),
-    Column("false_negative", "AI No, Person Yes", "number"),
-    Column("true_negative", "AI No, Person No", "number"),
-    Column("uncertain_yes", "AI Uncertain, Person Yes", "number"),
-    Column("uncertain_no", "AI Uncertain, Person No", "number"),
-    Column("enough", "Enough to Judge", "bool"),
-    Column("policy_version", "Policy Version"),
+    Column("uncertain", "AI Unsure", "number"),
+    Column("yes_at_or_above", "Yes Threshold Now", "number"),
+    Column("suggested_yes", "Suggested Yes Threshold", "number"),
+    Column("needed", "Checks Needed for a Suggestion", "number"),
 )
 COLUMNS: dict[str, tuple[Column, ...]] = {
     "messages": MAIL_COLUMNS,
@@ -154,6 +151,8 @@ GROUP_TITLES = {
     "sender": "Sender",
     "sender_domain": "Sender Domain",
     "label": "Label",
+    "property": "Property / Project",
+    "entity": "Legal Entity",
     "day": "Day",
     "week": "Week Of",
     "month": "Month",
@@ -164,6 +163,7 @@ DEFAULT_MAIL_COLUMNS = (
     "sender",
     "subject",
     "labels",
+    "properties_ai",
     "summary_ai",
     "action_ai",
     "due_ai",
@@ -183,7 +183,6 @@ class ReportRequest:
     person: str | None
     columns: tuple[str, ...]
     label_mode: str  # names | keys
-    review_sample: str = "random"  # random | all, for review_metrics
 
     @property
     def kind(self) -> str:
@@ -235,7 +234,6 @@ def parse(body: dict[str, Any]) -> ReportRequest:
         person=_text(body.get("person")),
         columns=tuple(wanted),
         label_mode=label_mode,
-        review_sample="all" if body.get("review_sample") == "all" else "random",
     )
 
 
@@ -305,7 +303,13 @@ def run(
                     if not req.mailbox or req.mailbox.lower() in m.address
                 ]
             else:
-                rows = reviews.metrics(conn, req.review_sample)["labels"]
+                rows = calibration.label_report(
+                    conn.execute(
+                        "SELECT label, applies, probability, decision FROM ops_label_calibration"
+                    ).fetchall()
+                )
+                for r in rows:
+                    r["suggested_yes"] = (r["suggestion"] or {}).get("yes_at_or_above")
             details = {"dataset": req.dataset, "rows": len(rows)}
             audit(conn, principal.oid, action, None, None, details, actor_type="user")
             conn.commit()
