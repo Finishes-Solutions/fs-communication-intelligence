@@ -444,7 +444,10 @@ async function schedulePage() {
         setting("Mask Sensitive Numbers and Credentials", "Azure AI Language. Off: nothing is masked, and mail the classifier marks as holding ID, bank or card numbers or credentials is restricted (hidden) instead.", switchEl(f.masking_enabled)))),
     (s.prompt_shield_enabled === false || s.masking_enabled === false)
       ? note("A safety check is off. Mail processed now is recorded; run ci process --rescreen --limit 0 to redo it with the checks on.", "warn") : null,
-    card({ title: "Run History", sub: `${(runs.runs || []).length} most recent runs`, flush: true, class: "spaced" }, runsTable(runs.runs)),
+    card({ title: "Run History", sub: `${(runs.runs || []).length} most recent runs`, flush: true, class: "spaced",
+      // The same export as Reports → Run History: up to 500 latest runs, counts and codes only.
+      actions: h("button", { class: "btn sm", onclick: guard(() => exportReport({ dataset: "runs" }, "csv")) }, icon("download"), "Export CSV") },
+    runsTable(runs.runs)),
   );
 }
 
