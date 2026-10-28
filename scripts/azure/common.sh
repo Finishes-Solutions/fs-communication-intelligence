@@ -33,6 +33,15 @@ role() {  # role <principal object id> <role name> <scope>
     --role "$2" --scope "$3" --only-show-errors >/dev/null
   echo "  role ok: $2"
 }
+fw_rule() {  # fw_rule create|delete <rule name> [more az args]: PostgreSQL firewall rule.
+  # Azure CLI versions disagree on argument names (server/rule): older and 2.86+
+  # take --server-name/--name, versions in between take --name/--rule-name.
+  local action="$1" rule="$2"; shift 2
+  az postgres flexible-server firewall-rule "$action" -g "$RG" --server-name "$PG" --name "$rule" \
+    "$@" --only-show-errors >/dev/null 2>&1 \
+  || az postgres flexible-server firewall-rule "$action" -g "$RG" --name "$PG" --rule-name "$rule" \
+    "$@" --only-show-errors >/dev/null
+}
 uuid() { python3 -c 'import uuid; print(uuid.uuid4())'; }
 app_host() {  # app_host <function app>: its default host name; fails loudly if Azure returns none
   local h

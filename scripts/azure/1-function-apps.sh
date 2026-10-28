@@ -72,8 +72,7 @@ role "$ING_P" "Cognitive Services User" "$(cog "$SAFE")"
 role "$SRCH_P" "Cognitive Services OpenAI User" "$(cog "$AOAI")"   # query embeddings only
 
 echo "== PostgreSQL: allow Azure services (Entra sign-in is still required)"
-az postgres flexible-server firewall-rule create -g "$RG" --server-name "$PG" --name AllowAzureServices \
-  --start-ip-address 0.0.0.0 --end-ip-address 0.0.0.0 --only-show-errors >/dev/null
+fw_rule create AllowAzureServices --start-ip-address 0.0.0.0 --end-ip-address 0.0.0.0
 echo "  firewall ok"
 
 echo "== GitHub Actions deploy identity"
