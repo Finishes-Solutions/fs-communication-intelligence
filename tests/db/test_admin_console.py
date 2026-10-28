@@ -355,6 +355,92 @@ def test_cost_page_without_billing_connected(client: TestClient, database_ready:
     assert client.get("/api/costs").status_code == 401
 
 
+class Lister:
+    """Stands in for the Azure Resource Manager deployment list."""
+
+    def deployments(self, *, refresh: bool = False) -> dict[str, Any]:
+        return {
+            "available": True,
+            "deployments": [
+                {"deployment": "gpt-4.1-mini", "model": "gpt-4.1-mini", "sku": "DataZoneStandard"},
+                {"deployment": "gpt-5-mini", "model": "gpt-5-mini", "sku": "GlobalStandard"},
+                {"deployment": "broken", "model": "gpt-4o", "sku": "Standard"},
+            ],
+        }
+
+
+class Broken(FakeClassifier):
+    def classify(self, item: Any, known: Any = ()) -> Any:
+        raise RuntimeError("Azure OpenAI HTTP 404 DeploymentNotFound")
+
+
+@pytest.fixture
+def model_client(database_ready: str, files: DirectoryStore) -> Iterator[TestClient]:
+    settings = Settings(
+        deployment_environment="development",
+        attachment_unsupported_policy="publish_partial",
+        entra_tenant_id=TENANT,
+        search_api_client_id=API_ID,
+        search_api_app_id_uri=API_URI,
+        admin_spa_client_id="admin-spa",
+        azure_openai_chat_deployment="gpt-4.1-mini",
+    )
+    app = build_admin_app(
+        settings,
+        FakeEmbedder(),
+        verifier=EntraTokenVerifier(
+            TENANT, API_ID, API_URI, keys=StaticKeys(), required_scope=ADMIN_SCOPE
+        ),
+        connector=lambda role: connect(dbname=database_ready, role=role),  # type: ignore[arg-type]
+        lab_backends=lambda: LabBackends(FakeScreener(), FakeClassifier()),
+        originals=files,
+        deployment_lister=Lister(),  # type: ignore[arg-type]
+        model_classifier=lambda name: Broken() if name == "broken" else FakeClassifier(),
+    )
+    with TestClient(app, base_url=BASE) as c:
+        yield c
+
+
+def test_model_is_switched_only_after_a_test_classification(
+    model_client: TestClient, database_ready: str
+) -> None:
+    page = model_client.get("/api/models", headers=auth()).json()
+    assert page["current"] == "gpt-4.1-mini" and page["chosen_in_console"] is False
+    assert [d["deployment"] for d in page["deployments"]["deployments"]] == [
+        "gpt-4.1-mini",
+        "gpt-5-mini",
+        "broken",
+    ]
+    assert page["suggested_prices"]["gpt-5-mini"] == [0.25, 2.0]
+    unknown = model_client.put("/api/models", headers=auth(), json={"deployment": "gpt-9"})
+    assert unknown.status_code == 400 and "not a chat deployment" in unknown.json()["error"]
+    failing = model_client.put("/api/models", headers=auth(), json={"deployment": "broken"})
+    assert failing.status_code == 400 and "could not classify" in failing.json()["error"]
+    assert model_client.get("/api/models", headers=auth()).json()["current"] == "gpt-4.1-mini"
+    switched = model_client.put("/api/models", headers=auth(), json={"deployment": "gpt-5-mini"})
+    assert switched.status_code == 200, switched.text
+    assert (switched.json()["current"], switched.json()["chosen_in_console"]) == (
+        "gpt-5-mini",
+        True,
+    )
+    row = latest_audit(database_ready, "schedule_change")
+    assert row is not None and row["details"] == {"chat_deployment": "gpt-5-mini"}
+    price = model_client.put(
+        "/api/models/gpt-5-mini/price",
+        headers=auth(),
+        json={"input_usd_per_1m": 0.25, "output_usd_per_1m": 2, "verified": True},
+    )
+    assert price.status_code == 200, price.text
+    assert price.json()["prices"][0]["deployment"] == "gpt-5-mini"
+    bad = model_client.put(
+        "/api/models/gpt-5-mini/price", headers=auth(), json={"input_usd_per_1m": "x"}
+    )
+    assert bad.status_code == 400
+    back = model_client.put("/api/models", headers=auth(), json={"deployment": ""})
+    assert back.status_code == 200 and back.json()["current"] == "gpt-4.1-mini"
+    assert back.json()["chosen_in_console"] is False
+
+
 def test_lab_reruns_a_stored_message(client: TestClient) -> None:
     target = client.get(f"/api/actionable?person={PAT}&hours=1440", headers=auth()).json()
     communication_id = target["actions"][0]["communication_id"]

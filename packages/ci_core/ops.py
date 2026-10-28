@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import asdict, dataclass, fields, replace
 from datetime import date, datetime, time, timedelta
 from typing import Any, Literal
@@ -43,6 +44,9 @@ class Schedule:
     # Paid per-character checks; off only while testing (migration 0012).
     prompt_shield_enabled: bool = True
     masking_enabled: bool = True
+    # Azure OpenAI chat deployment for classification (migration 0014); None keeps
+    # the app setting AZURE_OPENAI_CHAT_DEPLOYMENT.
+    chat_deployment: str | None = None
 
     def public(self) -> dict[str, Any]:
         data = asdict(self)
@@ -102,7 +106,9 @@ _EDITABLE = {
     "processing_enabled",
     "prompt_shield_enabled",
     "masking_enabled",
+    "chat_deployment",
 }
+DEPLOYMENT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 def update_schedule(conn: Connection, actor: str, **changes: Any) -> Schedule:
@@ -111,6 +117,11 @@ def update_schedule(conn: Connection, actor: str, **changes: Any) -> Schedule:
     if unknown:
         raise OperatorError(f"unknown schedule fields: {', '.join(sorted(unknown))}")
     current = read_schedule(conn)
+    if "chat_deployment" in changes:
+        name = (changes["chat_deployment"] or "").strip() or None
+        if name is not None and not DEPLOYMENT_NAME.match(name):
+            raise OperatorError("a deployment name is letters, digits, '.', '_' or '-'")
+        changes["chat_deployment"] = name
     proposed = replace(current, **changes)
     if proposed.capture_interval_min not in INTERVALS:
         raise OperatorError(f"interval must be one of {INTERVALS} minutes")

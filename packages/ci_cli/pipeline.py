@@ -211,7 +211,9 @@ def process(args: argparse.Namespace) -> None:
         return
     with connect(role="ci_ingest") as conn:
         schedule = ops.read_schedule(conn)
-    configured = backends.with_switches(backends.processing_backends(settings), settings, schedule)
+    configured = backends.with_switches(
+        backends.processing_backends(backends.with_model(settings, schedule)), settings, schedule
+    )
     try:
         counts = process_all(
             lambda: connect(role="ci_ingest"),

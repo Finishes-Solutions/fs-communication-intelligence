@@ -174,6 +174,9 @@ class Settings(BaseSettings):
     # console's identity needs Cost Management Reader there).
     azure_subscription_id: str | None = None
     azure_resource_group: str = "fs-communication-intelligence"
+    # The Azure OpenAI account whose deployments the console offers as models
+    # (default: the first part of AZURE_OPENAI_ENDPOINT's host name).
+    azure_openai_account: str | None = None
 
     # Admin console (apps/admin): the public SPA client the browser signs in
     # with. Tokens are for the search API registration, scope Communications.Console.

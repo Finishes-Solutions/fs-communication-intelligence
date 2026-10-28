@@ -104,3 +104,67 @@ def test_only_prices_are_editable(db: str) -> None:
         with pytest.raises(Exception, match="permission denied"):
             conn.execute("SELECT * FROM ai_usage")
         conn.rollback()
+
+
+def test_chat_usage_is_priced_per_model_when_a_price_is_set(db: str) -> None:
+    from ci_admin import models
+
+    with connect(dbname=db, role="ci_ingest") as conn:
+        record_usage(
+            conn,
+            [UsageRow(OPENAI_CHAT, "azure-openai:gpt-5-mini", 10, 1_000_000, 1_000_000)],
+            source="lab",
+        )
+        conn.commit()
+    with connect(dbname=db, role="ci_operator") as conn:
+
+        def lab_usd() -> float:
+            row = conn.execute(
+                "SELECT estimated_usd FROM ops_usage_cost WHERE model = 'azure-openai:gpt-5-mini'"
+            ).fetchone()
+            assert row is not None
+            return float(row["estimated_usd"])
+
+        assert lab_usd() == pytest.approx(2.20)  # default chat prices until one is set
+        with pytest.raises(OperatorError, match="between 0 and 1,000"):
+            models.set_model_price(
+                conn, "pytest", "gpt-5-mini", {"input_usd_per_1m": -1, "output_usd_per_1m": 1}
+            )
+        with pytest.raises(OperatorError, match="deployment name"):
+            models.set_model_price(
+                conn, "pytest", "bad name!", {"input_usd_per_1m": 1, "output_usd_per_1m": 1}
+            )
+        conn.rollback()
+        models.set_model_price(
+            conn, "matthew", "gpt-5-mini", {"input_usd_per_1m": 0.25, "output_usd_per_1m": 2}
+        )
+        conn.commit()
+        assert lab_usd() == pytest.approx(2.25)
+        usage = models.usage_by_model(conn, TZ)
+        by_model = {u["deployment"]: u for u in usage["by_model"]}
+        assert by_model["gpt-5-mini"]["usd"] == pytest.approx(2.25)
+        # The processing run's 1,000 emails used 1M chat tokens in, 1M out.
+        assert usage["per_email"] == {
+            "measured": True,
+            "emails": 1000,
+            "input_tokens": 1000,
+            "output_tokens": 1000,
+        }
+
+
+def test_the_chosen_model_is_validated_and_applied(db: str) -> None:
+    from ci_cli.backends import with_model
+    from ci_core.settings import Settings
+
+    with connect(dbname=db, role="ci_operator") as conn:
+        with pytest.raises(OperatorError, match="deployment name"):
+            ops.update_schedule(conn, "pytest", chat_deployment="gpt 5; drop")
+        conn.rollback()
+        chosen = ops.update_schedule(conn, "pytest", chat_deployment=" gpt-5-mini ")
+        assert chosen.chat_deployment == "gpt-5-mini"
+        cleared = ops.update_schedule(conn, "pytest", chat_deployment="")
+        assert cleared.chat_deployment is None
+        conn.rollback()
+    settings = Settings(deployment_environment="local", azure_openai_chat_deployment="gpt-4.1-mini")
+    assert with_model(settings, chosen).azure_openai_chat_deployment == "gpt-5-mini"
+    assert with_model(settings, cleared) is settings

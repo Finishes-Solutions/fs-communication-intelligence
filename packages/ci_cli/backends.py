@@ -162,3 +162,10 @@ def with_switches(configured: Backends, settings: Settings, schedule: Schedule) 
     if not schedule.masking_enabled:
         configured = replace(configured, redactor=None, masking_disabled=True)
     return configured
+
+
+def with_model(settings: Settings, schedule: Schedule) -> Settings:
+    """Settings with the chat deployment chosen in the admin console, if any."""
+    if not schedule.chat_deployment:
+        return settings
+    return settings.model_copy(update={"azure_openai_chat_deployment": schedule.chat_deployment})

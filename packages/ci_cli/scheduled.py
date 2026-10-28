@@ -115,7 +115,9 @@ def run_processing(settings: Settings) -> dict[str, int] | None:
     configured = None
     try:
         configured = backends.with_switches(
-            backends.processing_backends(settings), settings, schedule
+            backends.processing_backends(backends.with_model(settings, schedule)),
+            settings,
+            schedule,
         )
         counts = dict(
             process_all(

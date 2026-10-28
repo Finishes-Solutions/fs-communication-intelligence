@@ -524,3 +524,6 @@ a.btn { text-decoration: none; }
 .action-q-text { min-width: 0; flex: 1 1 220px; }
 .reasons { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; width: 100%; }
 .sample.on { background: var(--text); color: #fff; border-color: var(--text); }
+.price-edit { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.card-foot-notes { display: grid; gap: 10px; padding: 12px 16px 16px; }
+.row-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
