@@ -7,8 +7,10 @@
 #   READERS="matthews@finishessolutions.com chuckc@finishesetc.net" \
 #     bash scripts/azure/2-search-api-entra.sh
 #
-# Client secrets are printed ONCE, for pasting into Claude / ChatGPT / Copilot
-# Studio connector settings. Never paste them into chat, email or GitHub.
+# Each run issues a NEW client secret per platform and invalidates the old one
+# (rerun to rotate). Secrets are written to ~/fs-ci-mcp-client-secrets.txt
+# (readable only by you), never printed. Paste each into its platform's connector
+# settings, then delete the file. Never paste secrets into chat, email or GitHub.
 set -euo pipefail
 : "${READERS:?set READERS to the sign-in addresses allowed to read all enrolled mail}"
 source "$(dirname "$0")/common.sh"
@@ -76,14 +78,32 @@ client() {  # client <label> <redirect uri>...
   fi
   az ad app permission add --id "$id" --api "$API_APP_ID" --api-permissions "$SCOPE_ID=Scope" \
     --only-show-errors 2>/dev/null || true
-  az ad app permission admin-consent --id "$id" --only-show-errors 2>/dev/null \
-    || { sleep 20; az ad app permission admin-consent --id "$id" --only-show-errors; } \
-    || echo "  consent failed: grant it in Entra -> App registrations -> $name -> API permissions"
+  local client_sp
+  client_sp="$(az ad sp list --filter "appId eq '$id'" --query "[0].id" -o tsv)"
+  # Tenant-wide consent through Microsoft Graph (the `az ad app permission
+  # admin-consent` endpoint does not accept Cloud Shell's sign-in).
+  consent "$client_sp" "$API_SP" "Communications.Search"
+  consent "$client_sp" "$GRAPH_SP" "openid profile offline_access"
   local secret
-  secret="$(az ad app credential reset --id "$id" --display-name mcp --years 1 --append \
+  secret="$(az ad app credential reset --id "$id" --display-name mcp --years 1 \
     --query password -o tsv --only-show-errors)"
-  printf '\n[%s]\n  Client ID:      %s\n  Client secret:  %s\n' "$label" "$id" "$secret"
+  printf '[%s]\nClient ID:     %s\nClient secret: %s\n\n' "$label" "$id" "$secret" >>"$SECRETS"
+  printf '  %-15s client ID %s (new secret written to %s)\n' "$label" "$id" "$SECRETS"
 }
+consent() {  # consent <client sp id> <resource sp id> <space-separated scopes>
+  local existing
+  existing="$(az rest --method GET --only-show-errors --query "value[0].id" -o tsv \
+    --uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?\$filter=clientId%20eq%20'$1'%20and%20resourceId%20eq%20'$2'%20and%20consentType%20eq%20'AllPrincipals'")"
+  if [ -n "$existing" ] && [ "$existing" != "None" ]; then
+    graph PATCH "oauth2PermissionGrants/$existing" "{\"scope\":\"$3\"}" >/dev/null
+  else
+    graph POST oauth2PermissionGrants \
+      "{\"clientId\":\"$1\",\"consentType\":\"AllPrincipals\",\"resourceId\":\"$2\",\"scope\":\"$3\"}" >/dev/null
+  fi
+}
+GRAPH_SP="$(az ad sp show --id "$GRAPH_APP_ID" --query id -o tsv)"
+SECRETS="$HOME/fs-ci-mcp-client-secrets.txt"
+( umask 077; : >"$SECRETS" )
 echo
 echo "Connector settings (all platforms):"
 echo "  MCP server URL:     https://$(app_host "$SRCH_APP")/mcp"
@@ -97,4 +117,5 @@ client "Copilot Studio" "https://global.consent.azure-apim.net/redirect"
 az functionapp config appsettings set -g "$RG" -n "$SRCH_APP" --only-show-errors >/dev/null \
   --settings "SEARCH_API_CLIENT_ID=$API_APP_ID" "SEARCH_API_APP_ID_URI=$API_URI"
 echo
-echo "Search app configured (API $API_APP_ID). Next: bash scripts/azure/3-mail-access.sh"
+echo "Search app configured (API $API_APP_ID)."
+echo "Secrets: $SECRETS (only you can read it). Paste each into its platform, then: rm $SECRETS"

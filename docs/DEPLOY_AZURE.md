@@ -109,7 +109,7 @@ READERS="matthews@finishessolutions.com chuckc@finishesetc.net" bash scripts/azu
 
 This registers the search API (scope `Communications.Search`, app roles `Communications.Reader.All` / `.Own`, assignment required). It gives each address in `READERS` the **Reader.All** role, which means **all enrolled company mail**; use `.Own` in the portal for someone who should only see their own mailbox. It also creates one client app each for Claude, ChatGPT and Copilot Studio, and points the search Function App at the API.
 
-It prints connector settings and **one client secret per platform, once**. Paste each secret straight into that platform's connector screen. Never paste it into chat, email or GitHub. Rerun the script to rotate secrets.
+It prints the connector settings and each platform's client ID. It writes **a new client secret per platform** to `~/fs-ci-mcp-client-secrets.txt`, readable only by you, and invalidates the previous secrets. Paste each secret straight into its platform's connector screen, then delete the file. Never paste a secret into chat, email or GitHub; if one leaks, rerun the script to rotate them all. Consent is granted through Microsoft Graph, because `az ad app permission admin-consent` doesn't accept Cloud Shell's sign-in.
 
 ## 7. First run: the last 24 hours
 
