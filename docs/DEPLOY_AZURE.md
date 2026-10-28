@@ -153,7 +153,7 @@ Watch progress (codes and counts only):
 ci stats
 ```
 
-Logs: portal → `func-fs-ci-ing-dev-1026` → **Monitoring → Logs** or **Log stream**. Each capture and processing pass is also recorded with its counts (`ci schedule show`, or **Schedule & runs** in the console). Once the cause of a failure is fixed, requeue the failed messages; the process timer picks them up:
+Logs: portal → `func-fs-ci-ing-dev-1026` → **Monitoring → Logs** or **Log stream**. Each capture and processing pass is also recorded with its counts (`ci schedule show`, or **Schedule & Runs** in the console). Once the cause of a failure is fixed, requeue the failed messages; the process timer picks them up:
 
 ```bash
 ci process --retry-failed --limit 0
@@ -177,7 +177,7 @@ If Cloud Shell can't reach the database (timeout), add its address: `az postgres
 
 ## 9. Turn on hourly capture
 
-In the console (**Schedule & runs**) or from Cloud Shell:
+In the console (**Schedule & Runs**) or from Cloud Shell:
 
 ```bash
 ci schedule set --on --every 60 --window 2
@@ -219,12 +219,12 @@ The hosted endpoint is written to the MCP standard (Streamable HTTP; OAuth prote
 
 A web page at `https://func-fs-ci-adm-dev-1026.azurewebsites.net/` for console admins (you, for now):
 
-- **Overview:** mode, schedule, backlog, message states and reasons, labels, attachment extraction, failures, and recent runs. Also **Run capture now** (any look-back) and **Requeue failed**.
-- **Schedule & runs:** how often capture runs, its look-back, active hours, weekdays only, processing on/off. Below that, every run with its counts.
+- **Overview:** mode, schedule, backlog, message states and reasons, labels, attachment extraction, failures, and recent runs. Also **Run Capture Now** (any look-back) and **Requeue Failed**.
+- **Schedule & Runs:** how often capture runs, its look-back, active hours, weekdays only, processing on/off. Below that, every run with its counts.
 - **Mailboxes:** filter, approve or unapprove, exclude or un-exclude (with a reason), approve all enrolled, change mode, and exclude a person or domain in every mailbox.
 - **Messages:** search or list published mail by mailbox, sender, label and date. A message shows the AI summary, action and risk, labels, people, the body, and its **files**: preview (PDF, images, text), download, or the extracted text. Signature images and logos aren't processed or shown: every inline image, and any attached image of 100 KB or less. There's also an **Open in Outlook** link, which works only for mailboxes your account can open.
-- **Action items:** the same list agents get from `list_actionable`, for any person or window.
-- **Not published:** held, restricted, bulk and failed messages, with metadata and reason only, never the subject or text.
+- **Action Items:** the same list agents get from `list_actionable`, for any person or window.
+- **Not Published:** held, restricted, bulk and failed messages, with metadata and reason only, never the subject or text.
 - **Communication Lab:** write an email (or start from a sample: invoice, change order, lien notice, failed inspection, newsletter, phishing, SSN, prompt injection), or pick a stored one. It runs the real screening, classifier, policy and routing and stores nothing. It shows a verdict ("Action item", "Project risk", "Restricted"…), each pipeline step, why, the AI proposal, every label against its thresholds, the difference from what was stored, and the message's files. Each run calls Azure OpenAI once.
 
 **Original files.** From the deploy that includes this, processing keeps each attachment's original file in the private container `attachments` of `stfscievidev1026`. Each distinct file is stored once, and inline signature images are skipped. Each processing pass also backfills up to 100 files for mail processed earlier. Files are **not malware-scanned** (your decision, 2026-10-28), so open unexpected downloads with care. The console serves a file only when you may read its message; restricted, held and bulk mail never get file access.
