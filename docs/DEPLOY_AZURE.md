@@ -242,6 +242,29 @@ Hard stop for the timers, whatever the schedule says:
 az functionapp config appsettings set -g fs-communication-intelligence -n func-fs-ci-ing-dev-1026 --settings CAPTURE_ENABLED=false PROCESSING_ENABLED=false -o none
 ```
 
+### Search speed
+
+Search is hybrid: meaning (vector similarity on the embeddings) plus keywords (PostgreSQL full text), fused with Reciprocal Rank Fusion. Migration 0015 lets the meaning half use the vector index. Before it, every search compared the question with every indexed chunk, so searches slowed as mail was added. Apply it like the others (`python3 db/migrate.py apply`). Until it is applied, search keeps working the old way.
+
+Check speed and accuracy on your own mail. This prints numbers only:
+
+```bash
+ci search-check --samples 20
+```
+
+`recall_at_10` is the share of the exact 10 nearest chunks the index also found. Near 1.0 is good. Below about 0.9, tell Claude: the index can be tuned. `index_ms` against `exact_ms` shows the speed-up.
+
+Each search logs its timings to App Insights, with no query text: `search timings ms: embed=… query=… metadata=… coverage=… total=… path=index|exact|exact_fallback`. In the portal, open `appi-fs-ci-dev` → Logs and run:
+
+```kusto
+traces | where message startswith "search timings" | order by timestamp desc | take 50
+```
+
+Other things that make a search slow:
+- **The first search after a quiet period** starts the search app (a cold start, several seconds).
+- **Processing running at full speed** competes with search for the embedding quota (a search waits at most 20 seconds) and for the database's CPU.
+- **The database tier:** `B2ms` is a burstable tier. Under long processing runs it can use up its CPU credits and slow down, and `B2s` would be slower. Keep `B2ms` or larger while mail is being processed and searched.
+
 ### Processing speed and Azure OpenAI rate limits
 
 `PROCESSING_WORKERS` (app setting) is how many emails are processed at once, and `PROCESSING_MINUTES` is how long each 5-minute timer run may work. The embedding deployment's tokens-per-minute quota sets the real ceiling: Azure checks it over windows of about 10 seconds, so a few emails with long attachments sent at once get HTTP 429 even when the minute's total would fit.

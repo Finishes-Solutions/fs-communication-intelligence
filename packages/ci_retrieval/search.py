@@ -7,6 +7,12 @@ parameters can only narrow results. Hybrid ranking: vector top 50 plus
 full-text top 50, fused with Reciprocal Rank Fusion (k = 60), at most 3 chunks
 per message, copies of one message collapsed after authorization.
 
+The vector half takes the nearest published chunks from the HNSW index
+(``ci.nearest_published_chunks``, migration 0015), then applies the grants and
+filters to them; when they leave fewer than 50, it repeats with the exact
+distance to every authorized chunk, so a narrow grant or filter still gets a
+full page.
+
 Returned text is untrusted email content. Summaries, actions and labels are
 AI-generated proposals, not decisions. Every call is audited (ids and counts;
 query text is not logged).
@@ -15,6 +21,9 @@ query text is not logged).
 from __future__ import annotations
 
 import json
+import logging
+import threading
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -24,8 +33,15 @@ from ci_core.db import Connection
 from ci_processing.embedding import Embedder
 from ci_retrieval.identity import Principal
 
+log = logging.getLogger(__name__)
+
 RRF_K = 60
 CANDIDATES = 50
+# Nearest chunks taken from the vector index before grants and filters apply.
+NEAREST_K = 200
+# The coverage block counts every captured message; it is informational, so a
+# few minutes old is fine, and recounting on every search made searches slow.
+COVERAGE_SECONDS = 300.0
 MAX_CHUNKS_PER_MESSAGE = 3
 ACTION_LABELS = ("action_required", "approval_required")
 # Executive "risks" are risks to a project or property (Matthew, 2026-10-28), not
@@ -163,11 +179,72 @@ def _scope(alias: str) -> str:
     return _AUTH.format(a=alias) + _FILTERS.format(a=alias)
 
 
-def _set_search_options(conn: Connection) -> None:
-    row = conn.execute("SELECT extversion FROM pg_extension WHERE extname = 'vector'").fetchone()
-    if row and tuple(int(x) for x in row["extversion"].split(".")[:2]) >= (0, 8):
+def _set_search_options(conn: Connection) -> bool:
+    """Sets the pgvector options; True when the index-first function (0015) exists."""
+    row = conn.execute(
+        "SELECT (SELECT extversion FROM pg_extension WHERE extname = 'vector') AS version,"
+        " to_regprocedure('ci.nearest_published_chunks(vector, integer)') IS NOT NULL AS fast"
+    ).fetchone()
+    if row and row["version"] and tuple(int(x) for x in row["version"].split(".")[:2]) >= (0, 8):
         # Keep filtered vector search returning full pages (pgvector 0.8 iterative scans).
         conn.execute("SELECT set_config('hnsw.iterative_scan', 'relaxed_order', true)")
+    return bool(row and row["fast"])
+
+
+# The vector half of the hybrid query: from the index-first function, or exact.
+# Both apply the grants and filters before ranking (the function returns the
+# communication, corpus and date the scope fragments read).
+_VEC_INDEX = """
+    near AS MATERIALIZED (
+        SELECT * FROM nearest_published_chunks(%(qv)s::vector, %(nearest)s::integer)),
+    vec AS (
+        SELECT id, row_number() OVER (ORDER BY dist) AS r FROM (
+            SELECT near.id, near.dist FROM near
+            WHERE {near_scope}
+            ORDER BY near.dist LIMIT %(n)s) v),"""
+_VEC_EXACT = """
+    near AS (SELECT NULL::bigint AS scanned),
+    vec AS (
+        SELECT id, row_number() OVER (ORDER BY dist) AS r FROM (
+            SELECT pc.id, pc.embedding <=> %(qv)s::vector AS dist
+            FROM published_chunks pc
+            WHERE {scope}
+            ORDER BY dist LIMIT %(n)s) v),"""
+
+
+def _hybrid(conn: Connection, vec: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+    """Fused rows, best first, after one header row's worth of counts: every row
+    carries vec_hits (vector candidates left after grants and filters) and scanned
+    (chunks taken from the index); score is NULL when nothing matched."""
+    scope = _scope("pc")
+    rows: list[dict[str, Any]] = conn.execute(
+        f"""
+        WITH {vec.format(scope=scope, near_scope=_scope("near"))}
+        fts AS (
+            SELECT id, row_number() OVER (ORDER BY rank DESC) AS r FROM (
+                SELECT pc.id, ts_rank_cd(pc.tsv, tq) AS rank
+                FROM published_chunks pc, websearch_to_tsquery('english', %(q)s) tq
+                WHERE pc.tsv @@ tq AND {scope}
+                ORDER BY rank DESC LIMIT %(n)s) f),
+        fused AS (
+            SELECT id, sum(1.0 / (%(k)s + r)) AS score
+            FROM (SELECT * FROM vec UNION ALL SELECT * FROM fts) u GROUP BY id)
+        SELECT m.vec_hits, m.scanned, x.*
+        FROM (SELECT (SELECT count(*) FROM vec) AS vec_hits,
+                     (SELECT max(scanned) FROM near) AS scanned) m
+        LEFT JOIN LATERAL (
+            SELECT f.score, pc.communication_id::text, pc.chunk_kind, pc.display_text,
+                   pc.source_ref, a.name AS attachment_name
+            FROM fused f
+            JOIN published_chunks pc ON pc.id = f.id
+            LEFT JOIN published_email_attachments a
+              ON a.communication_id = pc.communication_id
+             AND a.native_attachment_id = pc.source_ref) x ON true
+        ORDER BY x.score DESC NULLS LAST
+        """,  # noqa: S608 - fragments are constants; values are bound parameters
+        params,
+    ).fetchall()
+    return rows
 
 
 def _audit(conn: Connection, principal: Principal, action: str, details: dict[str, Any]) -> None:
@@ -178,7 +255,16 @@ def _audit(conn: Connection, principal: Principal, action: str, details: dict[st
     )
 
 
-def coverage(conn: Connection) -> dict[str, int]:
+_coverage_cache: dict[str, tuple[float, dict[str, int]]] = {}
+_coverage_lock = threading.Lock()
+
+
+def coverage(conn: Connection, *, max_age: float = COVERAGE_SECONDS) -> dict[str, int]:
+    """Messages per processing state, recounted at most every ``max_age`` seconds."""
+    with _coverage_lock:
+        cached = _coverage_cache.get(conn.info.dbname)
+        if cached and time.monotonic() - cached[0] < max_age:
+            return dict(cached[1])
     rows = conn.execute("SELECT processing_state, reason, messages FROM coverage_counts").fetchall()
     out: dict[str, int] = {}
     for r in rows:
@@ -188,7 +274,9 @@ def coverage(conn: Connection) -> dict[str, int]:
             else f"{r['processing_state']}:{r['reason'].split(':')[0]}"
         )
         out[key] = out.get(key, 0) + int(r["messages"])
-    return out
+    with _coverage_lock:
+        _coverage_cache[conn.info.dbname] = (time.monotonic(), out)
+    return dict(out)
 
 
 def _metadata(conn: Connection, ids: Sequence[str]) -> dict[str, dict[str, Any]]:
@@ -221,43 +309,38 @@ def search(
     limit = max(1, min(limit, 25))
     auth = authorize(conn, principal)
     results: list[Result] = []
+    timings: dict[str, float] = {}
+    path = "none"
+    started = time.monotonic()
     if not auth.empty and query.strip():
-        _set_search_options(conn)
+        fast = _set_search_options(conn)
+        vector = str(embedder.embed([query])[0])
+        timings["embed"] = time.monotonic() - started
         params = _params(auth, filters) | {
             "q": query,
-            "qv": str(embedder.embed([query])[0]),
+            "qv": vector,
             "n": CANDIDATES,
             "k": RRF_K,
+            "nearest": NEAREST_K,
         }
-        rows = conn.execute(
-            f"""
-            WITH vec AS (
-                SELECT id, row_number() OVER (ORDER BY dist) AS r FROM (
-                    SELECT pc.id, pc.embedding <=> %(qv)s::vector AS dist
-                    FROM published_chunks pc
-                    WHERE {_scope("pc")}
-                    ORDER BY dist LIMIT %(n)s) v),
-            fts AS (
-                SELECT id, row_number() OVER (ORDER BY rank DESC) AS r FROM (
-                    SELECT pc.id, ts_rank_cd(pc.tsv, tq) AS rank
-                    FROM published_chunks pc, websearch_to_tsquery('english', %(q)s) tq
-                    WHERE pc.tsv @@ tq AND {_scope("pc")}
-                    ORDER BY rank DESC LIMIT %(n)s) f),
-            fused AS (
-                SELECT id, sum(1.0 / (%(k)s + r)) AS score
-                FROM (SELECT * FROM vec UNION ALL SELECT * FROM fts) u GROUP BY id)
-            SELECT f.score, pc.communication_id::text, pc.chunk_kind, pc.display_text,
-                   pc.source_ref, a.name AS attachment_name
-            FROM fused f
-            JOIN published_chunks pc ON pc.id = f.id
-            LEFT JOIN published_email_attachments a
-              ON a.communication_id = pc.communication_id
-             AND a.native_attachment_id = pc.source_ref
-            ORDER BY f.score DESC
-            """,  # noqa: S608 - fragments are constants; values are bound parameters
-            params,
-        ).fetchall()
+        mark = time.monotonic()
+        rows, path = [], "exact"
+        if fast:
+            rows, path = _hybrid(conn, _VEC_INDEX, params), "index"
+            head = rows[0]
+            # Too few candidates left after grants and filters while more chunks
+            # exist beyond the ones taken from the index: rank them all exactly.
+            if head["scanned"] is None or (
+                head["scanned"] >= NEAREST_K and head["vec_hits"] < CANDIDATES
+            ):
+                path = "exact_fallback"
+        if path != "index":
+            rows = _hybrid(conn, _VEC_EXACT, params)
+        rows = [r for r in rows if r["score"] is not None]
+        timings["query"] = time.monotonic() - mark
+        mark = time.monotonic()
         meta = _metadata(conn, sorted({r["communication_id"] for r in rows}))
+        timings["metadata"] = time.monotonic() - mark
         by_id: dict[str, Result] = {}
         groups: dict[tuple[str, str], str] = {}
         for r in rows:
@@ -311,11 +394,72 @@ def search(
         },
     )
     conn.commit()
+    mark = time.monotonic()
+    covered = coverage(conn)
+    timings["coverage"] = time.monotonic() - mark
+    # Timings, path and counts only: never the query text.
+    log.info(
+        "search timings ms: %s total=%d path=%s results=%d",
+        " ".join(f"{k}={v * 1000:.0f}" for k, v in timings.items()),
+        (time.monotonic() - started) * 1000,
+        path,
+        len(results),
+    )
     return {
         "note": UNTRUSTED_NOTE,
         "authorized": not auth.empty,
         "results": [r.__dict__ for r in results],
-        "coverage": coverage(conn),
+        "coverage": covered,
+    }
+
+
+def index_check(conn: Connection, samples: int = 10, top: int = 10) -> dict[str, Any]:
+    """How closely the index-first vector search matches the exact scan on the real
+    data: sample published chunks serve as queries; recall@``top`` is the share of
+    the exact nearest chunks the index also returned. Numbers only, no content."""
+    if not _set_search_options(conn):
+        raise RuntimeError("the database has no index-first search yet: apply migration 0015")
+    ids = [
+        r["id"]
+        for r in conn.execute(
+            "SELECT id FROM published_chunks ORDER BY random() LIMIT %s", (max(1, samples),)
+        ).fetchall()
+    ]
+    recalls: list[float] = []
+    index_s: list[float] = []
+    exact_s: list[float] = []
+    for chunk_id in ids:
+        row = conn.execute(
+            "SELECT embedding::text AS v FROM published_chunks WHERE id = %s", (chunk_id,)
+        ).fetchone()
+        if row is None:
+            continue
+        mark = time.monotonic()
+        approx = conn.execute(
+            "SELECT id FROM nearest_published_chunks(%s::vector, %s::integer)"
+            " ORDER BY dist LIMIT %s",
+            (row["v"], NEAREST_K, top),
+        ).fetchall()
+        index_s.append(time.monotonic() - mark)
+        mark = time.monotonic()
+        # "+ 0" keeps the planner off the index: this is the exact answer.
+        exact = conn.execute(
+            "SELECT id FROM published_chunks ORDER BY (embedding <=> %s::vector) + 0 LIMIT %s",
+            (row["v"], top),
+        ).fetchall()
+        exact_s.append(time.monotonic() - mark)
+        want = {r["id"] for r in exact}
+        recalls.append(len(want & {r["id"] for r in approx}) / max(len(want), 1))
+    conn.rollback()
+
+    def avg(values: list[float]) -> float:
+        return sum(values) / len(values) if values else 0.0
+
+    return {
+        "samples": len(recalls),
+        f"recall_at_{top}": round(avg(recalls), 3),
+        "index_ms": round(avg(index_s) * 1000),
+        "exact_ms": round(avg(exact_s) * 1000),
     }
 
 

@@ -28,6 +28,7 @@ The database comes from the standard ``PG*`` environment variables; locally,
     ci process --rescreen --limit 0           redo mail processed with a paid check off
     ci stats                                  counts by state, outcome, label, extraction
     ci search "QUERY" [--mailbox ADDRESS]     authorized search as the signed-in person
+    ci search-check [--samples N]             vector index accuracy and speed vs exact (numbers)
     ci actionable [--person ADDRESS] [--hours 24] [--out FILE.md]
     ci mcp                                    MCP server over stdio for Claude
 
@@ -157,6 +158,8 @@ def _parser() -> argparse.ArgumentParser:
         help="reprocess mail handled while Prompt Shields or masking was switched off",
     )
     sub.add_parser("stats")
+    check = sub.add_parser("search-check")
+    check.add_argument("--samples", type=int, default=10)
     search = sub.add_parser("search")
     search.add_argument("query")
     search.add_argument("--mailbox")
@@ -422,6 +425,7 @@ _STANDALONE = {
     "capture": pipeline.capture,
     "process": pipeline.process,
     "search": pipeline.search,
+    "search-check": pipeline.search_check,
     "actionable": pipeline.actionable,
 }
 
