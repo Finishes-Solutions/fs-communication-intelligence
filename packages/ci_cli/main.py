@@ -25,6 +25,7 @@ The database comes from the standard ``PG*`` environment variables; locally,
     ci process --remask --limit 0             reprocess everything under the masking rules
     ci process --retry-skipped [--domain D] --limit 0
                                               process skipped bulk/automated mail in full
+    ci process --rescreen --limit 0           redo mail processed with a paid check off
     ci stats                                  counts by state, outcome, label, extraction
     ci search "QUERY" [--mailbox ADDRESS]     authorized search as the signed-in person
     ci actionable [--person ADDRESS] [--hours 24] [--out FILE.md]
@@ -150,6 +151,11 @@ def _parser() -> argparse.ArgumentParser:
         help="process mail the bulk/automated pre-filter skipped in full (paid steps run)",
     )
     process.add_argument("--domain", help="with --retry-skipped: only this sender domain")
+    process.add_argument(
+        "--rescreen",
+        action="store_true",
+        help="reprocess mail handled while Prompt Shields or masking was switched off",
+    )
     sub.add_parser("stats")
     search = sub.add_parser("search")
     search.add_argument("query")
@@ -193,6 +199,16 @@ def _parser() -> argparse.ArgumentParser:
     processing.add_argument(
         "--processing-off", dest="processing_enabled", action="store_const", const=False
     )
+    for key, name in (("prompt_shield_enabled", "shield"), ("masking_enabled", "masking")):
+        group = sset.add_mutually_exclusive_group()
+        group.add_argument(f"--{name}-on", dest=key, action="store_const", const=True)
+        group.add_argument(
+            f"--{name}-off",
+            dest=key,
+            action="store_const",
+            const=False,
+            help=f"paid {name} check off while testing (redo later: ci process --rescreen)",
+        )
     people = sub.add_parser("people", help="whose action items get a per-person check")
     people_action = people.add_subparsers(dest="action", required=True)
     people_action.add_parser("list")
@@ -283,6 +299,8 @@ def _schedule(args: argparse.Namespace, conn: Connection, actor: str) -> None:
                 "weekdays_only",
                 "time_zone",
                 "processing_enabled",
+                "prompt_shield_enabled",
+                "masking_enabled",
             )
             if getattr(args, k) is not None
         }
@@ -303,6 +321,10 @@ def _schedule(args: argparse.Namespace, conn: Connection, actor: str) -> None:
         f"{', weekdays only' if s.weekdays_only else ''}"
     )
     print(f"processing: {'on' if s.processing_enabled else 'off'}")
+    print(
+        f"prompt-injection check: {'on' if s.prompt_shield_enabled else 'OFF'},"
+        f" masking: {'on' if s.masking_enabled else 'OFF'}"
+    )
     print(f"last capture started: {s.last_capture_started_at or 'never'}")
     if s.run_requested_at:
         print(f"capture requested at {s.run_requested_at}; not started yet")

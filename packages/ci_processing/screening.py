@@ -42,6 +42,17 @@ class Screener(Protocol):
     def screen(self, text: str) -> ScreeningResult: ...
 
 
+DISABLED = "disabled_by_operator"  # service_ref of a check an operator turned off
+
+
+class DisabledScreener:
+    """Prompt Shields turned off in the admin console (testing only): no service is
+    called, and the message records the check as skipped so it can be redone."""
+
+    def screen(self, text: str) -> ScreeningResult:
+        return ScreeningResult((CheckResult("prompt_shield", CheckDecision.ALLOW, None, DISABLED),))
+
+
 _SENSITIVE_PII = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")  # US SSN shape
 _PROMPT_ATTACK = re.compile(
     r"ignore (all |any )?(previous|prior|above) instructions|disregard your (rules|instructions)",

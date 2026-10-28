@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
+from ci_core.ops import Schedule
 from ci_core.settings import (
     ClassifierBackend,
     DeploymentEnvironment,
@@ -22,7 +25,7 @@ from ci_processing.originals import AzureBlobStore, DirectoryStore, OriginalStor
 from ci_processing.prefilter import allow_domains
 from ci_processing.redaction import FakeRedactor, Redactor
 from ci_processing.routing import FakePersonRouter, PersonRouter
-from ci_processing.screening import FakeScreener, Screener
+from ci_processing.screening import DisabledScreener, FakeScreener, Screener
 
 
 def graph_client(settings: Settings) -> GraphClient:
@@ -139,3 +142,15 @@ def processing_backends(settings: Settings) -> Backends:
         prefilter=settings.bulk_prefilter_enabled,
         prefilter_allow_domains=allow_domains(settings.bulk_prefilter_allow_domains),
     )
+
+
+def with_switches(configured: Backends, settings: Settings, schedule: Schedule) -> Backends:
+    """Apply the admin console's switches for the paid checks (testing only). They
+    apply under SENSITIVE_DATA_POLICY=mask; restrict keeps its full PII check."""
+    if settings.sensitive_data_policy is not SensitiveDataPolicy.MASK:
+        return configured
+    if not schedule.prompt_shield_enabled:
+        configured = replace(configured, screener=DisabledScreener())
+    if not schedule.masking_enabled:
+        configured = replace(configured, redactor=None, masking_disabled=True)
+    return configured

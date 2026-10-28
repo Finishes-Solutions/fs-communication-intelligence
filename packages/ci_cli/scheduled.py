@@ -103,14 +103,17 @@ def run_processing(settings: Settings) -> dict[str, int] | None:
         log.info("processing skipped: PROCESSING_ENABLED is false")
         return None
     with connect(role="ci_ingest") as conn:
-        if not ops.read_schedule(conn).processing_enabled:
+        schedule = ops.read_schedule(conn)
+        if not schedule.processing_enabled:
             log.info("processing skipped: turned off in the schedule")
             return None
         run_id = ops.start_run(conn, "process", "schedule")
         conn.commit()
     status, error = "succeeded", None
     try:
-        configured = backends.processing_backends(settings)
+        configured = backends.with_switches(
+            backends.processing_backends(settings), settings, schedule
+        )
         counts = dict(
             process_all(
                 lambda: connect(role="ci_ingest"),

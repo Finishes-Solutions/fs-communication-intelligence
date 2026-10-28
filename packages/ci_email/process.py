@@ -56,7 +56,7 @@ from ci_processing.policy import Disposition, Outcome, classification_outcome, s
 from ci_processing.prefilter import PREFILTER_VERSION, bulk_skip_reason
 from ci_processing.redaction import RedactionUnavailable, Redactor
 from ci_processing.routing import ROUTING_VERSION, PersonProfile, PersonRouter, rule_out
-from ci_processing.screening import Screener
+from ci_processing.screening import DISABLED, Screener
 
 log = logging.getLogger(__name__)
 
@@ -80,6 +80,9 @@ class Backends:
     # Set: mask sensitive numbers and credentials (SENSITIVE_DATA_POLICY=mask).
     # None: restrict messages that contain them instead.
     redactor: Redactor | None = None
+    # Masking turned off in the admin console (testing only; redactor is then None):
+    # sensitive mail is restricted on the classifier's labels instead of masked.
+    masking_disabled: bool = False
     # Skip obvious bulk and automated mail before any paid step (ci_processing.prefilter).
     prefilter: bool = False
     prefilter_allow_domains: frozenset[str] = frozenset()
@@ -525,11 +528,11 @@ def _route_people(
 def _screen_text(
     job: dict[str, Any], body: str, attachments: list[dict[str, Any]], backends: Backends
 ) -> str:
-    """With masking on, the screener runs only Prompt Shields, so it gets only the
-    text the classifier reads (subject, body and attachment caps below); masking
-    still covers all indexed text. Without masking, the PII check must see
-    everything that would be indexed."""
-    if backends.redactor is None:
+    """With masking on (or switched off), the screener runs only Prompt Shields, so it
+    gets only the text the classifier reads (subject, body and attachment caps
+    below); masking still covers all indexed text. Under SENSITIVE_DATA_POLICY=
+    restrict, the PII check must see everything that would be indexed."""
+    if backends.redactor is None and not backends.masking_disabled:
         return "\n\n".join([job["title"] or "", body, *(a["content"] for a in attachments)])
     return "\n\n".join(
         [
@@ -620,6 +623,12 @@ def process_version(conn: Connection, job: dict[str, Any], backends: Backends) -
             ),
         )
     outcome = screening_gate(screening)
+    if outcome is None and backends.masking_disabled:
+        conn.execute(
+            "INSERT INTO policy_decisions (version_id, check_name, decision, reason_code,"
+            " policy_version, service_ref) VALUES (%s, 'redaction', 'allow', NULL, %s, %s)",
+            (job["version_id"], POLICY_VERSION, DISABLED),
+        )
     if outcome is None and backends.redactor is not None:
         try:
             _redact(conn, job, backends.redactor)
@@ -846,6 +855,22 @@ def requeue_skipped(conn: Connection, domain: str | None = None) -> int:
             [(v, PREFILTER_VERSION) for v in versions],
         )
     return len(versions)
+
+
+def requeue_unscreened(conn: Connection) -> int:
+    """Reprocess every message handled while Prompt Shields or masking was switched
+    off, so the checks run on it now (the paid steps run again)."""
+    versions = [
+        r["id"]
+        for r in conn.execute(
+            "SELECT v.id FROM communication_versions v"
+            " WHERE v.processing_state IN ('published', 'rejected', 'held', 'failed')"
+            " AND EXISTS (SELECT 1 FROM policy_decisions d WHERE d.version_id = v.id"
+            "  AND d.service_ref = %s)",
+            (DISABLED,),
+        ).fetchall()
+    ]
+    return _requeue(conn, versions)
 
 
 def retry_failed(conn: Connection) -> int:

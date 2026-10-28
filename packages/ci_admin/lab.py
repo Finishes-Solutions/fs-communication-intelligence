@@ -21,6 +21,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
+from ci_core.ops import Schedule
+from ci_core.settings import SensitiveDataPolicy, Settings
 from ci_processing.classification import (
     LABELS,
     ClassificationInput,
@@ -35,7 +37,7 @@ from ci_processing.prefilter import REASONS as PREFILTER_REASONS
 from ci_processing.prefilter import bulk_skip_reason
 from ci_processing.redaction import Redaction, RedactionUnavailable, Redactor
 from ci_processing.routing import PersonProfile, PersonRouter, rule_out
-from ci_processing.screening import Screener
+from ci_processing.screening import DISABLED, DisabledScreener, Screener
 from ci_retrieval.search import ACTION_LABELS, AUTOMATED_SENDER, BULK_LABELS, RISK_LABELS
 
 # Same caps the processing worker uses (ci_email.process), so a re-run of a
@@ -54,6 +56,18 @@ class LabBackends:
     router: PersonRouter | None = None  # step 2 of action items, for people with a profile
     prefilter: bool = False  # BULK_PREFILTER_ENABLED, as in processing
     prefilter_allow_domains: frozenset[str] = frozenset()
+    masking_disabled: bool = False  # switched off in the console (redactor is then None)
+
+
+def with_switches(backends: LabBackends, settings: Settings, schedule: Schedule) -> LabBackends:
+    """The console's switches for the paid checks, as processing applies them."""
+    if settings.sensitive_data_policy is not SensitiveDataPolicy.MASK:
+        return backends
+    if not schedule.prompt_shield_enabled:
+        backends = replace(backends, screener=DisabledScreener())
+    if not schedule.masking_enabled:
+        backends = replace(backends, redactor=None, masking_disabled=True)
+    return backends
 
 
 def addresses(value: str | Sequence[str] | None) -> list[str]:
@@ -200,7 +214,11 @@ def run(
             "\n\n".join([item.subject, item.body_text, *(text for _, text in item.attachments)])
         )
         checks = [
-            {"check": c.check_name, "decision": c.decision.value, "reason_code": c.reason_code}
+            {
+                "check": c.check_name,
+                "decision": "off" if c.service_ref == DISABLED else c.decision.value,
+                "reason_code": c.reason_code,
+            }
             for c in screening.checks
         ]
         gate = screening_gate(screening)
@@ -234,6 +252,12 @@ def run(
         route["action_item"] = person_check["decision"] == "yes"
         route["why"] = [w for w in route["why"] if "action item" not in w.lower()]
         route["why"].insert(0, person_check["why"])
+    if backends.masking_disabled and skipped is None:
+        route["why"].insert(
+            0,
+            "Masking is switched off: nothing was masked, and mail the classifier marks"
+            " as holding ID, bank or card numbers or credentials is restricted instead.",
+        )
     if masked:
         route["why"].insert(
             0,

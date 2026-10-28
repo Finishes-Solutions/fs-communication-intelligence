@@ -14,6 +14,7 @@ from typing import Any
 
 from ci_cli import backends
 from ci_cli.seed import CORPUS_KEY, READER_ALL_ROLE
+from ci_core import ops
 from ci_core.db import AppRole, Connection, connect, required
 from ci_core.operator import OperatorError, approve_all_enrolled, audit, set_mode
 from ci_core.settings import GraphBackend, Settings, load_settings
@@ -25,6 +26,7 @@ from ci_email.process import (
     requeue_failed_attachments,
     requeue_for_remask,
     requeue_skipped,
+    requeue_unscreened,
     retry_failed,
 )
 from ci_processing.chunking import CHUNKER_VERSION
@@ -199,11 +201,18 @@ def process(args: argparse.Namespace) -> None:
             count = requeue_skipped(conn, args.domain)
             conn.commit()
         print(f"requeued {count} skipped bulk/automated message(s) to be processed in full")
+    if args.rescreen:
+        with connect(role="ci_ingest") as conn:
+            count = requeue_unscreened(conn)
+            conn.commit()
+        print(f"requeued {count} message(s) processed while a check was switched off")
     if args.limit == 0:  # requeue only; the Function App's process timer picks them up
         return
+    with connect(role="ci_ingest") as conn:
+        schedule = ops.read_schedule(conn)
     counts = process_all(
         lambda: connect(role="ci_ingest"),
-        backends.processing_backends(settings),
+        backends.with_switches(backends.processing_backends(settings), settings, schedule),
         limit=args.limit,
         workers=args.workers,
     )

@@ -187,6 +187,19 @@ ci process --retry-skipped --domain example-pm.com --limit 0
 
 - *Prompt Shields reads only what the classifier reads*: the subject, the first 12,000 characters of the body, and the first 3,000 characters of up to 5 attachments. Masking still covers all indexed text. The trade-off: text past those limits is indexed without the prompt-injection check. Agents are already told that returned email text is untrusted. With `SENSITIVE_DATA_POLICY=restrict` the whole text is still screened, because that mode's PII check must see everything indexed.
 
+**Testing switches for the paid checks (2026-10-28).** In the admin console, Schedule & Runs has a *Paid Safety Checks* card with two switches. The same switches are on the command line: `ci schedule set --shield-off --masking-off` (`--shield-on --masking-on` to undo).
+
+- *Prompt-injection check* (Prompt Shields) off: no injection check runs. The classifier still ignores instructions in email text.
+- *Masking* (Azure AI Language) off: nothing is masked. Mail that the classifier marks as holding ID, bank or card numbers or credentials is **restricted** (hidden) instead of masked. That label is uncalibrated and catches less than the Language service.
+
+Every message processed with a switch off records it. To redo those messages with the checks on later (the paid steps run again), use:
+
+```bash
+ci process --rescreen --limit 0
+```
+
+The switches apply only under `SENSITIVE_DATA_POLICY=mask` and are for testing, not production.
+
 If Cloud Shell can't reach the database (timeout), add its address: `az postgres flexible-server firewall-rule create -g fs-communication-intelligence --server-name psql-fs-ci-dev-1026b --name cloudshell --start-ip-address $(curl -s https://api.ipify.org) --end-ip-address $(curl -s https://api.ipify.org)`.
 
 ### Backfill further back

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields, replace
 from datetime import date, datetime, time, timedelta
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
@@ -40,6 +40,9 @@ class Schedule:
     last_capture_started_at: datetime | None
     updated_at: datetime
     updated_by: str
+    # Paid per-character checks; off only while testing (migration 0012).
+    prompt_shield_enabled: bool = True
+    masking_enabled: bool = True
 
     def public(self) -> dict[str, Any]:
         data = asdict(self)
@@ -79,13 +82,15 @@ def capture_decision(schedule: Schedule, now: datetime) -> Decision:
 
 def read_schedule(conn: Connection) -> Schedule:
     row = required(conn.execute("SELECT * FROM ops_settings WHERE id").fetchone())
-    row.pop("id")
+    # Only known columns: a database migrated ahead of this code still reads.
+    row = {k: v for k, v in row.items() if k in _FIELDS}
     row["capture_window_hours"] = float(row["capture_window_hours"])
     if row["run_requested_hours"] is not None:
         row["run_requested_hours"] = float(row["run_requested_hours"])
     return Schedule(**row)
 
 
+_FIELDS = {f.name for f in fields(Schedule)}
 _EDITABLE = {
     "capture_enabled",
     "capture_interval_min",
@@ -95,6 +100,8 @@ _EDITABLE = {
     "weekdays_only",
     "time_zone",
     "processing_enabled",
+    "prompt_shield_enabled",
+    "masking_enabled",
 }
 
 
@@ -117,6 +124,9 @@ def update_schedule(conn: Connection, actor: str, **changes: Any) -> Schedule:
         ZoneInfo(proposed.time_zone)
     except Exception as exc:
         raise OperatorError(f"unknown time zone {proposed.time_zone!r}") from exc
+    # Only what actually changes is written and audited (this also lets the console
+    # save before migration 0012 adds the switch columns, while they stay on).
+    changes = {k: v for k, v in changes.items() if getattr(current, k) != v}
     if not changes:
         return current
     assignments = ", ".join(f"{k} = %({k})s" for k in sorted(changes))
