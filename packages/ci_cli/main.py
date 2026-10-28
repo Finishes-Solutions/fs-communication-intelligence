@@ -44,6 +44,11 @@ The database comes from the standard ``PG*`` environment variables; locally,
     ci people set chuck_sr --name "Chuck Sr." --address chuckc@finishesetc.net
                   [--role TEXT] [--not-to-confuse TEXT] [--disable]
 
+    ci fireflies init | capture --hours 72 | process | stats
+    ci fireflies schedule show | set [--on|--off] [--every 60] [--lookback 72]
+    ci fireflies run-capture [--hours 72 | --since 2026-09-01]
+                                              Fireflies meetings (see ci_cli/fireflies.py)
+
 Production changes (``--dataset production``, ``mode set production``) also
 need ``--confirm-production``.
 """
@@ -59,7 +64,7 @@ from datetime import UTC, datetime
 
 import psycopg
 
-from ci_cli import pipeline
+from ci_cli import fireflies, pipeline
 from ci_cli.seed import seed
 from ci_core import ops
 from ci_core.db import Connection, connect
@@ -211,6 +216,7 @@ def _parser() -> argparse.ArgumentParser:
     run_when.add_argument(
         "--since", help="capture from this date, midnight Central time (YYYY-MM-DD, max 93 days)"
     )
+    fireflies.add_parser(sub)
     return parser
 
 
@@ -405,6 +411,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             pipeline.stats()
         elif args.command == "mcp":
             pipeline.mcp()
+        elif args.command == "fireflies":
+            fireflies.run(args)
         else:
             with connect() as conn:
                 _run(args, conn)

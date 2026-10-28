@@ -331,9 +331,14 @@ A merge to `main` deploys only the apps its changes affect (`scripts/deploy-plan
 
 To deploy by hand: GitHub → **Actions** → **Deploy (development)** → **Run workflow**, then pick `all`, `ingestion`, `search` or `admin`. The test workflow (CI) also skips changes that only touch docs or Markdown files.
 
+## 13. Fireflies meetings
+
+Fireflies capture runs as two more timers in the ingestion app, off until you turn them on. Setup, the API key in Key Vault (`scripts/azure/6-fireflies.sh`), first capture and the open questions are in [FIREFLIES_PIPELINE.md §7](FIREFLIES_PIPELINE.md#7-turn-it-on-dev). Meetings are **not** screened for PII (Matthew, 2026-10-28) and are not yet searchable from the agents.
+
 ## What isn't done yet
 
 - Per-folder delta sync and new-mail notifications (the hourly window is the stopgap); deletions and moves after capture aren't tracked.
 - REST endpoints (MCP only for now), dead-letter alerts and dashboards, and infrastructure as Bicep (these scripts are the interim).
 - monday.com Executive Hub feed.
+- Fireflies: meeting search tools for the agents, deletion detection and webhooks (FIREFLIES_PIPELINE.md §4, §6).
 - OCR and malware scanning for attachments (the extraction and original-file exceptions to L11 still apply).

@@ -1,5 +1,9 @@
 """Scheduled jobs run by the ingestion Function App (apps/ingestion).
 
+Fireflies meetings have their own pair: ``FIREFLIES_ENABLED`` and
+``ci.fireflies_settings`` (``ci fireflies schedule``), so either source can stop
+without the other.
+
 Two switches must both be on for anything to run: the app setting
 (``CAPTURE_ENABLED`` / ``PROCESSING_ENABLED``, a hard kill switch in Azure) and
 the schedule in ``ci.ops_settings`` (changed from the admin console or
@@ -23,6 +27,12 @@ from ci_core.settings import Settings
 from ci_email.capture import capture_window
 from ci_email.inventory import sync_inventory
 from ci_email.process import process_all, store_missing_originals
+from ci_fireflies import setup as fireflies
+from ci_fireflies.capture import NORMALIZER_VERSION as FIREFLIES_NORMALIZER_VERSION
+from ci_fireflies.capture import capture_meetings
+from ci_fireflies.process import process_meetings
+from ci_processing.chunking import SEGMENT_CHUNKER_VERSION
+from ci_processing.meetings import MEETING_POLICY_VERSION
 
 log = logging.getLogger("ci.scheduled")
 
@@ -131,4 +141,98 @@ def run_processing(settings: Settings) -> dict[str, int] | None:
         else:  # nothing was queued: keep the history to runs that did work
             conn.execute("DELETE FROM ops_runs WHERE id = %s", (run_id,))
     log.info("processing counts=%s", counts)
+    return counts
+
+
+def fireflies_profile(settings: Settings) -> dict[str, object]:
+    """Processing profile stamped on each meeting version (a change re-versions)."""
+    return {
+        "normalizer": FIREFLIES_NORMALIZER_VERSION,
+        "chunker": SEGMENT_CHUNKER_VERSION,
+        "embedding_model": settings.azure_openai_embedding_deployment
+        if settings.embedder.value != "fake"
+        else "fake-hashing-v1",
+        "embedding_dimensions": settings.embedding_dimensions,
+        "analysis_policy": MEETING_POLICY_VERSION,
+    }
+
+
+def fireflies_capture_now(
+    settings: Settings, hours: float, now: datetime | None = None
+) -> tuple[str, dict[str, int]]:
+    client = backends.fireflies_client(settings)
+    try:
+        result = capture_meetings(
+            _connect,
+            client,
+            hours=hours,
+            profile=fireflies_profile(settings),
+            per_user=settings.fireflies_list_per_user,
+            now=now,
+        )
+    except (EmptyScopeError, RuntimeConfigError) as exc:
+        log.warning("fireflies capture refused: %s", type(exc).__name__)
+        return "refused", {"refused_" + type(exc).__name__: 1}
+    counts = dict(result.counts)
+    if result.listing_failed:
+        return "failed", counts
+    errors = sum(v for k, v in counts.items() if k.startswith("error") or k == "list_errors")
+    return ("partial" if errors else "succeeded"), counts
+
+
+def fireflies_tick(settings: Settings, now: datetime | None = None) -> fireflies.Decision:
+    """Capture meetings if the Fireflies schedule (or a "run now" request) says so."""
+    now = now or datetime.now(UTC)
+    if not settings.fireflies_enabled:
+        return fireflies.Decision(False, "FIREFLIES_ENABLED app setting is false")
+    with connect(role="ci_ingest") as conn:
+        decision = fireflies.capture_decision(fireflies.read_schedule(conn), now)
+        if not decision.due:
+            return decision
+        if fireflies.capture_in_progress(conn, now):
+            return fireflies.Decision(False, "a Fireflies capture is still running")
+        run_id = fireflies.begin_capture(conn, decision, now)
+        conn.commit()
+    try:
+        status, counts = fireflies_capture_now(settings, decision.hours, now)
+        error = None
+    except Exception as exc:  # recorded as a code; the next tick tries again
+        status, counts, error = "failed", {}, type(exc).__name__[:60]
+        log.exception("fireflies capture failed")
+    with connect(role="ci_ingest") as conn:
+        ops.finish_run(conn, run_id, status, counts, error)
+    return decision
+
+
+def fireflies_processing(settings: Settings) -> dict[str, int] | None:
+    if not settings.fireflies_enabled:
+        log.info("fireflies processing skipped: FIREFLIES_ENABLED is false")
+        return None
+    with connect(role="ci_ingest") as conn:
+        if not fireflies.read_schedule(conn).processing_enabled:
+            log.info("fireflies processing skipped: turned off in the schedule")
+            return None
+        run_id = ops.start_run(conn, "fireflies_process", "schedule")
+        conn.commit()
+    status, error = "succeeded", None
+    try:
+        counts = dict(
+            process_meetings(
+                lambda: connect(role="ci_ingest"),
+                backends.meeting_backends(settings),
+                workers=2,
+                max_seconds=settings.processing_minutes * 60,
+            )
+        )
+    except Exception as exc:
+        counts, status, error = {}, "failed", type(exc).__name__[:60]
+        log.exception("fireflies processing failed")
+    with connect(role="ci_ingest") as conn:
+        if counts or error:
+            if counts.get("failed"):
+                status = "partial"
+            ops.finish_run(conn, run_id, status, counts, error)
+        else:  # nothing was queued: keep the history to runs that did work
+            conn.execute("DELETE FROM ops_runs WHERE id = %s", (run_id,))
+    log.info("fireflies processing counts=%s", counts)
     return counts

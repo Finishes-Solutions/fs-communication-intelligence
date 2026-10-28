@@ -126,6 +126,8 @@ Proposed. The search app exposes the same retrieval core in two ways: REST/OpenA
 
 ## ADR-014: Email Is the First Source
 
+> **Source order amended by ADR-020 (2026-10-28):** email → Fireflies → Teams. Fireflies now has runtime code.
+
 Decided by Matthew, recorded 2026-10-14; supersedes ADR-010. Source order is **email → Teams → (Fireflies, Dialpad: undecided)**. Only email gets runtime code now. Shared packages (`ci_core`, `ci_processing`, `ci_retrieval`) stay source-neutral so Teams can reuse them, but no Teams, Fireflies or Dialpad clients are built.
 
 Email ships in increments:
@@ -184,3 +186,14 @@ Decided 2026-10-28 (hosting spike from CLAUDE.md §8, recorded with tests rather
 - **Capture.** Until per-folder delta and notifications exist (PR 5), the ingestion Function App runs a timer capture over a rolling window (`CAPTURE_HOURS`, default 2, overlapping runs dedupe) and a processing timer with a time budget. Both are off until switched on by app settings, and both obey `runtime_config` mode.
 - **Identities.** Mail is read by the ingestion managed identity through Exchange RBAC; the database logins of the two managed identities belong only to `ci_ingest` and `ci_search` respectively.
 
+
+## ADR-020: Fireflies Meetings Are the Second Source, Without PII Screening
+
+Decided by Matthew 2026-10-28 ("pull Fireflies meetings from the whole company and have AI analysis done, no scanning for PII"); amends ADR-014's source order to **email → Fireflies → Teams**. Details in [Fireflies Pipeline](FIREFLIES_PIPELINE.md).
+
+- **Scope.** One `fireflies_workspace` scope stands for the whole Fireflies team. People are kept out with participant exclusions (checked before storage and again by the published views), single meetings with item exclusions. The API key is user-bound; capture lists the key's default view plus each member by `user_id` and de-duplicates. Whether that reaches every member is unverified until the first real run.
+- **No screening.** Meetings skip Azure AI Language PII detection, Prompt Shields and masking. Each version records a `not_screened_by_policy` decision so the gap is visible in the data. Consequence: sensitive conversations (HR, medical, compensation) are indexed and readable by anyone with `Communications.Reader.All` unless their participants are excluded. Transcript text is still treated as untrusted by the analysis prompt.
+- **Analysis.** A source-neutral meeting analyzer (summary, decisions, action items, project risks, names, a subset of the §7 labels) produces proposals with model, policy version and input hash, like email classification.
+- **Hosting.** New timers in the existing ingestion Function App, with their own kill switch (`FIREFLIES_ENABLED`) and schedule table, instead of a third Function App. This avoids a new identity, database login and deploy pipeline; the cost is a shared failure domain with email capture.
+- **Capture is polling only.** No webhook and no deletion detection yet (Fireflies has no deletion webhook; a reconciliation sweep is future work).
+- **Retrieval.** Published meeting views exist; meeting MCP/REST tools are a follow-up. Email search filters to email so meeting chunks never displace email results.

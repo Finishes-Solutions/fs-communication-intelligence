@@ -31,6 +31,7 @@ from typing import Any
 import psycopg
 
 from ci_core.db import AppRole, Connection, required
+from ci_core.exclusions import item_excluded, participants_excluded
 from ci_core.runtime import EligibleScope, active_config, require_capture_scope
 from ci_email.graph import SENT_ITEMS, SKIPPED_WELL_KNOWN_FOLDERS, GraphClient, GraphError
 
@@ -134,26 +135,7 @@ def content_fingerprint(message: dict[str, Any], attachments: list[dict[str, Any
 
 
 def excluded_by_participant(conn: Connection, message: dict[str, Any]) -> bool:
-    addresses = sorted({addr for _, addr, _ in participants(message)})
-    domains = sorted({addr.split("@", 1)[1] for addr in addresses if "@" in addr})
-    row = conn.execute(
-        "SELECT 1 FROM exclusions WHERE revoked_at IS NULL AND ("
-        " (exclusion_kind = 'participant_address' AND pattern = ANY(%s)) OR"
-        " (exclusion_kind = 'participant_domain' AND pattern = ANY(%s))) LIMIT 1",
-        (addresses, domains),
-    ).fetchone()
-    return row is not None
-
-
-def item_excluded(conn: Connection, connection_id: str, native_id: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM exclusions WHERE exclusion_kind = 'item' AND revoked_at IS NULL"
-            " AND connection_id = %s AND native_id = %s",
-            (connection_id, native_id),
-        ).fetchone()
-        is not None
-    )
+    return participants_excluded(conn, (addr for _, addr, _ in participants(message)))
 
 
 def store_message(

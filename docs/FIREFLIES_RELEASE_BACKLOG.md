@@ -1,6 +1,6 @@
 # Fireflies Release Backlog (First Release)
 
-> **Superseded 2026-10-14:** email is the first source ([ADR-014](ARCHITECTURE_DECISIONS.md#adr-014-email-is-the-first-source)); Fireflies is undecided. Keep this as reference for the shared foundation only.
+> **Superseded.** Email became the first source on 2026-10-14 (ADR-014), and Fireflies capture was built as the second source on 2026-10-28 ([ADR-020](ARCHITECTURE_DECISIONS.md#adr-020-fireflies-meetings-are-the-second-source-without-pii-screening)), without PII screening and without webhooks. The current state is in [Fireflies Pipeline](FIREFLIES_PIPELINE.md). Keep this as historical reference.
 
 Status: planned, not started. IDs are planning references, not GitHub issues. No dates or staff assignments are asserted.
 

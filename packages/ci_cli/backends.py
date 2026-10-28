@@ -6,6 +6,7 @@ from ci_core.settings import (
     ClassifierBackend,
     DeploymentEnvironment,
     EmbedderBackend,
+    FirefliesBackend,
     GraphAuth,
     GraphBackend,
     ScreenerBackend,
@@ -16,8 +17,12 @@ from ci_core.settings import (
 from ci_email.fixture import FixtureGraphClient
 from ci_email.graph import GraphClient
 from ci_email.process import Backends
+from ci_fireflies.client import FirefliesClient
+from ci_fireflies.fixture import FixtureFirefliesClient
+from ci_fireflies.process import MeetingBackends
 from ci_processing.classification import Classifier, FakeClassifier
 from ci_processing.embedding import Embedder, FakeEmbedder
+from ci_processing.meetings import FakeMeetingAnalyzer, MeetingAnalyzer
 from ci_processing.originals import AzureBlobStore, DirectoryStore, OriginalStore
 from ci_processing.redaction import FakeRedactor, Redactor
 from ci_processing.routing import FakePersonRouter, PersonRouter
@@ -136,3 +141,37 @@ def processing_backends(settings: Settings) -> Backends:
         redactor=redactor(settings),
         router=person_router(settings),
     )
+
+
+def fireflies_client(settings: Settings) -> FirefliesClient:
+    if settings.fireflies_backend is FirefliesBackend.FIXTURE:
+        return FixtureFirefliesClient.from_directory()
+    settings.require("fireflies_api_key")
+    from ci_fireflies.client import HttpFirefliesClient
+
+    key = settings.fireflies_api_key.get_secret_value() if settings.fireflies_api_key else ""
+    return HttpFirefliesClient(
+        key,
+        url=settings.fireflies_api_url,
+        per_minute=settings.fireflies_rate_limit_per_minute,
+    )
+
+
+def meeting_analyzer(settings: Settings) -> MeetingAnalyzer:
+    """Uses the classifier backend setting: fake locally, Azure OpenAI in the cloud."""
+    if settings.classifier_backend is ClassifierBackend.FAKE:
+        return FakeMeetingAnalyzer()
+    if settings.classifier_backend is ClassifierBackend.DECISIONS_API:
+        raise SettingsError("meeting analysis has no decisions_api backend")
+    settings.require("azure_openai_endpoint", "azure_openai_chat_deployment")
+    from ci_processing.meetings import AzureOpenAIMeetingAnalyzer
+
+    return AzureOpenAIMeetingAnalyzer(
+        settings.azure_openai_endpoint or "",
+        settings.azure_openai_chat_deployment or "",
+        settings.azure_openai_api_version,
+    )
+
+
+def meeting_backends(settings: Settings) -> MeetingBackends:
+    return MeetingBackends(analyzer=meeting_analyzer(settings), embedder=embedder(settings))

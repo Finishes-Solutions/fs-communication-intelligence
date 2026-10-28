@@ -99,7 +99,7 @@ jobs:
           done
           (cd check/ingestion && env -i PATH=/usr/bin:/bin PYTHONPATH=.python_packages/lib/site-packages \
             DEPLOYMENT_ENVIRONMENT=development "$py" -c \
-            "import function_app as f; assert {x.get_function_name() for x in f.app.get_functions()} == {'capture', 'process'}")
+            "import function_app as f; assert {x.get_function_name() for x in f.app.get_functions()} == {'capture', 'process', 'fireflies_capture', 'fireflies_process'}")
           (cd check/search && env -i PATH=/usr/bin:/bin PYTHONPATH=.python_packages/lib/site-packages \
             DEPLOYMENT_ENVIRONMENT=development ENTRA_TENANT_ID=00000000-0000-0000-0000-000000000001 \
             SEARCH_PUBLIC_URL=https://example.azurewebsites.net SEARCH_API_CLIENT_ID=x \

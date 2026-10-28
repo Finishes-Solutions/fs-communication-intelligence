@@ -18,17 +18,15 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import threading
-import time
 from collections import Counter
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from ci_core.db import Connection, required
+from ci_core.drain import drain
 from ci_email.graph import GraphClient, GraphError
 from ci_processing.azure import AzureServiceError
 from ci_processing.chunking import chunk_text
@@ -657,32 +655,13 @@ def process_all(
 ) -> Counter[str]:
     """Process until nothing is queued, ``limit`` versions are done, or ``max_seconds``
     pass (checked before each claim, so a run can overrun by one message)."""
-    counts: Counter[str] = Counter()
-    budget = [limit if limit is not None else 10**12]
-    lock = threading.Lock()
-    deadline = time.monotonic() + max_seconds if max_seconds is not None else None
-
-    def take() -> bool:
-        if deadline is not None and time.monotonic() >= deadline:
-            return False
-        with lock:
-            budget[0] -= 1
-            return budget[0] >= 0
-
-    def worker() -> Counter[str]:
-        local: Counter[str] = Counter()
-        with connect() as conn:
-            while take():
-                outcome = process_one(conn, backends)
-                if outcome is None:
-                    break
-                local[outcome] += 1
-        return local
-
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        for result in pool.map(lambda _: worker(), range(max(1, workers))):
-            counts.update(result)
-    return counts
+    return drain(
+        connect,
+        lambda conn: process_one(conn, backends),
+        limit=limit,
+        workers=workers,
+        max_seconds=max_seconds,
+    )
 
 
 def _requeue(conn: Connection, versions: list[Any]) -> int:
@@ -742,8 +721,9 @@ def requeue_for_remask(conn: Connection) -> int:
     versions = [
         r["id"]
         for r in conn.execute(
-            "SELECT id FROM communication_versions"
-            " WHERE processing_state IN ('published', 'rejected', 'held', 'failed')"
+            "SELECT v.id FROM communication_versions v"
+            " JOIN communications c ON c.id = v.communication_id AND c.kind = 'email'"
+            " WHERE v.processing_state IN ('published', 'rejected', 'held', 'failed')"
         ).fetchall()
     ]
     return _requeue(conn, versions)

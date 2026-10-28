@@ -34,6 +34,7 @@ build-backend = "hatchling.build"
 packages = [
     "packages/ci_core",
     "packages/ci_email",
+    "packages/ci_fireflies",
     "packages/ci_processing",
     "packages/ci_retrieval",
     "packages/ci_cli",
@@ -55,7 +56,7 @@ select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
 python_version = "3.14"
 strict = true
 mypy_path = "packages"
-packages = ["ci_core", "ci_email", "ci_processing", "ci_retrieval", "ci_cli", "ci_admin"]
+packages = ["ci_core", "ci_email", "ci_fireflies", "ci_processing", "ci_retrieval", "ci_cli", "ci_admin"]
 plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]

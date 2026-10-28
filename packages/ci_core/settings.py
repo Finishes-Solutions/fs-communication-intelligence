@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import field_validator, model_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -53,6 +53,11 @@ class GraphBackend(StrEnum):
     FIXTURE = "fixture"
 
 
+class FirefliesBackend(StrEnum):
+    API = "api"
+    FIXTURE = "fixture"
+
+
 class AuthMode(StrEnum):
     ENTRA = "entra"
     LOCAL_TEST = "local_test"
@@ -85,6 +90,7 @@ _FAKE_BACKENDS: dict[str, StrEnum] = {
     "embedder": EmbedderBackend.FAKE,
     "screener": ScreenerBackend.FAKE,
     "graph_backend": GraphBackend.FIXTURE,
+    "fireflies_backend": FirefliesBackend.FIXTURE,
 }
 
 _LOCAL_DEFAULTS: dict[str, StrEnum] = {
@@ -97,6 +103,7 @@ _CLOUD_DEFAULTS: dict[str, StrEnum] = {
     "embedder": EmbedderBackend.AZURE_OPENAI,
     "screener": ScreenerBackend.AZURE,
     "graph_backend": GraphBackend.GRAPH,
+    "fireflies_backend": FirefliesBackend.API,
 }
 
 
@@ -158,6 +165,20 @@ class Settings(BaseSettings):
     processing_enabled: bool = False
     processing_minutes: float = 8.0
     processing_workers: int = 4
+
+    # Fireflies meetings (second source; docs/FIREFLIES_PIPELINE.md). The API key
+    # belongs to a Fireflies user; in Azure the app setting is a Key Vault
+    # reference, never the key itself. FIREFLIES_ENABLED is the hard kill switch
+    # for both Fireflies timers; the schedule lives in ci.fireflies_settings.
+    fireflies_backend: FirefliesBackend
+    fireflies_api_url: str = "https://api.fireflies.ai/graphql"
+    fireflies_api_key: SecretStr | None = None
+    fireflies_enabled: bool = False
+    fireflies_rate_limit_per_minute: int = 50
+    # Also list each team member's meetings by user id (needed when the key's
+    # default listing is not team-wide; costs one call per member per capture).
+    fireflies_list_per_user: bool = True
+    fireflies_workspace_ref: str = "fireflies-workspace"
 
     # Hosted search API / MCP (Entra delegated tokens).
     entra_tenant_id: str | None = None

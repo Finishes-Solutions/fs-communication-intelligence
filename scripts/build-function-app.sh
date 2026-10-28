@@ -16,7 +16,7 @@ case "$app" in ingestion|search|admin) ;; *) echo "unknown app: $app" >&2; exit 
 build="$(mktemp -d)"
 trap 'rm -rf "$build"' EXIT
 cp -R "$root/apps/$app/." "$build/"
-for pkg in ci_core ci_email ci_processing ci_retrieval ci_cli ci_admin; do
+for pkg in ci_core ci_email ci_fireflies ci_processing ci_retrieval ci_cli ci_admin; do
   cp -R "$root/packages/$pkg" "$build/$pkg"
 done
 

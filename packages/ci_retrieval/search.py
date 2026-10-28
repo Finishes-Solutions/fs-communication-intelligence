@@ -235,13 +235,13 @@ def search(
                 SELECT id, row_number() OVER (ORDER BY dist) AS r FROM (
                     SELECT pc.id, pc.embedding <=> %(qv)s::vector AS dist
                     FROM published_chunks pc
-                    WHERE {_scope("pc")}
+                    WHERE pc.kind = 'email' AND {_scope("pc")}
                     ORDER BY dist LIMIT %(n)s) v),
             fts AS (
                 SELECT id, row_number() OVER (ORDER BY rank DESC) AS r FROM (
                     SELECT pc.id, ts_rank_cd(pc.tsv, tq) AS rank
                     FROM published_chunks pc, websearch_to_tsquery('english', %(q)s) tq
-                    WHERE pc.tsv @@ tq AND {_scope("pc")}
+                    WHERE pc.tsv @@ tq AND pc.kind = 'email' AND {_scope("pc")}
                     ORDER BY rank DESC LIMIT %(n)s) f),
             fused AS (
                 SELECT id, sum(1.0 / (%(k)s + r)) AS score
@@ -327,7 +327,7 @@ def get_email(
     row = (
         conn.execute(
             f"SELECT pc.id::text AS communication_id FROM {_PUBLISHED} pc"  # noqa: S608
-            f" WHERE pc.id = %(id)s::uuid AND {_AUTH.format(a='pc')}",
+            f" WHERE pc.id = %(id)s::uuid AND pc.kind = 'email' AND {_AUTH.format(a='pc')}",
             params,
         ).fetchone()
         if not auth.empty
