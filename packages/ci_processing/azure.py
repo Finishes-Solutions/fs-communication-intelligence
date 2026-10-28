@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Sequence
@@ -30,6 +31,7 @@ from ci_processing.classification import (
     KnownName,
     clean_names,
 )
+from ci_processing.ratelimit import RateGate, estimate_tokens
 from ci_processing.redaction import Redaction, RedactionUnavailable, mask_all
 from ci_processing.routing import REASONS, PersonProfile, Route
 from ci_processing.screening import CheckDecision, CheckResult, ScreeningResult
@@ -75,6 +77,12 @@ class AzureServiceError(RuntimeError):
 class AzureHttp:
     """POST JSON with an Entra bearer token, retrying throttling and transient errors.
 
+    HTTP 429 is retried for up to ``max_throttle_seconds`` in all, honoring the
+    service's Retry-After, and holds every thread calling the same URL (one
+    :class:`RateGate` per URL) so the workers back off together. Other transient
+    failures (408, 5xx, timeouts, dropped connections) are retried ``max_retries``
+    times.
+
     ``credential`` and ``client`` can be injected (tests use an httpx MockTransport).
     """
 
@@ -83,9 +91,11 @@ class AzureHttp:
         timeout: float = 60.0,
         max_retries: int = 5,
         *,
+        max_throttle_seconds: float = 300.0,
         credential: Any = None,
         client: httpx.Client | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if credential is None:
             from ci_core.azure_auth import default_credential
@@ -94,26 +104,71 @@ class AzureHttp:
         self._credential = credential
         self._http = client or httpx.Client(timeout=timeout)
         self._max_retries = max_retries
+        self._max_throttle = max_throttle_seconds
         self._sleep = sleep
+        self._clock = clock
+        self._gates: dict[str, RateGate] = {}
+        self._gates_lock = threading.Lock()
 
-    def post(self, url: str, body: dict[str, Any]) -> dict[str, Any]:
-        for attempt in range(self._max_retries + 1):
+    def gate(self, url: str, tokens_per_minute: int | None = None) -> RateGate:
+        """The gate shared by every call to ``url`` (its query string ignored); the
+        first caller to name a token budget sets the pacing."""
+        key = url.split("?", 1)[0]
+        with self._gates_lock:
+            if key not in self._gates:
+                self._gates[key] = RateGate(tokens_per_minute, clock=self._clock, sleep=self._sleep)
+            return self._gates[key]
+
+    def post(self, url: str, body: dict[str, Any], *, tokens: int = 0) -> dict[str, Any]:
+        """``tokens``: the request's estimated size, spent from the URL's token budget."""
+        gate = self.gate(url)
+        retries = holds = 0
+        throttled = 0.0
+        while True:
+            gate.wait(tokens)
             token = self._credential.get_token(COGNITIVE_SCOPE).token
-            response = self._http.post(url, json=body, headers={"Authorization": f"Bearer {token}"})
+            try:
+                response = self._http.post(
+                    url, json=body, headers={"Authorization": f"Bearer {token}"}
+                )
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                if retries < self._max_retries:
+                    retries += 1
+                    self._sleep(min(2.0**retries, 60.0))
+                    continue
+                raise AzureServiceError(f"{_service(url)} {type(exc).__name__}") from exc
             if response.status_code < 400:
                 result: dict[str, Any] = response.json()
                 return result
-            if (
-                response.status_code in (408, 429, 500, 502, 503, 504)
-                and attempt < self._max_retries
-            ):
-                self._sleep(min(float(response.headers.get("Retry-After", 2**attempt)), 60.0))
+            if response.status_code == 429:
+                delay = _retry_after(response, holds)
+                if throttled + delay <= self._max_throttle:
+                    throttled += delay
+                    holds += 1
+                    gate.hold(delay)
+                    continue
+            elif response.status_code in (408, 500, 502, 503, 504) and retries < self._max_retries:
+                retries += 1
+                self._sleep(_retry_after(response, retries))
                 continue
             code = ""
             with contextlib.suppress(ValueError, AttributeError):
                 code = str(response.json().get("error", {}).get("code", ""))
             raise AzureServiceError(f"{_service(url)} HTTP {response.status_code} {code}".strip())
-        raise AzureServiceError(f"{_service(url)} retries exhausted")
+
+
+def _retry_after(response: httpx.Response, attempt: int) -> float:
+    """The service's wait (Azure OpenAI sends retry-after-ms and Retry-After), else
+    an exponential backoff; at least 1 and at most 60 seconds."""
+    seconds: float | None = None
+    with contextlib.suppress(TypeError, ValueError):
+        if "retry-after-ms" in response.headers:
+            seconds = float(response.headers["retry-after-ms"]) / 1000
+        elif "Retry-After" in response.headers:
+            seconds = float(response.headers["Retry-After"])
+    if seconds is None:
+        seconds = 2.0**attempt
+    return min(max(seconds, 1.0), 60.0)
 
 
 def _service(url: str) -> str:
@@ -459,7 +514,10 @@ class AzureOpenAIEmbedder:
         http: AzureHttp | None = None,
         *,
         meter: Meter | None = None,
+        tokens_per_minute: int | None = None,
     ) -> None:
+        """``tokens_per_minute``: pace requests below the deployment's quota, shared by
+        every thread using this embedder (None or 0: only back off after a 429)."""
         self.model = f"azure-openai:{deployment}"
         self._meter = meter
         self.dimensions = dimensions
@@ -468,12 +526,17 @@ class AzureOpenAIEmbedder:
             f"?api-version={api_version}"
         )
         self._http = http or AzureHttp()
+        self._http.gate(self._url, tokens_per_minute)
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
         for start in range(0, len(texts), 16):
             batch = list(texts[start : start + 16])
-            result = self._http.post(self._url, {"input": batch, "dimensions": self.dimensions})
+            result = self._http.post(
+                self._url,
+                {"input": batch, "dimensions": self.dimensions},
+                tokens=estimate_tokens(batch),
+            )
             if self._meter:
                 self._meter.add_openai(OPENAI_EMBEDDING, self.model, result)
             ordered = sorted(result["data"], key=lambda d: d["index"])

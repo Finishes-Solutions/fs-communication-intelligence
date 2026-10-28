@@ -15,6 +15,6 @@ from ci_retrieval.mcp_server import build_http_app
 
 _settings = load_settings()
 app = func.AsgiFunctionApp(
-    app=build_http_app(_settings, embedder(_settings)),
+    app=build_http_app(_settings, embedder(_settings, interactive=True)),
     http_auth_level=func.AuthLevel.ANONYMOUS,
 )

@@ -163,6 +163,11 @@ class Settings(BaseSettings):
     processing_enabled: bool = False
     processing_minutes: float = 8.0
     processing_workers: int = 4
+    # Embedding requests are paced to this many tokens per minute, shared by all
+    # processing workers; keep it below the embedding deployment's quota (dev:
+    # 350K TPM) so search queries still get through. 0 = no pacing (back off only
+    # after HTTP 429).
+    embedding_tokens_per_minute: int = 300_000
 
     # Hosted search API / MCP (Entra delegated tokens).
     entra_tenant_id: str | None = None

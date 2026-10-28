@@ -50,18 +50,24 @@ def graph_client(settings: Settings) -> GraphClient:
     )
 
 
-def embedder(settings: Settings, meter: Meter | None = None) -> Embedder:
+def embedder(
+    settings: Settings, meter: Meter | None = None, *, interactive: bool = False
+) -> Embedder:
+    """``interactive``: a search query, which waits at most 20 seconds when the
+    deployment is throttling (processing waits up to 5 minutes)."""
     if settings.embedder is EmbedderBackend.FAKE:
         return FakeEmbedder(settings.embedding_dimensions)
     settings.require("azure_openai_endpoint")
-    from ci_processing.azure import AzureOpenAIEmbedder
+    from ci_processing.azure import AzureHttp, AzureOpenAIEmbedder
 
     return AzureOpenAIEmbedder(
         settings.azure_openai_endpoint or "",
         settings.azure_openai_embedding_deployment,
         settings.azure_openai_api_version,
         settings.embedding_dimensions,
+        AzureHttp(max_throttle_seconds=20.0) if interactive else None,
         meter=meter,
+        tokens_per_minute=settings.embedding_tokens_per_minute,
     )
 
 
