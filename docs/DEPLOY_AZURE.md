@@ -228,7 +228,7 @@ Access takes both the delegated scope `Communications.Admin` and the app role `C
 **One command does everything**: Azure resources, sign-in, file storage, database changes, GitHub secrets, merging the pull request, waiting for the deploy and checking the result. Run it from Cloud Shell in the repository folder (it asks you to sign in to GitHub once):
 
 ```bash
-cd ~/fs-communication-intelligence && git fetch origin && git checkout matthew/nice-lovelace-4sqyit && bash scripts/azure/5-admin-console-live.sh
+cd ~/fs-communication-intelligence && git fetch origin && git checkout matthew/nice-lovelace-4sqyit && git pull --ff-only origin matthew/nice-lovelace-4sqyit && bash scripts/azure/5-admin-console-live.sh
 ```
 
 The console is the web page and its API in one Function App (`func-fs-ci-adm-dev-1026`): same address, no separate Azure Static Web Apps resource, and no cross-site setup.
