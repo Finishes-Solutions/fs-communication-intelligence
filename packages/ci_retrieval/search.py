@@ -37,7 +37,8 @@ log = logging.getLogger(__name__)
 
 RRF_K = 60
 CANDIDATES = 50
-# Nearest chunks taken from the vector index before grants and filters apply.
+# Nearest chunks taken from the vector index before grants and filters apply
+# (at most 400, the function's cap).
 NEAREST_K = 200
 # The coverage block counts every captured message; it is informational, so a
 # few minutes old is fine, and recounting on every search made searches slow.

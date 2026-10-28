@@ -217,6 +217,31 @@ def test_index_check_reports_recall_and_timings(pipeline: dict[str, Any]) -> Non
     assert report["index_ms"] >= 0 and report["exact_ms"] >= 0
 
 
+def test_fast_search_migration_applies_without_superuser(pipeline: dict[str, Any]) -> None:
+    """Azure gives the migrating login no superuser; CI's server does, so this
+    replays migration 0015 as an ordinary role (rolled back afterwards)."""
+    from pathlib import Path
+
+    sql = (
+        Path(__file__).resolve().parents[2] / "db/migrations/0015_fast_vector_search.sql"
+    ).read_text()
+    with pipeline["connect"]() as conn:
+        conn.execute("DROP FUNCTION nearest_published_chunks(vector, integer)")
+        conn.execute("CREATE ROLE pytest_migrator NOSUPERUSER")
+        conn.execute("GRANT USAGE, CREATE ON SCHEMA ci TO pytest_migrator")
+        conn.execute("GRANT SELECT ON chunks, published_chunks TO pytest_migrator")
+        conn.execute("GRANT ci_search TO pytest_migrator WITH ADMIN OPTION")
+        conn.execute("SET ROLE pytest_migrator")
+        conn.execute(sql)
+        conn.execute("SET ROLE ci_search")
+        vector = str(EMBEDDER.embed(["change order"])[0])
+        rows = conn.execute(
+            "SELECT count(*) AS n FROM nearest_published_chunks(%s::vector, 200)", (vector,)
+        ).fetchone()
+        conn.rollback()
+    assert rows is not None and rows["n"] > 0
+
+
 def test_actionable_accepts_several_addresses_for_one_person(pipeline: dict[str, Any]) -> None:
     with pipeline["connect"]("ci_search") as conn:
         both = retrieval.list_actionable(
@@ -244,7 +269,7 @@ def test_exclusions_and_pause_hide_published_mail(pipeline: dict[str, Any]) -> N
         near = conn.execute(
             "SELECT n.corpus_id = pc.corpus_id AND n.communication_id = pc.communication_id"
             " AND n.occurred_at = pc.occurred_at AS same"
-            " FROM nearest_published_chunks(%s::vector, 1000) n"
+            " FROM nearest_published_chunks(%s::vector, 400) n"
             " LEFT JOIN published_chunks pc ON pc.id = n.id",
             (vector,),
         ).fetchall()
@@ -262,7 +287,7 @@ def test_exclusions_and_pause_hide_published_mail(pipeline: dict[str, Any]) -> N
     assert search(pipeline, query)["results"] == []
     with pipeline["connect"]("ci_search") as conn:
         paused = conn.execute(
-            "SELECT count(*) AS n FROM nearest_published_chunks(%s::vector, 1000)", (vector,)
+            "SELECT count(*) AS n FROM nearest_published_chunks(%s::vector, 400)", (vector,)
         ).fetchone()
         assert paused == {"n": 0}
         # The coverage block is recounted every few minutes, not on every search.
