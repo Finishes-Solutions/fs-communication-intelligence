@@ -1,8 +1,11 @@
 name: Deploy (development)
 
-# Builds the Function Apps and deploys them to the dev environment with GitHub
-# OIDC (no stored Azure credentials). Runs on manual dispatch and on pushes to
-# main that touch deployable code. Database migrations are NOT run here: the dev
+# Builds and deploys the dev Function Apps with GitHub OIDC (no stored Azure
+# credentials). A push to main deploys only the apps its changes affect
+# (scripts/deploy-plan.sh): console-only changes deploy just the admin app,
+# shared packages and dependencies deploy all three, and docs, tests, scripts
+# and workflow edits deploy nothing. A manual run deploys the app you pick
+# (default: all). Database migrations are NOT run here: the dev
 # PostgreSQL server only accepts named IPs and Azure services, so apply them with
 # `make azure-migrate` (docs/DEPLOY_AZURE.md).
 #
@@ -20,6 +23,12 @@ name: Deploy (development)
 
 on:
   workflow_dispatch:
+    inputs:
+      apps:
+        description: Which app(s) to deploy
+        type: choice
+        options: [all, ingestion, search, admin]
+        default: all
   push:
     branches: [main]
     paths:
@@ -28,7 +37,6 @@ on:
       - pyproject.toml
       - uv.lock
       - scripts/build-function-app.sh
-      - .github/workflows/deploy-dev.yml
 
 permissions:
   contents: read
@@ -42,11 +50,47 @@ env:
   PYTHON_VERSION: "3.14"
 
 jobs:
+  plan:
+    name: Decide which apps to deploy
+    runs-on: ubuntu-24.04
+    outputs:
+      ingestion: ${{ steps.plan.outputs.ingestion }}
+      search: ${{ steps.plan.outputs.search }}
+      admin: ${{ steps.plan.outputs.admin }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          WANT: ${{ inputs.apps }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ]; then
+            case "${WANT:-all}" in
+              all) changed=ALL ;;
+              ingestion) changed=apps/ingestion/manual ;;
+              search) changed=apps/search/manual ;;
+              admin) changed=apps/admin/manual ;;
+            esac
+          elif [ -n "$BEFORE" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            changed="$(git diff --name-only "$BEFORE" "$GITHUB_SHA")"
+          else
+            changed=ALL  # first push or unknown history: deploy everything
+          fi
+          printf '%s\n' "$changed" | bash scripts/deploy-plan.sh | tee -a "$GITHUB_OUTPUT"
+
   deploy:
     name: Build, test, deploy
+    needs: plan
+    if: needs.plan.outputs.ingestion == 'true' || needs.plan.outputs.search == 'true' || needs.plan.outputs.admin == 'true'
     runs-on: ubuntu-24.04
     environment: development
     env:
+      DO_INGESTION: ${{ needs.plan.outputs.ingestion }}
+      DO_SEARCH: ${{ needs.plan.outputs.search }}
+      DO_ADMIN: ${{ needs.plan.outputs.admin }}
       ADMIN_APP: ${{ secrets.ADMIN_FUNCTION_APP }}
       ADMIN_URL: ${{ secrets.ADMIN_PUBLIC_URL }}
     steps:
@@ -60,9 +104,10 @@ jobs:
 
       - name: Build packages
         run: |
-          bash scripts/build-function-app.sh ingestion dist
-          bash scripts/build-function-app.sh search dist
-          bash scripts/build-function-app.sh admin dist
+          for app in ingestion search admin; do
+            var="DO_${app^^}"
+            if [ "${!var}" = true ]; then bash scripts/build-function-app.sh "$app" dist; fi
+          done
 
       - name: Sign in to Azure (OIDC)
         uses: azure/login@v2
@@ -72,6 +117,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Deploy ingestion app
+        if: env.DO_INGESTION == 'true'
         uses: Azure/functions-action@v1
         with:
           app-name: ${{ secrets.INGESTION_FUNCTION_APP }}
@@ -80,6 +126,7 @@ jobs:
           remote-build: false
 
       - name: Deploy search app
+        if: env.DO_SEARCH == 'true'
         uses: Azure/functions-action@v1
         with:
           app-name: ${{ secrets.SEARCH_FUNCTION_APP }}
@@ -88,7 +135,7 @@ jobs:
           remote-build: false
 
       - name: Deploy admin console
-        if: env.ADMIN_APP != ''
+        if: env.DO_ADMIN == 'true' && env.ADMIN_APP != ''
         uses: Azure/functions-action@v1
         with:
           app-name: ${{ secrets.ADMIN_FUNCTION_APP }}
@@ -97,6 +144,7 @@ jobs:
           remote-build: false
 
       - name: Smoke test the MCP endpoint
+        if: env.DO_SEARCH == 'true'
         env:
           BASE: ${{ secrets.SEARCH_PUBLIC_URL }}
         run: |
@@ -112,7 +160,7 @@ jobs:
           curl -sf -o /dev/null "$BASE/.well-known/oauth-protected-resource/mcp" && echo "OAuth metadata: ok"
 
       - name: Smoke test the admin console
-        if: env.ADMIN_URL != ''
+        if: env.DO_ADMIN == 'true' && env.ADMIN_URL != ''
         env:
           BASE: ${{ secrets.ADMIN_PUBLIC_URL }}
         run: |

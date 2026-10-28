@@ -320,6 +320,17 @@ cd ~/fs-communication-intelligence && git fetch origin && git checkout matthew/n
 
 Then merge, set up the profile as above, and re-run the processed mail with `ci process --remask --limit 0`.
 
+## Deploys: only what changed
+
+A merge to `main` deploys only the apps its changes affect (`scripts/deploy-plan.sh`):
+
+- Console only (`apps/admin`, `packages/ci_admin`): the admin app.
+- `apps/ingestion` or `apps/search`: that app.
+- Shared packages, `pyproject.toml`, `uv.lock` or the build script: all three apps.
+- Docs, tests, scripts and workflow edits: nothing.
+
+To deploy by hand: GitHub → **Actions** → **Deploy (development)** → **Run workflow**, then pick `all`, `ingestion`, `search` or `admin`. The test workflow (CI) also skips changes that only touch docs or Markdown files.
+
 ## What isn't done yet
 
 - Per-folder delta sync and new-mail notifications (the hourly window is the stopgap); deletions and moves after capture aren't tracked.
