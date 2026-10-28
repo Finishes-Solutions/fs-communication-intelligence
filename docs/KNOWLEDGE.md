@@ -93,8 +93,10 @@ ci process --remask --limit 0
 Apply migration `0016_knowledge.sql` **before** the new code deploys, as with the earlier migrations. The deploy workflow doesn't run migrations, and processing writes the new `classification_runs.knowledge` column, so every processing run fails until the migration exists. From the repository on the Mac (it uses the signed-in Azure CLI user):
 
 ```bash
-make azure-migrate AZ_PSQL=psql
+make azure-env && make azure-migrate AZ_PSQL=psql
 ```
+
+`make azure-env` writes `local/azure-dev.env` (the database address and your sign-in) when it is missing.
 
 Then backfill what earlier mail already holds:
 

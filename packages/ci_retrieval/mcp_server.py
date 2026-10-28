@@ -1,6 +1,7 @@
 """MCP tools ``search_email``, ``list_email``, ``list_actionable``, ``get_email``,
-``get_attachment``, ``get_thread``, ``email_stats``, ``risk_overview``, and the
-knowledge base's ``find_knowledge`` and ``get_profile`` (ci_retrieval.knowledge).
+``get_attachment``, ``get_file_links``, ``get_thread``, ``email_stats``,
+``risk_overview``, and the knowledge base's ``find_knowledge`` and ``get_profile``
+(ci_retrieval.knowledge).
 
 Two transports share one tool set and the same authorized retrieval code
 (database role ``ci_search``, grants applied in SQL before ranking, an audit row
@@ -97,8 +98,10 @@ def build_server(
         "keywords; list_email lists the newest by mailbox, sender, label, property, entity or "
         "dates; list_actionable gives action items, approvals and project risks (per person); "
         "get_email reads one email and lists its attachments; get_attachment reads an "
-        "attachment's text; get_thread reads the whole conversation; email_stats counts emails, "
-        "action items and risks by mailbox, sender, domain, label, property, entity or period; "
+        "attachment's text; get_file_links gives the links to put emails and files on a "
+        "board (e.g. monday.com); get_thread reads the whole conversation; email_stats "
+        "counts emails, action items and risks by mailbox, sender, domain, label, property, "
+        "entity or period; "
         "risk_overview shows project-risk trends; find_knowledge and get_profile answer who "
         "and what: properties, companies, people, terms and how they relate, learned from "
         "the email over time." + _TRUST,
@@ -318,6 +321,23 @@ def build_server(
         items = found["items"]
         top = max(0, min(item_limit, 200))
         return linked(found | {"items": items[:top], "items_total": len(items)})
+
+    @server.tool(
+        description="Links for putting emails and their files on a board or document, e.g. a"
+        " monday.com item's Files column or a Link column: for up to 25 communication_ids"
+        " (from search_email, list_email or list_actionable), each email's view_url and,"
+        " for each attachment whose original is kept, its name and download_url. Add them as"
+        " links (on monday.com, a Files-column entry of type link with the file's name); never"
+        " download a file to upload it. Links open only for console admins after Microsoft"
+        " sign-in, so tell the user that other people on the board cannot open them. Files"
+        " without download_url carry no_link: say so instead of linking. Returns no email text."
+    )
+    def get_file_links(communication_ids: list[str]) -> dict[str, Any]:
+        with connector() as conn:
+            found = retrieval.file_links(conn, principal_of(), communication_ids)
+        if not view_base:
+            found["note"] = "Links are not configured (ADMIN_PUBLIC_URL is not set)."
+        return linked(found)
 
     @server.tool(
         description="Find what the email has taught the knowledge base: properties/projects,"

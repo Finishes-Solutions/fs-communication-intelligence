@@ -63,7 +63,7 @@ The deploy workflow (`.github/workflows/deploy-dev.yml`) runs when this branch i
 
 ## 5. Database
 
-Create `local/azure-dev.env` (Cloud Shell):
+Create `local/azure-dev.env`. On a Mac with the Azure CLI signed in, `make azure-env` writes it (and leaves an existing one alone). Or by hand (Cloud Shell):
 
 ```bash
 cat > local/azure-dev.env <<EOF
@@ -298,6 +298,7 @@ The hosted endpoint is written to the MCP standard (Streamable HTTP; OAuth prote
 | `list_actionable` | Action items, approvals and project risks; with `person`, that person's (the per-person check tells Chuck Sr. from Chuck Jr.) |
 | `get_email` | One email in full, with its people, labels and attachments |
 | `get_attachment` | An attachment's extracted text, a page at a time |
+| `get_file_links` | Links for up to 25 emails and their stored files (`view_url`, `download_url`), for putting them on a monday.com item's Files column or anywhere else as links; no email text |
 | `get_thread` | The whole conversation an email belongs to, oldest first |
 | `email_stats` | Counts of emails, action items and risks by mailbox, sender, domain, label, property, entity, day, week or month |
 | `risk_overview` | Project-risk trends: change from the previous period, top categories, properties, companies and mailboxes, newest risks |
@@ -307,6 +308,17 @@ The hosted endpoint is written to the MCP standard (Streamable HTTP; OAuth prote
 Dates: `since_date` and `until_date` (YYYY-MM-DD, both inclusive) pick an exact period on `search_email`, `list_email` and `email_stats`.
 
 **Links and attachments in results.** Outlook links (`web_link`) open only in the mailbox owner's own Outlook. Every email in MCP results therefore also carries `view_url`, a read-only page on the admin console (`/read/<id>`). It opens for **console admins only**, after Microsoft sign-in; anyone else sees "Can't open this email". Stored attachments carry `download_url` (the same page with `?file=`, which downloads the original). Attachment files are not malware-scanned yet, so keep downloads to admins. The tool `get_attachment` returns an attachment's full extracted text a page at a time (pass the `attachment_id` that `get_email` lists); the file itself never goes to Copilot, ChatGPT or Claude. The deploy workflow sets the search app's `ADMIN_PUBLIC_URL` from the GitHub secret of the same name; without it, results carry no `view_url`.
+
+**Putting file links on a monday.com board.** This system has no monday.com integration (CLAUDE.md §9); the agent does it in two steps:
+
+1. `get_file_links` returns the links for the emails you mean.
+2. The client's own monday.com connector (for example Claude's) writes them to the item, under your monday.com sign-in.
+
+Ask for example: "put the files from the Acme invoice email on the Acme intake item's Files column as links". Points to know:
+
+- **Who can open the links.** They open only for console admins (Matthew, Cody) after Microsoft sign-in. Everyone else on the board sees the link but gets "Can't open this email". This stays so until malware scanning is on and access is widened.
+- **Not an official monday.com feature.** monday.com's API documents uploading files to a Files column, not adding links to it. Its own forum reports that a `"fileType": "LINK"` entry with `linkToFile` works but replaces the column's existing entries unless they are sent again, and that some writes made reads of the column fail. Try it on one test item first. If it misbehaves, use a Link column instead (one link per column), or the item's update text.
+- **Links only.** The agent must never download a file to upload it to monday.com (the tool says so). Files that were never kept carry `no_link` instead of a link.
 
 **Troubleshooting a connection.** The search app logs every request (method, path, status, whether a token was sent) and why a token was rejected, never the token. Check after a connection attempt:
 

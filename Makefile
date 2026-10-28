@@ -2,7 +2,7 @@
 COMPOSE := docker compose -f local/docker-compose.yml
 CI := uv run --env-file local/local.env ci
 
-.PHONY: dev up migrate seed status test check down reset azure-migrate azure-db-principals
+.PHONY: dev up migrate seed status test check down reset azure-env azure-env-check azure-migrate azure-db-principals
 
 dev: up migrate seed status  ## start everything, apply migrations, load fixtures
 
@@ -38,7 +38,23 @@ reset:  ## delete the local database and storage volumes
 AZ_ENV := local/azure-dev.env
 AZ_PSQL := docker run --rm -i -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGSSLMODE pgvector/pgvector:0.8.2-pg18 psql
 
-azure-migrate:  ## create the database if needed and apply migrations, as the signed-in Azure CLI user
+# The database settings for the Azure targets below, written from your Azure CLI
+# sign-in (az login). Never overwrites an existing file (it may hold Graph and AI
+# settings too; local/azure-dev.env.example lists them).
+azure-env:  ## write local/azure-dev.env for the Azure dev database
+	@if [ -f $(AZ_ENV) ]; then echo "$(AZ_ENV) already exists; leaving it as it is"; exit 0; fi; \
+	user="$$(az ad signed-in-user show --query userPrincipalName -o tsv)" && \
+	tenant="$$(az account show --query tenantId -o tsv)" && [ -n "$$user" ] && [ -n "$$tenant" ] || \
+	  { echo "Sign in first: az login"; exit 1; }; \
+	printf '%s\n' DEPLOYMENT_ENVIRONMENT=development DATABASE_AUTH=entra \
+	  PGHOST=psql-fs-ci-dev-1026b.postgres.database.azure.com PGPORT=5432 "PGUSER=$$user" \
+	  PGDATABASE=ci PGSSLMODE=require "GRAPH_TENANT_ID=$$tenant" AUTH_MODE=entra > $(AZ_ENV) && \
+	echo "wrote $(AZ_ENV) for $$user"
+
+azure-env-check:
+	@[ -f $(AZ_ENV) ] || { echo "$(AZ_ENV) is missing. Create it with: make azure-env"; exit 1; }
+
+azure-migrate: azure-env-check  ## create the database if needed and apply migrations, as the signed-in Azure CLI user
 	@set -a; . ./$(AZ_ENV); set +a; \
 	export PGPASSWORD="$$(az account get-access-token --resource-type oss-rdbms --query accessToken -o tsv)"; \
 	$(AZ_PSQL) -X -q -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = '$$PGDATABASE'" | grep -q 1 || \
@@ -48,7 +64,7 @@ azure-migrate:  ## create the database if needed and apply migrations, as the si
 	  -c 'GRANT ci_ingest, ci_search, ci_operator TO CURRENT_USER' \
 	  -c "SELECT 'pgvector ' || extversion FROM pg_extension WHERE extname = 'vector'"
 
-azure-db-principals:  ## database logins for the managed identities (run after azure-migrate)
+azure-db-principals: azure-env-check  ## database logins for the managed identities (run after azure-migrate)
 	@set -a; . ./$(AZ_ENV); set +a; \
 	export PGPASSWORD="$$(az account get-access-token --resource-type oss-rdbms --query accessToken -o tsv)"; \
 	ADMIN_MI=; az identity show -g fs-communication-intelligence -n id-fs-ci-admin-dev -o none 2>/dev/null && ADMIN_MI=id-fs-ci-admin-dev; \
