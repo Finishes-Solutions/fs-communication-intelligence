@@ -2,10 +2,12 @@
 
 Approved exception to CLAUDE.md L11 (Matthew, 2026-10-28): files are parsed
 without malware scanning for the first real-mail run. Containment instead:
-a size cap, an isolated child Python process (``-I``) with a timeout and, on
-Linux, a memory limit, zip-bomb checks for Office files, and no execution of
-anything inside a file. Scanned PDFs and images yield ``no_text`` or
-``unsupported`` until OCR is added.
+a size cap, a separate child Python process with a timeout and, on Linux, a
+memory limit, zip-bomb checks for Office files, and no execution of anything
+inside a file. The child runs with ``-P -s`` from an empty temporary directory
+(nothing importable from the working directory or user site) but keeps
+``PYTHONPATH``, which Azure Functions uses for installed packages. Scanned
+PDFs and images yield ``no_text`` or ``unsupported`` until OCR is added.
 
 Supported: PDF (pypdf), DOCX, PPTX, XLSX (openpyxl), and plain text-like files
 (txt, csv, md, json, xml, html, ics). Everything else is ``unsupported``.
@@ -17,6 +19,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -138,13 +141,15 @@ def extract(
     if kind is None:
         return Extraction(ExtractionStatus.UNSUPPORTED)
     try:
-        completed = subprocess.run(  # noqa: S603 - fixed interpreter and code, no shell
-            [sys.executable, "-I", "-c", _WORKER, kind, str(MAX_TEXT_CHARS)],
-            input=data,
-            capture_output=True,
-            timeout=TIMEOUT_SECONDS,
-            check=False,
-        )
+        with tempfile.TemporaryDirectory() as empty:
+            completed = subprocess.run(  # noqa: S603 - fixed interpreter and code, no shell
+                [sys.executable, "-P", "-s", "-c", _WORKER, kind, str(MAX_TEXT_CHARS)],
+                input=data,
+                capture_output=True,
+                timeout=TIMEOUT_SECONDS,
+                check=False,
+                cwd=empty,
+            )
     except subprocess.TimeoutExpired:
         return Extraction(ExtractionStatus.TIMEOUT, kind=kind)
     if completed.returncode != 0:

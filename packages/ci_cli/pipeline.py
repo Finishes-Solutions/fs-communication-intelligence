@@ -36,7 +36,7 @@ def _tenant_id(settings: Settings) -> str:
     return settings.graph_tenant_id or ""
 
 
-def _connection_and_corpus(conn: Connection, settings: Settings) -> tuple[str, str]:
+def connection_and_corpus(conn: Connection, settings: Settings) -> tuple[str, str]:
     row = conn.execute(
         "SELECT c.id::text AS connection_id, k.id::text AS corpus_id"
         " FROM source_connections c, corpora k"
@@ -86,7 +86,7 @@ def tenant_init(conn: Connection, actor: str) -> None:
 
 def inventory_sync(conn: Connection, actor: str) -> None:
     settings = load_settings()
-    connection, corpus = _connection_and_corpus(conn, settings)
+    connection, corpus = connection_and_corpus(conn, settings)
     summary = sync_inventory(conn, backends.graph_client(settings), connection, corpus, actor)
     print(f"inventory: {dict(sorted(summary.states.items()))}")
 
@@ -143,9 +143,9 @@ def _role_connect(role: AppRole | None) -> Connection:
     return connect(role=role)
 
 
-def capture(args: argparse.Namespace) -> None:
-    settings = load_settings()
-    profile = {
+def capture_profile(settings: Settings) -> dict[str, Any]:
+    """Processing profile stamped on new versions (changing it reprocesses)."""
+    return {
         "normalizer": NORMALIZER_VERSION,
         "chunker": CHUNKER_VERSION,
         "classifier_policy": POLICY_VERSION,
@@ -154,12 +154,16 @@ def capture(args: argparse.Namespace) -> None:
         if settings.embedder.value != "fake"
         else "fake-hashing-v1",
     }
+
+
+def capture(args: argparse.Namespace) -> None:
+    settings = load_settings()
     results = capture_window(
         _role_connect,
         backends.graph_client(settings),
         hours=args.hours,
         include_sent=settings.email_include_sent,
-        profile=profile,
+        profile=capture_profile(settings),
         workers=args.workers,
     )
     total: Counter[str] = Counter()
@@ -303,4 +307,4 @@ def mcp() -> None:
     settings, principal = _principal()
     from ci_retrieval.mcp_server import run_stdio
 
-    run_stdio(settings, principal, backends.embedder(settings))
+    run_stdio(principal, backends.embedder(settings))

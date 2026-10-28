@@ -2,7 +2,7 @@
 COMPOSE := docker compose -f local/docker-compose.yml
 CI := uv run --env-file local/local.env ci
 
-.PHONY: dev up migrate seed status test check down reset azure-migrate
+.PHONY: dev up migrate seed status test check down reset azure-migrate azure-db-principals
 
 dev: up migrate seed status  ## start everything, apply migrations, load fixtures
 
@@ -47,3 +47,14 @@ azure-migrate:  ## create the database if needed and apply migrations, as the si
 	$(AZ_PSQL) -X -q -v ON_ERROR_STOP=1 -d "$$PGDATABASE" \
 	  -c 'GRANT ci_ingest, ci_search, ci_operator TO CURRENT_USER' \
 	  -c "SELECT 'pgvector ' || extversion FROM pg_extension WHERE extname = 'vector'"
+
+azure-db-principals:  ## database logins for the two managed identities (run after azure-migrate)
+	@set -a; . ./$(AZ_ENV); set +a; \
+	export PGPASSWORD="$$(az account get-access-token --resource-type oss-rdbms --query accessToken -o tsv)"; \
+	for mi in id-fs-ci-ingestion-dev id-fs-ci-search-dev; do \
+	  $(AZ_PSQL) -X -q -v ON_ERROR_STOP=1 -d postgres -c \
+	    "DO \$$\$$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$$mi') THEN PERFORM pgaadauth_create_principal('$$mi', false, false); END IF; END \$$\$$;" || exit 1; \
+	done; \
+	$(AZ_PSQL) -X -q -v ON_ERROR_STOP=1 -d "$$PGDATABASE" \
+	  -c 'GRANT ci_ingest TO "id-fs-ci-ingestion-dev"' -c 'GRANT ci_search TO "id-fs-ci-search-dev"' \
+	  -c "SELECT r.rolname AS login, string_agg(g.rolname, ', ') AS app_roles FROM pg_roles r JOIN pg_auth_members m ON m.member = r.oid JOIN pg_roles g ON g.oid = m.roleid WHERE r.rolname LIKE 'id-fs-ci-%' GROUP BY 1"

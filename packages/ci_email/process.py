@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
+import time
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -395,12 +396,18 @@ def process_all(
     *,
     limit: int | None = None,
     workers: int = 4,
+    max_seconds: float | None = None,
 ) -> Counter[str]:
+    """Process until nothing is queued, ``limit`` versions are done, or ``max_seconds``
+    pass (checked before each claim, so a run can overrun by one message)."""
     counts: Counter[str] = Counter()
     budget = [limit if limit is not None else 10**12]
     lock = threading.Lock()
+    deadline = time.monotonic() + max_seconds if max_seconds is not None else None
 
     def take() -> bool:
+        if deadline is not None and time.monotonic() >= deadline:
+            return False
         with lock:
             budget[0] -= 1
             return budget[0] >= 0

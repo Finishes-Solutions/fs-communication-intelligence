@@ -5,6 +5,7 @@ from __future__ import annotations
 from ci_core.settings import (
     ClassifierBackend,
     EmbedderBackend,
+    GraphAuth,
     GraphBackend,
     ScreenerBackend,
     Settings,
@@ -21,8 +22,16 @@ from ci_processing.screening import FakeScreener, Screener
 def graph_client(settings: Settings) -> GraphClient:
     if settings.graph_backend is GraphBackend.FIXTURE:
         return FixtureGraphClient.from_directory()
-    settings.require("graph_tenant_id", "graph_client_id", "graph_certificate_path")
     from ci_email.graph_http import HttpGraphClient
+
+    if settings.graph_auth is GraphAuth.MANAGED_IDENTITY:
+        from ci_core.azure_auth import default_credential
+
+        settings.require("graph_tenant_id")
+        return HttpGraphClient(
+            settings.graph_tenant_id or "", "", "", credential=default_credential()
+        )
+    settings.require("graph_tenant_id", "graph_client_id", "graph_certificate_path")
 
     return HttpGraphClient(
         settings.graph_tenant_id or "",

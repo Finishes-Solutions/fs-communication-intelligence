@@ -58,6 +58,13 @@ class AuthMode(StrEnum):
     LOCAL_TEST = "local_test"
 
 
+class GraphAuth(StrEnum):
+    """``certificate``: app registration (operator's machine). ``managed_identity``: in Azure."""
+
+    CERTIFICATE = "certificate"
+    MANAGED_IDENTITY = "managed_identity"
+
+
 class DatabaseAuth(StrEnum):
     """``password`` uses PGPASSWORD; ``entra`` fetches an Entra token for Azure PostgreSQL."""
 
@@ -109,6 +116,7 @@ class Settings(BaseSettings):
 
     # Microsoft Graph (GRAPH_BACKEND=graph). App-only, certificate credential;
     # the certificate file stays outside the repo.
+    graph_auth: GraphAuth = GraphAuth.CERTIFICATE
     graph_tenant_id: str | None = None
     graph_client_id: str | None = None
     graph_certificate_path: str | None = None
@@ -125,6 +133,21 @@ class Settings(BaseSettings):
     # to L11 approved by Matthew on 2026-10-28 for the first real-mail run.
     attachment_extraction_enabled: bool = False
     attachment_max_bytes: int = 25 * 1024 * 1024
+
+    # Ingestion Function App switches. Capture and processing stay off until
+    # someone turns them on; the database mode (runtime_config) still applies.
+    capture_enabled: bool = False
+    capture_hours: float = 2.0
+    capture_workers: int = 6
+    processing_enabled: bool = False
+    processing_minutes: float = 8.0
+    processing_workers: int = 4
+
+    # Hosted search API / MCP (Entra delegated tokens).
+    entra_tenant_id: str | None = None
+    search_public_url: str | None = None  # e.g. https://func-fs-ci-search-dev.azurewebsites.net
+    search_api_client_id: str | None = None  # the search API app registration
+    search_api_app_id_uri: str | None = None  # e.g. api://<client id>
 
     # Local-only principal for the MCP server and CLI (AUTH_MODE=local_test).
     local_test_principal_oid: str = "00000000-0000-0000-0000-00000000c0de"
