@@ -1,0 +1,82 @@
+{
+  "fixture": {
+    "mailbox": "pat.example@finishessolutions.example",
+    "folder": "inbox",
+    "after": [],
+    "expect": {
+      "captured": true,
+      "screening": [],
+      "labels_yes": [
+        "invoice_receipt",
+        "approval_required",
+        "action_required",
+        "project_related",
+        "cat_payment_billing"
+      ],
+      "disposition": "index"
+    }
+  },
+  "message": {
+    "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0001",
+    "internetMessageId": "<synthetic-0001@acme-sitework.example>",
+    "conversationId": "AAQkAGsynconv0001",
+    "changeKey": "CQAAABYAAAAsyn0001",
+    "subject": "Invoice 4471 for Lot 12 grading - payment due Friday",
+    "from": {
+      "emailAddress": {
+        "name": "Jordan Rivera",
+        "address": "jordan.rivera@acme-sitework.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Jordan Rivera",
+        "address": "jordan.rivera@acme-sitework.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Example",
+          "address": "pat.example@finishessolutions.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-01T14:05:00Z",
+    "sentDateTime": "2026-10-01T14:05:00Z",
+    "body": {
+      "contentType": "text",
+      "content": "Hi Pat,\n\nAttached is invoice 4471 for the grading work at Example Ridge Lot 12. Total due is $18,250.00 by Friday. Please confirm approval so we can schedule the next crew.\n\nThanks,\nJordan Rivera\nAcme Sitework LLC\n555-010-4471"
+    },
+    "uniqueBody": {
+      "contentType": "text",
+      "content": "Hi Pat,\n\nAttached is invoice 4471 for the grading work at Example Ridge Lot 12. Total due is $18,250.00 by Friday. Please confirm approval so we can schedule the next crew.\n\nThanks,\nJordan Rivera\nAcme Sitework LLC\n555-010-4471"
+    },
+    "hasAttachments": true,
+    "webLink": "https://outlook.office365.com/owa/?ItemID=AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0001&exvsurl=1&viewmodel=ReadMessageItem",
+    "isDraft": false,
+    "parentFolderId": "fld-pat-inbox"
+  },
+  "attachments": [
+    {
+      "@odata.type": "#microsoft.graph.fileAttachment",
+      "id": "att-0101",
+      "name": "Invoice-4471.pdf",
+      "contentType": "application/pdf",
+      "size": 84211,
+      "isInline": false,
+      "contentId": null
+    },
+    {
+      "@odata.type": "#microsoft.graph.fileAttachment",
+      "id": "att-logo",
+      "name": "image001.png",
+      "contentType": "image/png",
+      "size": 5120,
+      "isInline": true,
+      "contentId": "image001.png@01DB0000.00000000"
+    }
+  ]
+}

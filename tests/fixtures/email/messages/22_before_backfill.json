@@ -1,0 +1,57 @@
+{
+  "fixture": {
+    "mailbox": "pat.example@finishessolutions.example",
+    "folder": "inbox",
+    "after": [],
+    "expect": {
+      "captured": false,
+      "screening": [],
+      "labels_yes": [],
+      "disposition": "skipped"
+    }
+  },
+  "message": {
+    "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0024",
+    "internetMessageId": "<synthetic-0024@example-gc.example>",
+    "conversationId": "AAQkAGsynconv0024",
+    "changeKey": "CQAAABYAAAAsyn0024",
+    "subject": "Old message before the backfill boundary",
+    "from": {
+      "emailAddress": {
+        "name": "Chris Patel",
+        "address": "chris.patel@example-gc.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Chris Patel",
+        "address": "chris.patel@example-gc.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Example",
+          "address": "pat.example@finishessolutions.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2025-12-15T15:00:00Z",
+    "sentDateTime": "2025-12-15T15:00:00Z",
+    "body": {
+      "contentType": "text",
+      "content": "This message predates the local backfill boundary and must not be captured on initial sync."
+    },
+    "uniqueBody": {
+      "contentType": "text",
+      "content": "This message predates the local backfill boundary and must not be captured on initial sync."
+    },
+    "hasAttachments": false,
+    "webLink": "https://outlook.office365.com/owa/?ItemID=AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0024&exvsurl=1&viewmodel=ReadMessageItem",
+    "isDraft": false,
+    "parentFolderId": "fld-pat-inbox"
+  },
+  "attachments": []
+}

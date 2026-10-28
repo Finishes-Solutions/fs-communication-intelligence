@@ -1,0 +1,101 @@
+{
+  "tenant_id": "00000000-0000-0000-0000-000000000001",
+  "backfill_since": "2026-01-01T00:00:00Z",
+  "mailboxes": [
+    {
+      "id": "00000000-0000-0000-0000-0000000000aa",
+      "address": "pat.example@finishessolutions.example",
+      "display_name": "Pat Example",
+      "purpose": "user",
+      "access": "ok",
+      "seed": "approve",
+      "folders": [
+        "inbox",
+        "sentitems",
+        "drafts",
+        "deleteditems",
+        "junkemail",
+        "outbox",
+        "conversationhistory",
+        "syncissues",
+        "archive",
+        "projects"
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-0000000000ab",
+      "address": "morgan.lee@finishessolutions.example",
+      "display_name": "Morgan Lee",
+      "purpose": "user",
+      "access": "ok",
+      "seed": "approve",
+      "folders": [
+        "inbox",
+        "sentitems",
+        "drafts",
+        "deleteditems",
+        "junkemail",
+        "outbox",
+        "conversationhistory",
+        "syncissues",
+        "archive"
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-0000000000ac",
+      "address": "ap@finishessolutions.example",
+      "display_name": "Accounts Payable",
+      "purpose": "shared",
+      "access": "ok",
+      "seed": "approve",
+      "folders": [
+        "inbox",
+        "sentitems",
+        "drafts",
+        "deleteditems",
+        "junkemail",
+        "outbox",
+        "conversationhistory",
+        "syncissues",
+        "archive"
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-0000000000ad",
+      "address": "casey.private@finishessolutions.example",
+      "display_name": "Casey Private",
+      "purpose": "user",
+      "access": "ok",
+      "seed": "exclude",
+      "folders": [
+        "inbox",
+        "sentitems",
+        "drafts",
+        "deleteditems",
+        "junkemail",
+        "outbox",
+        "conversationhistory",
+        "syncissues",
+        "archive"
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-0000000000ae",
+      "address": "riley.outside@finishessolutions.example",
+      "display_name": "Riley Outside",
+      "purpose": "user",
+      "access": "forbidden",
+      "seed": "none",
+      "folders": []
+    },
+    {
+      "id": "00000000-0000-0000-0000-0000000000af",
+      "address": "no.mailbox@finishessolutions.example",
+      "display_name": "No Mailbox",
+      "purpose": "user",
+      "access": "no_mailbox",
+      "seed": "none",
+      "folders": []
+    }
+  ]
+}

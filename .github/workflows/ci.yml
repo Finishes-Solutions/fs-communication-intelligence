@@ -16,6 +16,26 @@ jobs:
   python:
     name: Lint, type check, tests
     runs-on: ubuntu-24.04
+    # Database tests (tests/db) run against this throwaway server. CI_REQUIRE_DB
+    # makes an unreachable server a failure instead of a skip.
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.2-pg18
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      CI_REQUIRE_DB: "1"
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v6

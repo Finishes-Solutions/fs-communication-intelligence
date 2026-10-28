@@ -1,0 +1,59 @@
+{
+  "fixture": {
+    "mailbox": "pat.example@finishessolutions.example",
+    "folder": "inbox",
+    "after": [],
+    "expect": {
+      "captured": true,
+      "screening": [],
+      "labels_yes": [
+        "newsletter"
+      ],
+      "disposition": "not_indexed"
+    }
+  },
+  "message": {
+    "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0007",
+    "internetMessageId": "<synthetic-0007@builder-digest.example>",
+    "conversationId": "AAQkAGsynconv0007",
+    "changeKey": "CQAAABYAAAAsyn0007",
+    "subject": "Regional construction weekly digest",
+    "from": {
+      "emailAddress": {
+        "name": "Builder Digest",
+        "address": "news@builder-digest.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Builder Digest",
+        "address": "news@builder-digest.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Example",
+          "address": "pat.example@finishessolutions.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-07T11:00:00Z",
+    "sentDateTime": "2026-10-07T11:00:00Z",
+    "body": {
+      "contentType": "text",
+      "content": "This week's newsletter: material prices, permitting trends and upcoming industry events. Read online or unsubscribe at any time."
+    },
+    "uniqueBody": {
+      "contentType": "text",
+      "content": "This week's newsletter: material prices, permitting trends and upcoming industry events. Read online or unsubscribe at any time."
+    },
+    "hasAttachments": false,
+    "webLink": "https://outlook.office365.com/owa/?ItemID=AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0007&exvsurl=1&viewmodel=ReadMessageItem",
+    "isDraft": false,
+    "parentFolderId": "fld-pat-inbox"
+  },
+  "attachments": []
+}

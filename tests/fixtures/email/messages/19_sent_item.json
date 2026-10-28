@@ -1,0 +1,59 @@
+{
+  "fixture": {
+    "mailbox": "pat.example@finishessolutions.example",
+    "folder": "sentitems",
+    "after": [],
+    "expect": {
+      "captured": true,
+      "screening": [],
+      "labels_yes": [
+        "cat_development_construction"
+      ],
+      "disposition": "index"
+    }
+  },
+  "message": {
+    "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0021",
+    "internetMessageId": "<synthetic-0021@finishessolutions.example>",
+    "conversationId": "AAQkAGsynconv0021",
+    "changeKey": "CQAAABYAAAAsyn0021",
+    "subject": "RE: Change Order 7 - Building C framing scope",
+    "from": {
+      "emailAddress": {
+        "name": "Pat Example",
+        "address": "pat.example@finishessolutions.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Pat Example",
+        "address": "pat.example@finishessolutions.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Sam Ortiz",
+          "address": "sam.ortiz@northfield-framing.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-16T13:00:00Z",
+    "sentDateTime": "2026-10-16T13:00:00Z",
+    "body": {
+      "contentType": "text",
+      "content": "Sam,\n\nApproved. Please proceed with the blocking in Building C.\n\nPat"
+    },
+    "uniqueBody": {
+      "contentType": "text",
+      "content": "Sam,\n\nApproved. Please proceed with the blocking in Building C.\n\nPat"
+    },
+    "hasAttachments": false,
+    "webLink": "https://outlook.office365.com/owa/?ItemID=AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0021&exvsurl=1&viewmodel=ReadMessageItem",
+    "isDraft": false,
+    "parentFolderId": "fld-pat-sentitems"
+  },
+  "attachments": []
+}

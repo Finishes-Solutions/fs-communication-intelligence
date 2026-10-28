@@ -1,0 +1,57 @@
+{
+  "fixture": {
+    "mailbox": "casey.private@finishessolutions.example",
+    "folder": "inbox",
+    "after": [],
+    "expect": {
+      "captured": false,
+      "screening": [],
+      "labels_yes": [],
+      "disposition": "skipped"
+    }
+  },
+  "message": {
+    "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0023",
+    "internetMessageId": "<synthetic-0023@example-personal.example>",
+    "conversationId": "AAQkAGsynconv0023",
+    "changeKey": "CQAAABYAAAAsyn0023",
+    "subject": "Personal matter",
+    "from": {
+      "emailAddress": {
+        "name": "Someone",
+        "address": "someone@example-personal.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Someone",
+        "address": "someone@example-personal.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Casey Private",
+          "address": "casey.private@finishessolutions.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-16T15:00:00Z",
+    "sentDateTime": "2026-10-16T15:00:00Z",
+    "body": {
+      "contentType": "text",
+      "content": "This message sits in a mailbox the seed data excludes, so it must never be captured."
+    },
+    "uniqueBody": {
+      "contentType": "text",
+      "content": "This message sits in a mailbox the seed data excludes, so it must never be captured."
+    },
+    "hasAttachments": false,
+    "webLink": "https://outlook.office365.com/owa/?ItemID=AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0023&exvsurl=1&viewmodel=ReadMessageItem",
+    "isDraft": false,
+    "parentFolderId": "fld-casey-inbox"
+  },
+  "attachments": []
+}

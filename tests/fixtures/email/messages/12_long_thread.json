@@ -1,0 +1,60 @@
+{
+  "fixture": {
+    "mailbox": "pat.example@finishessolutions.example",
+    "folder": "inbox",
+    "after": [],
+    "expect": {
+      "captured": true,
+      "screening": [],
+      "labels_yes": [
+        "cat_development_construction",
+        "project_related"
+      ],
+      "disposition": "index"
+    }
+  },
+  "message": {
+    "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0012",
+    "internetMessageId": "<synthetic-0012@example-gc.example>",
+    "conversationId": "AAQkAGsynconvthread14",
+    "changeKey": "CQAAABYAAAAsyn0012",
+    "subject": "RE: RE: Lot 14 foundation inspection",
+    "from": {
+      "emailAddress": {
+        "name": "Chris Patel",
+        "address": "chris.patel@example-gc.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Chris Patel",
+        "address": "chris.patel@example-gc.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Example",
+          "address": "pat.example@finishessolutions.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-10T15:00:00Z",
+    "sentDateTime": "2026-10-10T15:00:00Z",
+    "body": {
+      "contentType": "text",
+      "content": "Agreed, let's hold the pour until the inspection passes.\n\n-----Original Message-----\nFrom: Chris Patel\nSent: Monday\nThe inspector can come Wednesday morning for the Lot 14 foundation.\n\n-----Original Message-----\nFrom: Pat Example\nSent: Friday\nCan we get the foundation inspection scheduled before the concrete pour?\n"
+    },
+    "uniqueBody": {
+      "contentType": "text",
+      "content": "Agreed, let's hold the pour until the inspection passes."
+    },
+    "hasAttachments": false,
+    "webLink": "https://outlook.office365.com/owa/?ItemID=AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0012&exvsurl=1&viewmodel=ReadMessageItem",
+    "isDraft": false,
+    "parentFolderId": "fld-pat-inbox"
+  },
+  "attachments": []
+}

@@ -1,0 +1,65 @@
+{
+  "fixture": {
+    "mailbox": "pat.example@finishessolutions.example",
+    "folder": "inbox",
+    "after": [
+      {
+        "round": 2,
+        "action": "move",
+        "folder": "projects"
+      }
+    ],
+    "expect": {
+      "captured": true,
+      "screening": [],
+      "labels_yes": [
+        "project_related"
+      ],
+      "disposition": "index"
+    }
+  },
+  "message": {
+    "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0017",
+    "internetMessageId": "<synthetic-0017@example-gc.example>",
+    "conversationId": "AAQkAGsynconv0017",
+    "changeKey": "CQAAABYAAAAsyn0017",
+    "subject": "Example Ridge site meeting notes",
+    "from": {
+      "emailAddress": {
+        "name": "Chris Patel",
+        "address": "chris.patel@example-gc.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Chris Patel",
+        "address": "chris.patel@example-gc.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Example",
+          "address": "pat.example@finishessolutions.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-13T20:00:00Z",
+    "sentDateTime": "2026-10-13T20:00:00Z",
+    "body": {
+      "contentType": "text",
+      "content": "Pat,\n\nNotes from today's site meeting are below. Grading at Lot 12 is complete; utilities start next week.\n\nChris"
+    },
+    "uniqueBody": {
+      "contentType": "text",
+      "content": "Pat,\n\nNotes from today's site meeting are below. Grading at Lot 12 is complete; utilities start next week.\n\nChris"
+    },
+    "hasAttachments": false,
+    "webLink": "https://outlook.office365.com/owa/?ItemID=AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0017&exvsurl=1&viewmodel=ReadMessageItem",
+    "isDraft": false,
+    "parentFolderId": "fld-pat-inbox"
+  },
+  "attachments": []
+}

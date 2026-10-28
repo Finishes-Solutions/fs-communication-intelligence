@@ -66,7 +66,8 @@ Business context: Finishes Solutions is a real estate owner-developer (Waller, T
 - `scripts/bootstrap-azure.sh`: creates managed identities, GitHub OIDC federation and RG-scoped deploy roles. Not confirmed as run.
 - `config/runtime.example.env`: proposed setting names.
 - A docs patch `email-first-adr-014.patch` (ADR-014 to ADR-017, README, backlogs, TEAMS_DISCOVERY.md) may already be applied. If `docs/ARCHITECTURE_DECISIONS.md` has no ADR-014, ask Matthew for the patch before PR 1, or write the equivalent ADRs yourself from §2–§3.
-- No application code, infrastructure templates or workflows exist yet.
+- PR 4 (local stack) added `local/` (docker-compose, `make dev`), the fixture Graph client and synthetic fixture tenant (`tests/fixtures/email/`), fake screener/classifier/embedder with the §7 decision rules, mailbox inventory, mode/scope checks and the `ci` CLI. No capture, processing pipeline, search app, infrastructure templates or deploy workflows exist yet.
+- Dev Azure resources were created by hand in `fs-communication-intelligence` (Central US) before any Bicep: managed identities `id-fs-ci-{github,ingestion,search}-dev`, PostgreSQL Flexible Server `psql-fs-ci-dev-1026b`, Key Vault `kv-fs-ci-dev-1026`, storage accounts `stfsciingdev1026`/`stfscievidev1026`/`stfscisrchdev1026`, Azure OpenAI `aoai-fs-ci-dev-1026`, Language `lang-fs-ci-dev-1026`, Content Safety `safe-fs-ci-dev-1026`, App Insights `appi-fs-ci-dev` and Log Analytics `log-fs-ci-dev`. No Function Apps yet. PR 8's Bicep must adopt these names rather than create duplicates. Keep subscription IDs out of the repo.
 - Reference only, do not import wholesale: earlier prototype `mattsinitiere/fs-outlook-email-ingestion-tool`, branch `phase3/scoped-email-intelligence`. A throwaway TypeScript/Azure SQL scaffold from a chat session also exists. **Ignore its stack**; only its ideas appear in this file.
 
 ---
@@ -82,6 +83,7 @@ packages/
   ci_email/       Graph client (real + fixture), mailbox inventory, folder delta, normalizer
   ci_processing/  screening adapters, classifier, chunker, embedder, publisher
   ci_retrieval/   token validation, grant resolution, hybrid query, MCP tools
+  ci_cli/         the `ci` operator/local command (seed, inventory, scope, mode; reconcile/worker in PR 5)
 db/migrations/    0001_foundation.sql (adapted), 0002_email.sql ...
 db/tests/         SQL behavior checks
 tests/            unit, contract, db, authorization, acceptance (synthetic only)

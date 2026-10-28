@@ -1,0 +1,59 @@
+{
+  "fixture": {
+    "mailbox": "morgan.lee@finishessolutions.example",
+    "folder": "inbox",
+    "after": [],
+    "expect": {
+      "captured": true,
+      "screening": [],
+      "labels_yes": [
+        "cat_vendor_performance"
+      ],
+      "disposition": "index"
+    }
+  },
+  "message": {
+    "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0006",
+    "internetMessageId": "<synthetic-0006@example-gc.example>",
+    "conversationId": "AAQkAGsynconv0006",
+    "changeKey": "CQAAABYAAAAsyn0006",
+    "subject": "Repeated delays and defects on punch list",
+    "from": {
+      "emailAddress": {
+        "name": "Chris Patel",
+        "address": "chris.patel@example-gc.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Chris Patel",
+        "address": "chris.patel@example-gc.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Morgan Lee",
+          "address": "morgan.lee@finishessolutions.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-06T19:20:00Z",
+    "sentDateTime": "2026-10-06T19:20:00Z",
+    "body": {
+      "contentType": "text",
+      "content": "Morgan,\n\nThe painting subcontractor missed the walkthrough again and the touch-up work in units 3 and 4 shows the same defects we flagged last week. This is the third delay this month.\n\nChris Patel\nSite Superintendent (synthetic)"
+    },
+    "uniqueBody": {
+      "contentType": "text",
+      "content": "Morgan,\n\nThe painting subcontractor missed the walkthrough again and the touch-up work in units 3 and 4 shows the same defects we flagged last week. This is the third delay this month.\n\nChris Patel\nSite Superintendent (synthetic)"
+    },
+    "hasAttachments": false,
+    "webLink": "https://outlook.office365.com/owa/?ItemID=AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0006&exvsurl=1&viewmodel=ReadMessageItem",
+    "isDraft": false,
+    "parentFolderId": "fld-morgan-inbox"
+  },
+  "attachments": []
+}

@@ -1,0 +1,62 @@
+{
+  "fixture": {
+    "mailbox": "pat.example@finishessolutions.example",
+    "folder": "inbox",
+    "after": [
+      {
+        "round": 2,
+        "action": "delete"
+      }
+    ],
+    "expect": {
+      "captured": true,
+      "screening": [],
+      "labels_yes": [],
+      "disposition": "index"
+    }
+  },
+  "message": {
+    "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0018",
+    "internetMessageId": "<synthetic-0018@finishessolutions.example>",
+    "conversationId": "AAQkAGsynconv0018",
+    "changeKey": "CQAAABYAAAAsyn0018",
+    "subject": "Lunch order for Friday",
+    "from": {
+      "emailAddress": {
+        "name": "Office Admin",
+        "address": "office@finishessolutions.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Office Admin",
+        "address": "office@finishessolutions.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Example",
+          "address": "pat.example@finishessolutions.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-14T16:00:00Z",
+    "sentDateTime": "2026-10-14T16:00:00Z",
+    "body": {
+      "contentType": "text",
+      "content": "Pat, sandwich order for the Friday team lunch is attached to the calendar invite."
+    },
+    "uniqueBody": {
+      "contentType": "text",
+      "content": "Pat, sandwich order for the Friday team lunch is attached to the calendar invite."
+    },
+    "hasAttachments": false,
+    "webLink": "https://outlook.office365.com/owa/?ItemID=AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0018&exvsurl=1&viewmodel=ReadMessageItem",
+    "isDraft": false,
+    "parentFolderId": "fld-pat-inbox"
+  },
+  "attachments": []
+}

@@ -1,0 +1,76 @@
+{
+  "fixture": {
+    "mailbox": "pat.example@finishessolutions.example",
+    "folder": "inbox",
+    "after": [],
+    "expect": {
+      "captured": true,
+      "screening": [],
+      "labels_yes": [
+        "cat_development_construction",
+        "approval_required"
+      ],
+      "disposition": "index"
+    }
+  },
+  "message": {
+    "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0014",
+    "internetMessageId": "<synthetic-co8@northfield-framing.example>",
+    "conversationId": "AAQkAGsynconvco8",
+    "changeKey": "CQAAABYAAAAsyn0014",
+    "subject": "Change Order 8 - Building D plumbing reroute",
+    "from": {
+      "emailAddress": {
+        "name": "Sam Ortiz",
+        "address": "sam.ortiz@northfield-framing.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Sam Ortiz",
+        "address": "sam.ortiz@northfield-framing.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Example",
+          "address": "pat.example@finishessolutions.example"
+        }
+      },
+      {
+        "emailAddress": {
+          "name": "Morgan Lee",
+          "address": "morgan.lee@finishessolutions.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-12T14:00:00Z",
+    "sentDateTime": "2026-10-12T14:00:00Z",
+    "body": {
+      "contentType": "text",
+      "content": "Team,\n\nChange order 8 reroutes the Building D plumbing stack around the new beam. Added cost $3,150. Please review the attached and approve by Friday.\n\nSam Ortiz\nNorthfield Framing Co."
+    },
+    "uniqueBody": {
+      "contentType": "text",
+      "content": "Team,\n\nChange order 8 reroutes the Building D plumbing stack around the new beam. Added cost $3,150. Please review the attached and approve by Friday.\n\nSam Ortiz\nNorthfield Framing Co."
+    },
+    "hasAttachments": true,
+    "webLink": "https://outlook.office365.com/owa/?ItemID=AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0014&exvsurl=1&viewmodel=ReadMessageItem",
+    "isDraft": false,
+    "parentFolderId": "fld-pat-inbox"
+  },
+  "attachments": [
+    {
+      "@odata.type": "#microsoft.graph.fileAttachment",
+      "id": "att-co8",
+      "name": "CO-008-BuildingD.pdf",
+      "contentType": "application/pdf",
+      "size": 98112,
+      "isInline": false,
+      "contentId": null
+    }
+  ]
+}
