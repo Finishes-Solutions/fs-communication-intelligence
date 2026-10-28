@@ -203,6 +203,26 @@ def begin_capture(conn: Connection, decision: Decision, now: datetime) -> int:
     return start_run(conn, "capture", decision.trigger, decision.hours)
 
 
+def close_stale_runs(conn: Connection, kind: str, older_than: timedelta, now: datetime) -> int:
+    """Mark runs of ``kind`` still 'running' after ``older_than`` as failed (code
+    ``stale_run``): their worker was stopped without recording an end (a restart,
+    a deploy, the host's time limit), and the history should not show them forever."""
+    rows = conn.execute(
+        "UPDATE ops_runs SET status = 'failed', finished_at = %s, error_code = 'stale_run'"
+        " WHERE kind = %s AND status = 'running' AND started_at < %s RETURNING id",
+        (now, kind, now - older_than),
+    ).fetchall()
+    return len(rows)
+
+
+def update_run_counts(conn: Connection, run_id: int, counts: dict[str, int]) -> None:
+    """Counts so far for a run still in progress (the console shows them live)."""
+    conn.execute(
+        "UPDATE ops_runs SET counts = %s WHERE id = %s AND status = 'running'",
+        (json.dumps(counts), run_id),
+    )
+
+
 def start_run(conn: Connection, kind: str, trigger: Trigger, hours: float | None = None) -> int:
     row = required(
         conn.execute(

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import psycopg
 
@@ -27,6 +27,9 @@ from ci_email.inventory import sync_inventory
 from ci_email.process import process_all, record_usage, store_missing_originals
 
 log = logging.getLogger("ci.scheduled")
+# A processing run still 'running' this long after its time budget was stopped
+# without recording its end (restart, deploy, host time limit).
+STALE_RUN_GRACE_MINUTES = 60
 
 
 def _connect(role: AppRole | None) -> Connection:
@@ -87,6 +90,8 @@ def scheduler_tick(settings: Settings, now: datetime | None = None) -> ops.Decis
             return decision
         if ops.capture_in_progress(conn, now):
             return ops.Decision(False, "a capture is still running")
+        if ops.close_stale_runs(conn, "capture", ops.RUNNING_CAPTURE_GRACE, now):
+            log.warning("closed stale capture run(s)")
         run_id = ops.begin_capture(conn, decision, now)
         conn.commit()
     try:
@@ -109,8 +114,22 @@ def run_processing(settings: Settings) -> dict[str, int] | None:
         if not schedule.processing_enabled:
             log.info("processing skipped: turned off in the schedule")
             return None
+        stale = ops.close_stale_runs(
+            conn,
+            "process",
+            timedelta(minutes=settings.processing_minutes + STALE_RUN_GRACE_MINUTES),
+            datetime.now(UTC),
+        )
+        if stale:
+            log.warning("closed %s stale processing run(s)", stale)
         run_id = ops.start_run(conn, "process", "schedule")
         conn.commit()
+
+    def progress(counts: dict[str, int]) -> None:
+        log.info("processing progress: %s", counts)
+        with connect(role="ci_ingest") as pconn:
+            ops.update_run_counts(pconn, run_id, counts)
+
     status, error = "succeeded", None
     configured = None
     try:
@@ -125,6 +144,7 @@ def run_processing(settings: Settings) -> dict[str, int] | None:
                 configured,
                 workers=settings.processing_workers,
                 max_seconds=settings.processing_minutes * 60,
+                progress=progress,
             )
         )
         counts.update(store_missing_originals(lambda: connect(role="ci_ingest"), configured))
