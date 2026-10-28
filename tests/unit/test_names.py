@@ -111,7 +111,8 @@ NOW = datetime(2026, 10, 28, 6, 0, tzinfo=UTC)
 def test_since_is_midnight_central_rounded_up() -> None:
     # 2026-09-01 00:00 CDT = 05:00 UTC; 57 days and 1 hour before NOW.
     assert hours_since("2026-09-01", NOW) == 57 * 24 + 1
-    assert hours_since("2026-10-27", NOW) == 30  # 27 Oct 00:00 CDT -> 28 Oct 06:00 UTC
+    assert hours_since("2026-10-27", NOW) == 25  # 27 Oct 05:00 UTC -> 28 Oct 06:00 UTC
+    assert hours_since("2026-10-27", NOW.replace(minute=1)) == 26  # rounded up
     for bad, message in (
         ("2026-10-29", "future"),
         ("2026-07-01", "93 days"),

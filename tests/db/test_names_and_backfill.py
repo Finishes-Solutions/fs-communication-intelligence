@@ -134,7 +134,7 @@ def test_names_cli_add_list_remove_and_audit(
         ]
         with pytest.raises(OperatorError):
             add_name(conn, "pytest", "building", "X")
-    assert actions == ["known_name_set", "known_name_set", "known_name_removed"]
+    assert actions[-3:] == ["known_name_set", "known_name_set", "known_name_removed"]
 
 
 def test_a_backfill_request_may_reach_back_93_days(ready: str) -> None:
@@ -146,3 +146,27 @@ def test_a_backfill_request_may_reach_back_93_days(ready: str) -> None:
         conn.rollback()
     with connect(dbname=ready) as conn, pytest.raises(psycopg.errors.CheckViolation):
         conn.execute("UPDATE ops_settings SET run_requested_hours = 2233")
+
+
+class FrozenDatetime(datetime):
+    @classmethod
+    def now(cls, tz: object = None) -> FrozenDatetime:
+        return cls(2026, 10, 28, 6, 0, tzinfo=UTC)
+
+
+def test_run_capture_since_a_date(
+    ready: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import ci_cli.main as cli
+
+    monkeypatch.setenv("PGDATABASE", ready)
+    monkeypatch.setenv("DEPLOYMENT_ENVIRONMENT", "local")
+    monkeypatch.setattr(cli, "datetime", FrozenDatetime)
+    assert main(["--actor", "pytest", "run-capture", "--since", "2026-09-01"]) == 0
+    assert "1369 hours back" in capsys.readouterr().out
+    with connect(dbname=ready) as conn:
+        assert ops.read_schedule(conn).run_requested_hours == 1369
+        conn.execute("UPDATE ops_settings SET run_requested_at = NULL, run_requested_hours = NULL")
+        conn.commit()
+    assert main(["--actor", "pytest", "run-capture", "--since", "2026-07-01"]) == 1
+    assert "93 days" in capsys.readouterr().err

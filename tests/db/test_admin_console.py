@@ -533,3 +533,14 @@ def test_people_profiles_and_lab_person_check(client: TestClient, database_ready
         json={"subject": "Hello", "body": "Please confirm by Friday.", "person": PAT},
     ).json()
     assert no_profile["person_check"] is None
+
+
+def test_messages_filter_by_property_and_entity(client: TestClient) -> None:
+    acme = client.get("/api/messages?since_days=0&entity=acme", headers=auth()).json()
+    assert acme["results"]
+    assert all(any("acme" in e.lower() for e in r["entities_ai"]) for r in acme["results"])
+    lots = client.get("/api/messages?since_days=0&property=lot", headers=auth()).json()
+    everything = client.get("/api/messages?since_days=0", headers=auth()).json()
+    assert 0 < len(lots["results"]) < len(everything["results"])
+    nothing = client.get("/api/messages?since_days=0&entity=zzz-no-such", headers=auth()).json()
+    assert nothing["results"] == []
