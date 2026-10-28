@@ -269,6 +269,14 @@ def _principal() -> tuple[Settings, Principal]:
     return settings, resolve_principal(settings)
 
 
+def search_check(args: argparse.Namespace) -> None:
+    """Index-first vector search versus the exact scan on the real data (migration 0015)."""
+    with connect(role="ci_search") as conn:
+        result = retrieval.index_check(conn, args.samples)
+    for key, value in result.items():
+        print(f"{key}: {value}")
+
+
 def search(args: argparse.Namespace) -> None:
     settings, principal = _principal()
     with connect(role="ci_search") as conn:

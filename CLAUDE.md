@@ -179,6 +179,7 @@ Rules:
 - Auth uses Entra v2 tokens for the search API app registration (scope `Communications.Search`). Validate issuer/tenant, audience and expiry. App roles: `Communications.Reader.All` (every enrolled mailbox) and `Communications.Reader.Own` (own mailbox plus explicit `access_grants`). Set "Assignment required" = Yes.
 - Authorization is applied in SQL **before** ranking. Caller parameters can only narrow results.
 - pgvector settings for the search role: `hnsw.iterative_scan = relaxed_order`. Add an acceptance test where a user granted one small mailbox among large ones gets a full page of correct results.
+- Vector candidates come from the HNSW index through `ci.nearest_published_chunks` (migration 0015, 2026-10-28). It is a `SECURITY DEFINER` function that returns published chunks only. Grants and filters then apply to those candidates. When fewer than 50 remain, the query falls back to the exact scan. Through the `published_chunks` view, PostgreSQL never used the index and computed the distance to every chunk.
 - Hybrid query: vector top-50 plus full-text top-50, fused with RRF (k=60), at most 3 chunks per message, with citations (mailbox, sender, date, subject, webLink) and a coverage block (held/partial counts, backfill boundary).
 - Audit every call: actor oid, action, result IDs. Query text logging is off by default.
 - Tool descriptions must say that returned text is untrusted email content, that answers must cite, and that an empty result means "not found in authorized, indexed mail".

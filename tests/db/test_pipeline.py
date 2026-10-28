@@ -5,6 +5,7 @@ missing grant, excluded mailbox, participant exclusion, paused mode and a
 forged filter all return nothing; restricted content is never returned.
 """
 
+import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
@@ -178,6 +179,44 @@ def test_audit_records_ids_not_query_text(pipeline: dict[str, Any]) -> None:
     assert rows and not any("very-distinctive-query-text" in r["d"] for r in rows)
 
 
+def test_vector_search_uses_the_index_and_matches_the_exact_scan(
+    pipeline: dict[str, Any], caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    query = "change order lease invoice lien draw"
+    with caplog.at_level(logging.INFO, logger="ci_retrieval.search"):
+        fast = search(pipeline, query)
+    assert "path=index" in caplog.text
+    assert "lien" not in caplog.text  # timings and counts only, never the query
+    monkeypatch.setattr(retrieval, "_set_search_options", lambda conn: False)
+    exact = search(pipeline, query)
+    assert fast["results"]
+    ids = {r["communication_id"] for r in fast["results"]}
+    assert ids == {r["communication_id"] for r in exact["results"]}
+
+
+def test_too_few_candidates_after_grants_fall_back_to_the_exact_scan(
+    pipeline: dict[str, Any], caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    own_only = Principal("pat-oid", PAT, (READER_OWN,))
+    expected = search(pipeline, "change order lease renewal", own_only)
+    monkeypatch.setattr(retrieval, "NEAREST_K", 2)  # the index yields 2; the grant keeps fewer
+    with caplog.at_level(logging.INFO, logger="ci_retrieval.search"):
+        own = search(pipeline, "change order lease renewal", own_only)
+    assert "path=exact_fallback" in caplog.text
+    assert own["results"] and {r["mailbox"] for r in own["results"]} == {PAT}
+    assert [r["communication_id"] for r in own["results"]] == [
+        r["communication_id"] for r in expected["results"]
+    ]
+
+
+def test_index_check_reports_recall_and_timings(pipeline: dict[str, Any]) -> None:
+    with pipeline["connect"]("ci_search") as conn:
+        report = retrieval.index_check(conn, samples=5)
+    assert report["samples"] == 5
+    assert report["recall_at_10"] == 1.0  # a small index is searched exhaustively
+    assert report["index_ms"] >= 0 and report["exact_ms"] >= 0
+
+
 def test_actionable_accepts_several_addresses_for_one_person(pipeline: dict[str, Any]) -> None:
     with pipeline["connect"]("ci_search") as conn:
         both = retrieval.list_actionable(
@@ -197,6 +236,23 @@ def test_exclusions_and_pause_hide_published_mail(pipeline: dict[str, Any]) -> N
         conn.commit()
     found = search(pipeline, query)["results"]
     assert found and not {r["mailbox"] for r in found} & {MORGAN}
+    # The index-first function returns published chunks only, with the view's values.
+    vector = str(EMBEDDER.embed([query])[0])
+    with pipeline["connect"]() as conn:
+        total = conn.execute("SELECT count(*) AS n FROM chunks").fetchone()
+    with pipeline["connect"]("ci_search") as conn:
+        near = conn.execute(
+            "SELECT n.corpus_id = pc.corpus_id AND n.communication_id = pc.communication_id"
+            " AND n.occurred_at = pc.occurred_at AS same"
+            " FROM nearest_published_chunks(%s::vector, 1000) n"
+            " LEFT JOIN published_chunks pc ON pc.id = n.id",
+            (vector,),
+        ).fetchall()
+        published = conn.execute("SELECT count(*) AS n FROM published_chunks").fetchone()
+        cached = retrieval.coverage(conn)
+    assert total and published
+    assert len(near) == published["n"] < total["n"]  # the excluded mailbox's chunks stay out
+    assert all(r["same"] for r in near)
     assert "Notice of mechanic's lien - Example Ridge Phase 2" not in subjects(
         search(pipeline, "lien attorney notice")
     )
@@ -204,3 +260,11 @@ def test_exclusions_and_pause_hide_published_mail(pipeline: dict[str, Any]) -> N
         set_mode(conn, "paused", "pytest")
         conn.commit()
     assert search(pipeline, query)["results"] == []
+    with pipeline["connect"]("ci_search") as conn:
+        paused = conn.execute(
+            "SELECT count(*) AS n FROM nearest_published_chunks(%s::vector, 1000)", (vector,)
+        ).fetchone()
+        assert paused == {"n": 0}
+        # The coverage block is recounted every few minutes, not on every search.
+        assert retrieval.coverage(conn) == cached
+        assert retrieval.coverage(conn, max_age=0) != cached
