@@ -160,7 +160,7 @@ Logs: portal → `func-fs-ci-ing-dev-1026` → **Monitoring → Logs** or **Log 
 ci process --retry-failed --limit 0
 ```
 
-If Cloud Shell can't reach the database (timeout), add its address: `az postgres flexible-server firewall-rule create -g $RG -n psql-fs-ci-dev-1026b --rule-name cloudshell --start-ip-address $(curl -s https://api.ipify.org) --end-ip-address $(curl -s https://api.ipify.org)`.
+If Cloud Shell can't reach the database (timeout), add its address: `az postgres flexible-server firewall-rule create -g $RG --server-name psql-fs-ci-dev-1026b --name cloudshell --start-ip-address $(curl -s https://api.ipify.org) --end-ip-address $(curl -s https://api.ipify.org)`.
 
 ## 8. Test
 

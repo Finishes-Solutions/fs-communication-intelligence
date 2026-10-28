@@ -98,7 +98,7 @@ az postgres flexible-server parameter set -g $RG -s $PG --name azure.extensions 
 ```
 
 ```bash
-az postgres flexible-server firewall-rule create -g $RG -n $PG --rule-name matthew-mac --start-ip-address $MYIP --end-ip-address $MYIP
+az postgres flexible-server firewall-rule create -g $RG --server-name $PG --name matthew-mac --start-ip-address $MYIP --end-ip-address $MYIP
 ```
 
 ```bash
@@ -244,7 +244,7 @@ az ad app delete --id $APP_ID && rm -P ~/.fs-ci/ci-graph.*
 - Remove your IP firewall rule when you're done:
 
 ```bash
-az postgres flexible-server firewall-rule delete -g $RG -n $PG --rule-name matthew-mac --yes
+az postgres flexible-server firewall-rule delete -g $RG --server-name $PG --name matthew-mac --yes
 ```
 
 ## What to measure (CLAUDE.md §11)
