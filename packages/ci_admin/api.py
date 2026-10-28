@@ -40,7 +40,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from ci_admin import lab
+from ci_admin import lab, reports, reviews
 from ci_core import ops
 from ci_core.db import Connection, connect
 from ci_core.operator import (
@@ -59,6 +59,7 @@ from ci_core.settings import Settings
 from ci_processing.classification import LABELS, POLICY_VERSION
 from ci_processing.embedding import Embedder
 from ci_processing.originals import OriginalStore
+from ci_retrieval import reports as report_queries
 from ci_retrieval import search as retrieval
 from ci_retrieval.entra import EntraTokenVerifier
 from ci_retrieval.identity import Principal
@@ -486,6 +487,119 @@ def build_admin_app(
             audit(conn, principal.oid, action, None, None, details, actor_type="user")
             conn.commit()
 
+    # ----- risk analysis, label review and reports ---------------------------
+
+    def _time_zone() -> str:
+        with connector("ci_operator") as conn:
+            return ops.read_schedule(conn).time_zone
+
+    def risks(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        q = request.query_params
+        with connector("ci_search") as conn:
+            return report_queries.risk_overview(
+                conn,
+                principal,
+                days=_int(request, "days", 30, 1, 366),
+                mailbox=(q.get("mailbox") or "").strip().lower() or None,
+                category=q.get("category") or None,
+                tz=_time_zone(),
+            )
+
+    def review_queue(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        q = request.query_params
+        with connector("ci_operator") as conn:
+            done = reviews.reviewed_ids(conn, principal.oid)
+        with connector("ci_search") as conn:
+            return report_queries.review_queue(
+                conn,
+                principal,
+                mode=q.get("mode") or "random",
+                label=q.get("label") or None,
+                exclude=done,
+                since_days=_int(request, "since_days", 0, 0, 3660),
+                limit=_int(request, "limit", 20, 1, 50),
+            )
+
+    def _labels_of(principal: Principal, communication_id: str) -> dict[str, Any]:
+        with connector("ci_search") as conn:
+            found = report_queries.message_labels(conn, principal, communication_id)
+        if found is None:
+            raise HTTPException(404, "not found in mail you are authorized to see")
+        return found
+
+    def review_message(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        found = _labels_of(principal, request.path_params["id"])
+        with connector("ci_operator") as conn:
+            mine = reviews.my_reviews(conn, principal.oid, found["run_id"])
+        return found | {"mine": mine}
+
+    def review_save(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        found = _labels_of(principal, str(body.get("communication_id") or ""))
+        answer = body.get("answer")
+        with connector("ci_operator") as conn:
+            reviews.record(
+                conn,
+                principal.oid,
+                found,
+                str(body.get("label") or ""),
+                answer if answer in ("yes", "no") else None,
+                str(body.get("sample") or "browse"),
+            )
+            conn.commit()
+            return {"mine": reviews.my_reviews(conn, principal.oid, found["run_id"])}
+
+    def review_metrics(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        with connector("ci_operator") as conn:
+            return reviews.metrics(conn, request.query_params.get("sample") or "random")
+
+    def _report(principal: Principal, body: dict[str, Any], limit: int, action: str) -> Any:
+        req = reports.parse(body)
+        tz = _time_zone()
+        data = reports.run(
+            req,
+            principal,
+            search_conn=lambda: connector("ci_search"),
+            operator_conn=lambda: connector("ci_operator"),
+            tz_name=tz,
+            limit=limit,
+            action=action,
+        )
+        return req, tz, data
+
+    def report_preview(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        _, tz, data = _report(principal, body, reports.PREVIEW_ROWS, "report_preview")
+        return data | {"time_zone": tz}
+
+    def report_export(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        fmt = body.get("format")
+        if fmt not in reports.FORMATS:
+            raise OperatorError("format must be csv or xlsx")
+        req, tz, data = _report(principal, body, report_queries.MAX_ROWS, "report_export")
+        header, rows = reports.table(data, tz)
+        name = reports.file_name(req, fmt, datetime.now(UTC).date())
+        content = (
+            reports.to_csv(header, rows)
+            if fmt == "csv"
+            else reports.to_xlsx(header, rows, req.dataset.replace("_", " ").title())
+        )
+        media = (
+            "text/csv; charset=utf-8"
+            if fmt == "csv"
+            else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        return Response(
+            content,
+            media_type=media,
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}",
+                "Content-Security-Policy": "sandbox; default-src 'none'",
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "no-store",
+                "X-Report-Rows": str(len(rows)),
+                "X-Report-Total": str(data["total"]),
+            },
+        )
+
     # ----- public ------------------------------------------------------------
 
     async def config(request: Request) -> Response:
@@ -500,7 +614,10 @@ def build_admin_app(
         )
 
     def labels(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
-        return {"labels": [lb.__dict__ for lb in LABELS], "policy_version": POLICY_VERSION}
+        return {
+            "labels": [lb.__dict__ | {"title": reports.label_title(lb.name)} for lb in LABELS],
+            "policy_version": POLICY_VERSION,
+        }
 
     async def health(request: Request) -> Response:
         return _json({"ok": True})
@@ -524,6 +641,13 @@ def build_admin_app(
         Route("/api/actionable", endpoint(actionable)),
         Route("/api/lab/classify", endpoint(lab_classify), methods=["POST"]),
         Route("/api/lab/reclassify", endpoint(lab_reclassify), methods=["POST"]),
+        Route("/api/risks", endpoint(risks)),
+        Route("/api/reviews/queue", endpoint(review_queue)),
+        Route("/api/reviews/metrics", endpoint(review_metrics)),
+        Route("/api/reviews/messages/{id}", endpoint(review_message)),
+        Route("/api/reviews", endpoint(review_save), methods=["PUT"]),
+        Route("/api/reports/preview", endpoint(report_preview), methods=["POST"]),
+        Route("/api/reports/export", endpoint(report_export), methods=["POST"]),
         Mount("/", StaticFiles(directory=STATIC, html=True)),
     ]
     return Starlette(routes=routes, middleware=[Middleware(SecurityHeaders)])

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import jwt
+import psycopg
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from starlette.testclient import TestClient
@@ -419,3 +420,169 @@ def test_failed_attachments_are_reread_and_messages_republished(
         and r["attachment_chunks"] > 0
         for r in rows
     )
+
+
+# ----- reports, risk analysis and label review --------------------------------
+
+
+def report(client: TestClient, **body: Any) -> Any:
+    return client.post("/api/reports/preview", headers=auth(), json=body)
+
+
+def test_report_rows_carry_no_email_text(client: TestClient) -> None:
+    data = report(client, dataset="messages", columns=["received_at", "subject", "labels"]).json()
+    assert data["total"] >= len(data["rows"]) > 0
+    assert [c["key"] for c in data["columns"]] == ["received_at", "subject", "labels"]
+    for row in data["rows"]:
+        assert not {"text", "body", "excerpts"} & row.keys()
+    # The admin role alone reads no mail: reports use the caller's own grants.
+    blind = client.post(
+        "/api/reports/preview", headers=auth(roles=[ADMIN_ROLE]), json={"dataset": "messages"}
+    ).json()
+    assert blind["total"] == 0 and blind["rows"] == []
+
+
+def test_report_filters_and_groups(client: TestClient) -> None:
+    invoices = report(client, dataset="messages", label="invoice_receipt").json()
+    assert invoices["rows"] and all("invoice_receipt" in r["labels"] for r in invoices["rows"])
+    by_label = report(client, dataset="messages", group_by="label").json()
+    keys = {r["key"] for r in by_label["rows"]}
+    assert "invoice_receipt" in keys and by_label["columns"][0]["title"] == "Label"
+    by_week = report(client, dataset="messages", group_by="week").json()
+    assert (
+        by_week["rows"]
+        and sum(r["messages"] for r in by_week["rows"])
+        == report(client, dataset="messages").json()["total"]
+    )
+    future = report(client, dataset="messages", since="2030-01-01").json()
+    assert future["total"] == 0
+    for bad in (
+        {"dataset": "everything"},
+        {"dataset": "runs", "group_by": "week"},
+        {"dataset": "messages", "group_by": "subject"},
+        {"dataset": "messages", "since": "yesterday"},
+        {"dataset": "messages", "since": "2026-10-28", "until": "2026-10-01"},
+    ):
+        assert report(client, **bad).status_code == 400, bad
+
+
+def test_report_exports_are_files_and_audited(client: TestClient, database_ready: str) -> None:
+    csv_file = client.post(
+        "/api/reports/export",
+        headers=auth(),
+        json={"dataset": "risks", "format": "csv", "label_mode": "names"},
+    )
+    assert csv_file.status_code == 200
+    assert csv_file.headers["content-disposition"].startswith("attachment;")
+    assert csv_file.headers["content-security-policy"] == "sandbox; default-src 'none'"
+    text = csv_file.content.decode("utf-8-sig")
+    assert text.splitlines()[0].startswith("Received,Mailbox,Sender,Subject,Labels")
+    assert "Project Risk" in text and "project_risk" not in text
+    row = latest_audit(database_ready, "report_export")
+    assert row is not None and row["details"]["dataset"] == "risks"
+    assert len(row["details"]["result_ids"]) == int(csv_file.headers["x-report-rows"]) > 0
+    xlsx = client.post(
+        "/api/reports/export",
+        headers=auth(),
+        json={"dataset": "messages", "group_by": "sender_domain", "format": "xlsx"},
+    )
+    assert xlsx.status_code == 200 and xlsx.content.startswith(b"PK")
+    for dataset in ("runs", "mailboxes", "review_metrics"):
+        ops_file = client.post(
+            "/api/reports/export", headers=auth(), json={"dataset": dataset, "format": "csv"}
+        )
+        assert ops_file.status_code == 200, dataset
+    bad = client.post("/api/reports/export", headers=auth(), json={"format": "pdf"})
+    assert bad.status_code == 400
+    assert client.post("/api/reports/export", json={"format": "csv"}).status_code == 401
+
+
+def test_risk_overview(client: TestClient, database_ready: str) -> None:
+    data = client.get("/api/risks?days=366", headers=auth()).json()
+    assert data["total"] == len(data["items"]) > 0
+    assert all("project_risk" in i["labels"] for i in data["items"])
+    assert sum(s["risks"] for s in data["series"]) == data["total"]
+    assert all(c["label"].startswith("cat_") for c in data["by_category"])
+    row = latest_audit(database_ready, "risk_overview")
+    assert row is not None and len(row["details"]["result_ids"]) == data["total"]
+    blind = client.get("/api/risks?days=366", headers=auth(roles=[ADMIN_ROLE])).json()
+    assert blind["total"] == 0 and blind["items"] == []
+
+
+def test_label_review_flow(client: TestClient, database_ready: str) -> None:
+    queue = client.get("/api/reviews/queue?mode=random&limit=50", headers=auth()).json()
+    assert queue["items"]
+    target = queue["items"][0]["communication_id"]
+    labels = client.get(f"/api/reviews/messages/{target}", headers=auth()).json()
+    assert labels["mine"] == {} and "invoice_receipt" in labels["labels"]
+    ai = labels["labels"]["invoice_receipt"]["decision"]
+    saved = client.put(
+        "/api/reviews",
+        headers=auth(),
+        # ai_decision in the request is ignored: the stored output is copied.
+        json={
+            "communication_id": target,
+            "label": "invoice_receipt",
+            "answer": "yes",
+            "sample": "random",
+            "ai_decision": "no" if ai == "yes" else "yes",
+        },
+    ).json()
+    assert saved["mine"] == {"invoice_receipt": "yes"}
+    with connect(dbname=database_ready) as conn:
+        stored = conn.execute(
+            "SELECT ai_decision, sample, reviewer_id FROM label_reviews"
+            " WHERE communication_id = %s",
+            (target,),
+        ).fetchall()
+    assert [(r["ai_decision"], r["sample"], r["reviewer_id"]) for r in stored] == [
+        (ai, "random", "matthew-oid")
+    ]
+    # Reviewed messages leave this reviewer's queue.
+    again = client.get("/api/reviews/queue?mode=random&limit=50", headers=auth()).json()
+    assert target not in {i["communication_id"] for i in again["items"]}
+    metrics = client.get("/api/reviews/metrics?sample=random", headers=auth()).json()
+    invoice = next(m for m in metrics["labels"] if m["label"] == "invoice_receipt")
+    assert invoice["reviewed"] == 1 and invoice["enough"] is False
+    assert latest_audit(database_ready, "label_review") is not None
+    # Clearing an answer removes it.
+    cleared = client.put(
+        "/api/reviews",
+        headers=auth(),
+        json={"communication_id": target, "label": "invoice_receipt", "answer": None},
+    ).json()
+    assert cleared["mine"] == {}
+    # No review of, or label output for, mail the caller cannot read.
+    blind = auth(roles=[ADMIN_ROLE])
+    assert client.get(f"/api/reviews/messages/{target}", headers=blind).status_code == 404
+    refused = client.put(
+        "/api/reviews",
+        headers=blind,
+        json={"communication_id": target, "label": "invoice_receipt", "answer": "yes"},
+    )
+    assert refused.status_code == 404
+    unknown = client.put(
+        "/api/reviews",
+        headers=auth(),
+        json={"communication_id": target, "label": "made_up", "answer": "yes"},
+    )
+    assert unknown.status_code == 400
+    assert client.get("/api/reviews/queue?mode=label", headers=auth()).status_code == 400
+    labelled = client.get("/api/reviews/queue?mode=label&label=project_risk", headers=auth()).json()
+    assert labelled["items"]
+    assert all("project_risk" in i["labels"] + i["uncertain_labels"] for i in labelled["items"])
+
+
+def test_labels_have_titles(client: TestClient) -> None:
+    labels = client.get("/api/labels", headers=auth()).json()["labels"]
+    titles = {lb["name"]: lb["title"] for lb in labels}
+    assert titles["cat_payment_billing"] == "Payment"
+    assert all(titles.values())
+
+
+def test_search_role_cannot_write_reviews(database_ready: str) -> None:
+    with (
+        connect(dbname=database_ready, role="ci_search") as conn,
+        pytest.raises(psycopg.errors.InsufficientPrivilege),
+    ):
+        conn.execute("DELETE FROM label_reviews")

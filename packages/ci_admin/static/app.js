@@ -65,6 +65,13 @@ const ICONS = {
   clip: ["m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"],
   text: ["M17 6H3", "M21 12H3", "M15 18H3"],
   plus: ["M12 5v14", "M5 12h14"],
+  chart: ["M3 3v18h18", "M7 16v-5", "M12 16V8", "M17 16v-9"],
+  report: ["M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z", "M14 2v6h6", "M8 13h8", "M8 17h8", "M8 9h2"],
+  review: ["M18 6 7 17l-5-5", "m22 10-7.5 7.5L13 16"],
+  save: ["M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z", "M17 21v-8H7v8", "M7 3v5h8"],
+  x: ["M18 6 6 18", "m6 6 12 12"],
+  up: ["m18 15-6-6-6 6"],
+  down: ["m6 9 6 6 6-6"],
 };
 function icon(name) {
   const ns = "http://www.w3.org/2000/svg";
@@ -128,15 +135,8 @@ const stateBadge = (kind, value) => badge(nice(value), TONES[kind][value] ?? "",
 // Classifier labels: a friendly name or the stored key, switchable from the sidebar.
 // Elements carry data-label so a switch repaints them in place, with no reload
 // (reloading the lab could re-run a stored email through Azure OpenAI).
-const LABEL_NAMES = {
-  spam: "Spam", phishing: "Phishing", pii: "Personal Info", sensitive_pii: "Sensitive Personal Info",
-  potential_phi: "Health Info", credentials: "Credentials", confidential_business: "Confidential",
-  project_related: "Project", invoice_receipt: "Invoice", approval_required: "Needs Approval",
-  action_required: "Needs Action", urgent: "Urgent", newsletter: "Newsletter", project_risk: "Project Risk",
-  cat_development_construction: "Construction", cat_payment_billing: "Payment", cat_leasing_operations: "Leasing",
-  cat_compliance_legal: "Legal & Compliance", cat_capital_finance: "Finance", cat_vendor_performance: "Vendor Issues",
-  cat_general_governance: "Governance",
-};
+// Friendly names come from /api/labels (one list, kept in ci_admin.reports).
+let LABEL_NAMES = {};
 const prefs = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode */ } },
@@ -197,7 +197,7 @@ function pageHead(title, sub, ...actions) {
 function stat(label, iconName, value, sub) {
   return h("div", { class: "card stat" },
     h("div", { class: "stat-label" }, icon(iconName), label),
-    h("div", { class: "stat-value" }, value),
+    h("div", { class: "stat-value" + (String(value).length > 14 ? " long" : "") }, value),
     sub ? h("div", { class: "stat-sub" }, sub) : null);
 }
 // Horizontal bar list for counts: rows of [name node, count, tone].
@@ -580,9 +580,10 @@ function messageView(id, m) {
       h("h2", {}, m.subject || "(no subject)"),
       h("div", { class: "reader-meta" },
         h("span", { class: "avatar" }, initials(sender)),
-        h("div", { style: "min-width:0;flex:1" }, h("div", { class: "who-name" }, sender),
+        h("div", { style: "min-width:200px;flex:1" }, h("div", { class: "who-name" }, sender),
           h("div", { class: "muted small" }, `To ${m.mailbox} · ${when(m.received_at)}`)),
         h("div", { class: "actions" }, safeLink(m.web_link, "Open in Outlook"),
+          h("button", { class: "btn sm", onclick: () => { location.hash = `#review?id=${encodeURIComponent(id)}`; } }, icon("review"), "Review Labels"),
           h("button", { class: "btn sm", onclick: () => { location.hash = `#lab?id=${encodeURIComponent(id)}`; } }, icon("lab"), "Re-Run in Lab")))),
     aiBlock(m) ? h("div", { class: "reader-section" }, aiBlock(m)) : null,
     hasLabels ? h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "Labels"),
@@ -957,6 +958,436 @@ function labResult(r, person, message) {
     message ? card({ title: "Files" }, filesBlock(message.communication_id, message)) : null);
 }
 
+// ---------- shared: downloads, dates, small charts ----------------------------
+
+const hashParams = () => new URLSearchParams(location.hash.split("?")[1] || "");
+const localDate = daysAgo => new Date(Date.now() - daysAgo * 864e5).toLocaleDateString("en-CA");
+const pct = x => x === null || x === undefined ? "—" : `${Math.round(x * 100)}%`;
+
+// POSTs with the bearer token and saves the response as a file (exports are never opened as pages).
+async function downloadPost(path, body) {
+  const t = token();
+  if (!t) { await signIn(); throw new Error("signing in"); }
+  const res = await fetch(path, {
+    method: "POST", headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+  const match = /filename\*=UTF-8''([^;]+)/.exec(res.headers.get("content-disposition") || "");
+  const name = match ? decodeURIComponent(match[1]) : "report";
+  const link = URL.createObjectURL(new Blob([await res.blob()], { type: "application/octet-stream" }));
+  const a = h("a", { href: link, download: name });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(link), 10000);
+  return { name, rows: Number(res.headers.get("x-report-rows") || 0), total: Number(res.headers.get("x-report-total") || 0) };
+}
+async function exportReport(body, format) {
+  const r = await downloadPost("/api/reports/export", { ...body, format, label_mode: LABEL_MODE });
+  toast(r.total > r.rows ? `Exported ${num(r.rows)} of ${num(r.total)} rows (the export limit). Narrow the filters for the rest.`
+    : `Exported ${num(r.rows)} rows to ${r.name}.`);
+}
+function exportButtons(body) {
+  return [h("button", { class: "btn", onclick: guard(() => exportReport(typeof body === "function" ? body() : body, "csv")) }, icon("download"), "Export CSV"),
+    h("button", { class: "btn", onclick: guard(() => exportReport(typeof body === "function" ? body() : body, "xlsx")) }, icon("download"), "Export Excel")];
+}
+
+// Vertical bars for a time series: [label, value].
+function columnChart(points, empty) {
+  if (!points.length) return empty || emptyState("Nothing in This Period", null, "chart");
+  const max = Math.max(1, ...points.map(p => p[1]));
+  return h("div", { class: "vbars" }, points.map(([label, n]) => h("div", { class: "vbar", title: `${label}: ${num(n)}` },
+    h("div", { class: "vbar-num" }, n ? num(n) : ""),
+    h("div", { class: "vbar-track" }, h("span", { style: `height:${n ? Math.max(3, (n / max) * 100) : 0}%` })),
+    h("div", { class: "vbar-label" }, label))));
+}
+function periodLabel(iso) {
+  return new Date(iso + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+// ---------- risk analysis ------------------------------------------------------
+
+async function risksPage() {
+  const p = hashParams();
+  const days = p.get("days") || "30";
+  const mailbox = p.get("mailbox") || "";
+  const category = p.get("category") || "";
+  const go = changes => {
+    const q = new URLSearchParams({ days, mailbox, category, ...changes });
+    for (const [k, v] of [...q]) if (!v) q.delete(k);
+    location.hash = "#risks?" + q;
+  };
+  const seg = h("div", { class: "seg" }, [["7", "7 Days"], ["30", "30 Days"], ["90", "90 Days"], ["365", "1 Year"]].map(([v, t]) =>
+    h("button", { class: v === days ? "on" : "", onclick: () => go({ days: v }) }, t)));
+  const mb = h("input", { placeholder: "All mailboxes", value: mailbox, style: "width:220px" });
+  const [d, m] = await Promise.all([
+    api("/api/risks?" + new URLSearchParams({ days, mailbox, category })),
+    api("/api/reviews/metrics?sample=random").catch(() => null),
+  ]);
+  const quality = m && m.labels.find(x => x.label === "project_risk");
+  const change = d.previous_total ? Math.round(((d.total - d.previous_total) / d.previous_total) * 100) : null;
+  const unit = Number(days) <= 14 ? "day" : "week";
+  const signals = d.co_signals || {};
+  const detail = h("div", { class: "card reader" }, h("div", { class: "placeholder" },
+    h("div", { class: "empty" }, h("div", { class: "i-wrap" }, icon("alert")), h("div", { class: "empty-title" }, "Select a Risk"),
+      h("div", { class: "small" }, "The full message opens here."))));
+  const exportBody = () => ({ dataset: "risks", since: localDate(Number(days)), mailbox: mailbox || null, label: category || null,
+    columns: ["received_at", "mailbox", "sender", "sender_domain", "subject", "risk_ai", "labels", "action_ai", "due_ai", "web_link"] });
+  const clickable = (rows, key, label) => rows.map(r => [h("button", { class: "linkish", onclick: () => go({ [key]: r[label] }) },
+    key === "category" ? labelEl(r[label]) : r[label]), r.risks, "warn"]);
+  const feed = d.items.length ? h("div", { class: "items" }, d.items.map(r => {
+    const el = h("button", { class: "item", type: "button" },
+      h("span", { class: "item-icon warn" }, icon("alert")),
+      h("div", { style: "min-width:0" },
+        h("div", { class: "item-title" }, r.subject || "(no subject)"),
+        h("div", { class: "item-sub" }, `${r.sender || "?"} → ${r.mailbox}`),
+        h("div", { class: "item-text" }, r.risk_ai || "No risk description."),
+        h("div", { class: "badges", style: "margin-top:8px" }, labelBadges(r.labels.filter(l => l.startsWith("cat_") || ["urgent", "approval_required"].includes(l))))),
+      h("div", { class: "msg-time" }, short(r.received_at)));
+    el.addEventListener("click", () => {
+      main().querySelectorAll(".item.on").forEach(x => x.classList.remove("on"));
+      el.classList.add("on"); showMessage(r.communication_id, detail);
+    });
+    return el;
+  })) : emptyState("No Project Risks", "Nothing labelled as a project risk in this period.", "shield");
+
+  show(
+    pageHead("Risk Analysis", "Emails the classifier marked as a risk to a project or property: schedule, cost, disputes, liens, inspections, safety, quality, financing or non-performance.",
+      seg, ...exportButtons(exportBody)),
+    card({}, h("form", { class: "toolbar", onsubmit: e => { e.preventDefault(); go({ mailbox: mb.value.trim() }); } },
+      searchBox(mb), h("button", { class: "btn", type: "submit" }, "Filter"),
+      category ? h("span", { class: "badge warn" }, "Category: ", labelEl(category),
+        h("button", { class: "chip-x", "aria-label": "Clear category", onclick: () => go({ category: "" }) }, icon("x"))) : null,
+      mailbox ? h("button", { class: "btn sm ghost", type: "button", onclick: () => go({ mailbox: "" }) }, "Clear Mailbox") : null)),
+    h("div", { class: "grid" },
+      stat("Project Risks", "alert", num(d.total), `Last ${days} days`),
+      stat("Change", change === null ? "chart" : change >= 0 ? "up" : "down",
+        change === null ? (d.total ? "New" : "—") : `${change > 0 ? "+" : ""}${change}%`, `${num(d.previous_total)} in the ${days} days before`),
+      stat("Also Urgent", "zap", num(signals.urgent || 0), "Due today or next business day"),
+      stat("Need Approval", "check", num(signals.approval_required || 0), `${num(signals.action_required || 0)} need another action`),
+      stat("Top Company", "users", d.by_company[0] ? d.by_company[0].domain : "—", d.by_company[0] ? `${num(d.by_company[0].risks)} risk${d.by_company[0].risks === 1 ? "" : "s"}` : "No risks")),
+    card({ title: unit === "day" ? "Risks per Day" : "Risks per Week", sub: "Counted once per message, even when several mailboxes hold a copy." },
+      columnChart(d.series.map(s => [periodLabel(s.period), s.risks]))),
+    h("div", { class: "cols" },
+      card({ title: "By Category", sub: "Click one to filter. A risk can be in several categories." },
+        bars(clickable(d.by_category, "category", "label"), emptyState("No Categories", null, "layers"))),
+      card({ title: "By Company", sub: "Sender's email domain, top 10." },
+        bars(d.by_company.map(r => [r.domain, r.risks, "warn"]), emptyState("No Senders", null, "users")))),
+    h("div", { class: "cols" },
+      card({ title: "By Mailbox", sub: "Click one to filter." }, bars(clickable(d.by_mailbox, "mailbox", "mailbox"), emptyState("No Mailboxes", null, "inbox"))),
+      card({ title: "How Good Is the Risk Label?", sub: "From your random-sample label reviews." },
+        quality && quality.precision_n ? h("div", {},
+          h("div", { class: "quality" },
+            h("div", {}, h("div", { class: "stat-value" }, pct(quality.precision)), h("div", { class: "muted small" }, `Precision · ${quality.precision_n} AI-yes reviewed`)),
+            h("div", {}, h("div", { class: "stat-value" }, pct(quality.recall)), h("div", { class: "muted small" }, `Recall · ${quality.recall_n} true risks reviewed`))),
+          quality.enough ? null : note(`Fewer than ${m.min_sample} reviews on each side, so these numbers can swing a lot.`, "warn"))
+          : h("div", {}, h("p", { class: "muted", style: "margin:0 0 12px" }, "Not measured yet. Until you review a random sample, treat these counts as the classifier's guess."),
+            h("a", { class: "btn sm", href: "#review" }, icon("review"), "Start Label Review")))),
+    h("div", { class: "inbox", style: "margin-top:20px" },
+      card({ title: "Risk Feed", actions: badge(num(d.items.length), "warn"), flush: true }, feed), detail),
+    note("Built from the yes/no Project Risk label and the AI's one-line description. There is no project name, risk type or severity yet, so nothing is grouped by those. AI proposals, not decisions."));
+}
+
+// ---------- reports --------------------------------------------------------------
+
+const REPORT_DATASETS = [["messages", "Messages"], ["actions", "Action Items"], ["risks", "Project Risks"],
+  ["runs", "Run History"], ["mailboxes", "Mailboxes"], ["review_metrics", "Label Review Results"]];
+const MAIL_SETS = ["messages", "actions", "risks"];
+const GROUP_OPTIONS = [["", "No Grouping (One Row per Message)"], ["mailbox", "Mailbox"], ["sender", "Sender"],
+  ["sender_domain", "Sender Company (Domain)"], ["label", "Label"], ["day", "Day"], ["week", "Week"], ["month", "Month"]];
+const RANGES = [["7", "Last 7 days"], ["30", "Last 30 days"], ["90", "Last 90 days"], ["365", "Last 12 months"], ["all", "All time"], ["custom", "Custom dates"]];
+const TEMPLATES = [
+  ["Project Risks, Last 30 Days", { dataset: "risks", range: "30" }],
+  ["Action Items by Mailbox", { dataset: "actions", group_by: "mailbox", range: "30", person: "" }],
+  ["Mail Volume by Week", { dataset: "messages", group_by: "week", range: "90" }],
+  ["Top Sender Companies", { dataset: "messages", group_by: "sender_domain", range: "30" }],
+  ["Labels This Month", { dataset: "messages", group_by: "label", range: "30" }],
+  ["Label Review Results", { dataset: "review_metrics" }],
+];
+const savedReports = {
+  list() { try { return JSON.parse(prefs.get("saved_reports") || "[]"); } catch { return []; } },
+  put(list) { prefs.set("saved_reports", JSON.stringify(list)); },
+};
+
+function reportBody(spec) {
+  const custom = spec.range === "custom";
+  return {
+    dataset: spec.dataset, group_by: MAIL_SETS.includes(spec.dataset) ? spec.group_by || null : null,
+    since: custom ? spec.since || null : spec.range && spec.range !== "all" ? localDate(Number(spec.range)) : null,
+    until: custom ? spec.until || null : null,
+    mailbox: spec.mailbox || null, sender: spec.sender || null, label: spec.label || null,
+    person: spec.dataset === "actions" ? spec.person || null : null,
+    columns: spec.columns || null, review_sample: spec.review_sample || "random", label_mode: LABEL_MODE,
+  };
+}
+
+function cellView(col, value, groupBy) {
+  if (value === null || value === undefined || value === "") return h("span", { class: "muted" }, "—");
+  if (col.kind === "labels" || (col.key === "key" && groupBy === "label")) {
+    const list = Array.isArray(value) ? value : [value];
+    return h("div", { class: "badges" }, list.map(x => badge(labelEl(x))));
+  }
+  if (col.key === "key" && ["day", "week", "month"].includes(groupBy)) {
+    return new Date(value + "T12:00:00").toLocaleDateString(undefined, groupBy === "month" ? { month: "long", year: "numeric" } : { month: "short", day: "numeric", year: "numeric" });
+  }
+  if (col.kind === "datetime") return h("span", { class: "nowrap" }, short(value));
+  if (col.kind === "bool") return value ? badge("Yes", "good") : h("span", { class: "muted" }, "No");
+  if (col.kind === "rate") return pct(value);
+  if (col.kind === "number") return num(value);
+  if (col.key === "web_link") return safeLink(value, "Open");
+  if (col.key === "counts") return h("div", { class: "badges" }, countBadges(value));
+  if (Array.isArray(value)) return value.join(", ");
+  return String(value);
+}
+
+async function reportsPage() {
+  const spec = { dataset: "risks", range: "30", group_by: "", columns: null };
+  const preview = h("div", {});
+  const savedBox = h("div", { class: "saved" });
+  const f = {
+    dataset: h("select", {}, REPORT_DATASETS.map(([v, t]) => h("option", { value: v }, t))),
+    group_by: h("select", {}, GROUP_OPTIONS.map(([v, t]) => h("option", { value: v }, t))),
+    range: h("select", {}, RANGES.map(([v, t]) => h("option", { value: v }, t))),
+    since: h("input", { type: "date" }), until: h("input", { type: "date" }),
+    mailbox: h("input", { placeholder: "Any mailbox" }), sender: h("input", { placeholder: "Any sender" }),
+    label: h("select", {}, h("option", { value: "" }, "Any label"), LABELS.map(l => { const o = labelEl(l.name, "option"); o.value = l.name; return o; })),
+    person: h("input", { placeholder: "Everyone (or name@company.com)" }),
+    review_sample: h("select", {}, h("option", { value: "random" }, "Random-sample reviews only"), h("option", { value: "all" }, "All reviews")),
+  };
+  const rows = {
+    group_by: field("Group By", f.group_by), dates: h("div", { class: "grid2" }, field("From", f.since), field("To", f.until)),
+    mailbox: field("Mailbox", f.mailbox), sender: field("Sender", f.sender), label: field("Label", f.label),
+    person: field("Whose Action Items", f.person), review_sample: field("Reviews", f.review_sample), range: field("Date Range", f.range),
+  };
+  const columnsBox = h("div", { class: "column-picks" });
+
+  function load(next) {
+    Object.assign(spec, { group_by: "", range: "30", since: "", until: "", mailbox: "", sender: "", label: "", person: "", review_sample: "random", columns: null }, next);
+    for (const k of Object.keys(f)) f[k].value = spec[k] ?? "";
+    sync();
+    run();
+  }
+  function sync() {
+    const mail = MAIL_SETS.includes(spec.dataset);
+    rows.group_by.hidden = !mail; rows.mailbox.hidden = !(mail || spec.dataset === "mailboxes");
+    rows.sender.hidden = rows.label.hidden = !mail; rows.person.hidden = spec.dataset !== "actions";
+    rows.review_sample.hidden = spec.dataset !== "review_metrics";
+    rows.range.hidden = !(mail || spec.dataset === "runs"); rows.dates.hidden = rows.range.hidden || spec.range !== "custom";
+  }
+  for (const [k, el] of Object.entries(f)) {
+    el.addEventListener("change", () => {
+      spec[k] = el.value;
+      if (k === "dataset" || k === "group_by") spec.columns = null; // the column set changes
+      sync();
+      if (k !== "range" || el.value !== "custom") run();
+    });
+  }
+  async function run() {
+    preview.replaceChildren(card({}, h("div", { class: "empty" }, h("div", { class: "spinner" }), "Building the report…")));
+    try {
+      const d = await post("/api/reports/preview", reportBody(spec));
+      const chosen = new Set(d.columns.map(c => c.key));
+      columnsBox.replaceChildren(...d.available.map(c => {
+        const box = h("input", { type: "checkbox", checked: chosen.has(c.key) });
+        box.addEventListener("change", () => {
+          const keys = d.available.map(x => x.key).filter(k => k === c.key ? box.checked : chosen.has(k));
+          if (!keys.length) { box.checked = true; return; }
+          spec.columns = keys; run();
+        });
+        return h("label", { class: "check" }, box, c.title);
+      }));
+      const title = (REPORT_DATASETS.find(x => x[0] === spec.dataset) || [])[1] + (d.group_by ? ` by ${GROUP_OPTIONS.find(g => g[0] === d.group_by)[1]}` : "");
+      preview.replaceChildren(card({ title, flush: true,
+        sub: d.truncated ? `Showing the first ${num(d.rows.length)} of ${num(d.total)} rows. Exports include up to 5,000.` : `${num(d.total)} row${d.total === 1 ? "" : "s"}`,
+        actions: exportButtons(() => reportBody(spec)) },
+      h("div", { class: "report-table" }, table(d.columns.map(c => [c.title, r => cellView(c, r[c.key], d.group_by),
+        c.kind === "number" || c.kind === "rate" ? "num" : c.key === "subject" || c.key.endsWith("_ai") ? "wide-col"
+          : ["mailbox", "sender", "address", "sender_domain", "key"].includes(c.key) ? "email-col" : null]), d.rows, null,
+      emptyState("No Rows", "Nothing matches these filters.", "report")))));
+    } catch (e) {
+      if (e.message !== "signing in") preview.replaceChildren(card({}, h("p", { class: "status-failed", style: "margin:0" }, e.message)));
+    }
+  }
+  function drawSaved() {
+    const list = savedReports.list();
+    savedBox.replaceChildren(list.length ? h("div", { class: "badges" }, list.map((x, i) => h("span", { class: "saved-item" },
+      h("button", { class: "sample", type: "button", onclick: () => load(x.spec) }, x.name),
+      h("button", { class: "chip-x", type: "button", "aria-label": `Delete ${x.name}`, onclick: () => {
+        const all = savedReports.list(); all.splice(i, 1); savedReports.put(all); drawSaved(); } }, icon("x")))))
+      : h("div", { class: "muted small" }, "Nothing saved yet. Set up a report and press Save Report."));
+  }
+  const save = guard(async () => {
+    const name = await ask({ title: "Save This Report", confirm: "Save", input: { label: "Name", placeholder: "Weekly risks for leadership" },
+      text: "Saved in this browser. Date ranges like “last 30 days” stay relative, so the report is current every time you open it." });
+    if (!name) return;
+    const keep = { ...spec };
+    savedReports.put([...savedReports.list().filter(x => x.name !== name), { name, spec: keep }]);
+    drawSaved(); toast(`Saved “${name}”.`);
+  });
+  show(
+    pageHead("Reports", "Build a report from any dataset, group it the way you want, and export it to CSV or Excel."),
+    card({ title: "Start From a Template" }, h("div", { class: "samples" }, TEMPLATES.map(([name, t]) =>
+      h("button", { class: "sample", type: "button", onclick: () => load(t) }, name)))),
+    h("div", { class: "lab builder", style: "margin-top:20px" },
+      h("div", { class: "card lab-in" }, h("div", { class: "card-body" },
+        field("Dataset", f.dataset), rows.group_by, rows.range, rows.dates, rows.mailbox, rows.sender, rows.label, rows.person, rows.review_sample,
+        h("div", {}, h("div", { class: "section-title" }, "Columns"), columnsBox),
+        h("div", { class: "actions" }, h("button", { class: "btn primary", onclick: run }, icon("refresh"), "Refresh"),
+          h("button", { class: "btn", onclick: save }, icon("save"), "Save Report")),
+        h("div", { style: "border-top:1px solid var(--line);padding-top:14px" }, h("div", { class: "section-title" }, "Saved Reports"), savedBox))),
+      h("div", {}, preview,
+        note("Reports hold metadata and AI proposals only: subject, sender, mailbox, date, labels, summary, action and risk. Email bodies and attachment text are never exported. Every preview and export is recorded in the audit log, with the messages it included."))));
+  drawSaved();
+  load({ dataset: "risks", range: "30" });
+}
+
+// ---------- label review -----------------------------------------------------------
+
+async function reviewPage() {
+  const p = hashParams();
+  const tab = p.get("tab") || "review";
+  const tabs = h("div", { class: "seg" }, [["review", "Review"], ["results", "Results"]].map(([v, t]) =>
+    h("button", { class: v === tab ? "on" : "", onclick: () => { location.hash = v === "review" ? "#review" : "#review?tab=results"; } }, t)));
+  if (tab === "results") return reviewResults(tabs, p.get("sample") || "random");
+
+  const browseId = p.get("id");
+  const mode = browseId ? "browse" : p.get("mode") || "random";
+  const label = p.get("label") || "";
+  const go = changes => { location.hash = "#review?" + new URLSearchParams({ mode, label, ...changes }); };
+  const modeSeg = h("div", { class: "seg" }, [["random", "Random Sample"], ["uncertain", "Uncertain First"], ["label", "One Label"]].map(([v, t]) =>
+    h("button", { class: v === mode ? "on" : "", onclick: () => go({ mode: v }) }, t)));
+  const labelPick = h("select", { onchange: e => go({ mode: "label", label: e.target.value }) },
+    h("option", { value: "" }, "Pick a label…"), LABELS.map(l => { const o = labelEl(l.name, "option"); o.value = l.name; o.selected = l.name === label; return o; }));
+  const help = {
+    random: "Random messages. Only these give honest precision and recall, so start here.",
+    uncertain: "Messages with a label the AI was unsure about. Good for tuning thresholds; skews the numbers toward hard cases.",
+    label: "Messages the AI marked yes or unsure for one label. Good for checking one label; skews its numbers.",
+    browse: "One message you opened. Counted in “all reviews” results, not in the random sample.",
+  }[mode];
+  const reader = h("div", { class: "card reader" });
+  const panel = h("div", { class: "card review-panel" });
+  show(pageHead("Label Review", "Say whether each label is right. Your answers measure how good the classifier is, label by label.", tabs),
+    card({}, h("div", { class: "toolbar" }, browseId ? badge("Single Message", "info") : modeSeg,
+      mode === "label" ? labelPick : null,
+      browseId ? h("a", { class: "btn sm", href: "#review" }, "Back to Random Sample") : null),
+    h("div", { class: "muted small", style: "margin-top:8px" }, help)),
+    h("div", { class: "review" }, reader, panel));
+  if (mode === "label" && !label) {
+    reader.replaceChildren(h("div", { class: "placeholder" }, h("div", { class: "empty" }, h("div", { class: "i-wrap" }, icon("review")),
+      h("div", { class: "empty-title" }, "Pick a Label"), h("div", { class: "small" }, "Then review messages the AI marked for it."))));
+    panel.hidden = true;
+    return;
+  }
+  let queue = [];
+  let position = 0;
+  let reviewed = 0;
+  async function refill() {
+    if (browseId) { queue = position ? [] : [{ communication_id: browseId }]; return; }
+    const q = new URLSearchParams({ mode, limit: "20" });
+    if (label) q.set("label", label);
+    queue = (await api("/api/reviews/queue?" + q)).items;
+    position = 0;
+  }
+  async function next() {
+    if (position >= queue.length) await refill();
+    const item = queue[position];
+    if (!item) {
+      reader.replaceChildren(h("div", { class: "placeholder" }, h("div", { class: "empty" }, h("div", { class: "i-wrap" }, icon("ok")),
+        h("div", { class: "empty-title" }, browseId ? "Done" : "Nothing Left in This Sample"),
+        h("div", { class: "small" }, `You reviewed ${reviewed} message${reviewed === 1 ? "" : "s"} this session.`),
+        h("a", { class: "btn sm", style: "margin-top:12px", href: "#review?tab=results" }, "See Results"))));
+      panel.hidden = true;
+      return;
+    }
+    position += 1;
+    panel.hidden = false;
+    reader.replaceChildren(h("div", { class: "placeholder" }, h("div", {}, h("div", { class: "spinner" }), "Loading…")));
+    const [m, l] = await Promise.all([api(`/api/messages/${encodeURIComponent(item.communication_id)}`),
+      api(`/api/reviews/messages/${encodeURIComponent(item.communication_id)}`)]);
+    reader.replaceChildren(messageView(item.communication_id, m));
+    drawPanel(item.communication_id, l);
+  }
+  function drawPanel(id, l) {
+    const mine = { ...l.mine };
+    const progress = h("span", { class: "muted small" });
+    const answered = () => LABELS.filter(x => mine[x.name]).length;
+    const paintProgress = () => { progress.textContent = `${answered()} of ${LABELS.length} answered`; };
+    async function answer(name, value, rowEl) {
+      const v = mine[name] === value ? null : value;
+      const r = await post("/api/reviews", { communication_id: id, label: name, answer: v, sample: mode }, "PUT");
+      Object.keys(mine).forEach(k => delete mine[k]); Object.assign(mine, r.mine);
+      paintRow(rowEl, name); paintProgress();
+    }
+    function paintRow(rowEl, name) {
+      rowEl.querySelectorAll("button[data-v]").forEach(b => b.classList.toggle("on", mine[name] === b.dataset.v));
+      rowEl.classList.toggle("answered", !!mine[name]);
+    }
+    const groups = GROUPS.map(([gname, members]) => {
+      const list = LABELS.filter(x => members ? members.includes(x.name) : x.name.startsWith("cat_"));
+      return h("div", { class: "lgroup" }, h("div", { class: "lgroup-title" }, gname), list.map(x => {
+        const ai = l.labels[x.name] || { decision: "unresolved", probability: null };
+        const rowEl = h("div", { class: "rv-row" },
+          h("div", { class: "rv-name" }, h("div", { style: "font-weight:500" }, labelEl(x.name)), h("div", { class: "muted small" }, x.question)),
+          h("div", { class: "rv-ai", title: "What the AI said" }, badge(`AI ${nice(ai.decision).toLowerCase()}`, { yes: "good", review: "warn", unresolved: "bad" }[ai.decision] || ""),
+            h("span", { class: "muted small" }, ai.probability === null ? "" : ai.probability.toFixed(2))),
+          h("div", { class: "answer" },
+            h("button", { type: "button", "data-v": "yes", class: "yes", onclick: guard(() => answer(x.name, "yes", rowEl)) }, "Yes"),
+            h("button", { type: "button", "data-v": "no", class: "no", onclick: guard(() => answer(x.name, "no", rowEl)) }, "No")));
+        paintRow(rowEl, x.name);
+        return rowEl;
+      }));
+    });
+    const restNo = guard(async () => {
+      const open = LABELS.filter(x => !mine[x.name] && l.labels[x.name]);
+      for (const x of open) {
+        const r = await post("/api/reviews", { communication_id: id, label: x.name, answer: "no", sample: mode }, "PUT");
+        Object.assign(mine, r.mine);
+      }
+      drawPanel(id, { ...l, mine });
+    });
+    panel.replaceChildren(
+      h("div", { class: "card-head" }, h("div", {}, h("h2", {}, "Does Each Label Apply?"), h("div", { class: "sub" }, "Judge from the email, not from the AI's answer.")), progress),
+      h("div", { class: "card-body" }, groups),
+      h("div", { class: "card-foot review-foot" },
+        h("button", { class: "btn", onclick: restNo }, "Mark Unanswered as No"),
+        h("button", { class: "btn primary", onclick: guard(async () => {
+          if (answered()) reviewed += 1;
+          await next();
+        }) }, browseId ? "Done" : "Next Message")));
+    paintProgress();
+  }
+  await next();
+}
+
+async function reviewResults(tabs, sample) {
+  const d = await api(`/api/reviews/metrics?sample=${sample}`);
+  const byLabel = Object.fromEntries(d.labels.map(x => [x.label, x]));
+  const sampleSeg = h("div", { class: "seg" }, [["random", "Random Sample"], ["all", "All Reviews"]].map(([v, t]) =>
+    h("button", { class: v === sample ? "on" : "", onclick: () => { location.hash = `#review?tab=results&sample=${v}`; } }, t)));
+  const rate = (value, n) => value === null ? h("span", { class: "muted" }, "—") : h("div", { class: "rate" },
+    h("div", { class: "rate-top" }, h("span", { class: "strong" }, pct(value)), h("span", { class: "muted small" }, `of ${n}`)),
+    // Colored only once there are enough reviews to mean something.
+    h("div", { class: "bar " + (n < d.min_sample ? "" : value >= 0.9 ? "good" : value >= 0.7 ? "warn" : "bad") },
+      h("span", { style: `width:${Math.max(2, value * 100)}%;${n < d.min_sample ? "background:var(--faint)" : ""}` })));
+  const rows = LABELS.map(l => byLabel[l.name] || { label: l.name, reviewed: 0, precision: null, recall: null, precision_n: 0, recall_n: 0, uncertain_yes: 0, uncertain_no: 0, enough: false });
+  show(
+    pageHead("Label Review", "Say whether each label is right. Your answers measure how good the classifier is, label by label.", tabs),
+    h("div", { class: "grid" },
+      stat("Messages Reviewed", "mail", num(d.messages), sample === "random" ? "Random sample" : "All reviews"),
+      stat("Label Answers", "review", num(d.reviews), "One per label per message"),
+      stat("Reviewers", "users", num(d.reviewers), "People who answered")),
+    card({ title: "Results by Label", flush: true, sub: `Precision: when the AI says yes, how often it is right. Recall: of the emails where the label truly applies, how many the AI marked yes. A rate needs at least ${d.min_sample} reviews on each side before you rely on it.`,
+      actions: [sampleSeg, ...exportButtons({ dataset: "review_metrics", review_sample: sample })] },
+    table([
+      ["Label", r => h("div", {}, h("div", { style: "font-weight:500" }, labelEl(r.label)))],
+      ["Reviewed", r => num(r.reviewed), "num"],
+      ["Precision", r => rate(r.precision, r.precision_n)],
+      ["Recall", r => rate(r.recall, r.recall_n)],
+      ["AI Unsure, You Said", r => r.uncertain_yes + r.uncertain_no ? `${r.uncertain_yes} yes · ${r.uncertain_no} no` : h("span", { class: "muted" }, "—")],
+      ["Status", r => !r.reviewed ? badge("No Reviews") : r.enough ? badge("Enough to Judge", "good", true) : badge("Too Few", "warn", true)],
+    ], rows)),
+    note(sample === "random" ? "Only random-sample reviews are counted, so these are honest estimates of real-world accuracy."
+      : "Includes uncertain-first and one-label reviews, which over-represent hard cases. Use the random sample for real-world accuracy.", sample === "random" ? null : "warn"));
+}
+
 // ---------- router -----------------------------------------------------------
 
 const NAV = [
@@ -964,11 +1395,14 @@ const NAV = [
   null,
   ["messages", "Messages", "mail"], ["actionable", "Action Items", "check"], ["unpublished", "Not Published", "hidden"],
   null,
+  ["risks", "Risk Analysis", "alert"], ["reports", "Reports", "report"], ["review", "Label Review", "review"],
+  null,
   ["lab", "Lab", "lab"],
 ];
-const NAV_GROUPS = ["Operations", "Mail", "Tools"];
+const NAV_GROUPS = ["Operations", "Mail", "Insights", "Tools"];
 const PAGES = { overview, schedule: schedulePage, mailboxes: mailboxesPage, messages: messagesPage,
-  actionable: actionablePage, unpublished: unpublishedPage, lab: labPage };
+  actionable: actionablePage, unpublished: unpublishedPage, lab: labPage,
+  risks: risksPage, reports: reportsPage, review: reviewPage };
 
 function drawNav() {
   const nav = document.getElementById("tabs");
@@ -1019,7 +1453,12 @@ async function render() {
     h("div", { class: "who" }, h("span", { class: "avatar" }, initials(name)),
       h("div", { class: "who-text", style: "min-width:0" }, h("div", { class: "who-name" }, name), h("div", { class: "who-role" }, "Console admin")),
       h("button", { class: "btn sm ghost", title: "Sign out", "aria-label": "Sign out", onclick: signOut }, icon("logout"))));
-  if (!LABELS.length) { try { LABELS = (await api("/api/labels")).labels; } catch { /* filters fall back to none */ } }
+  if (!LABELS.length) {
+    try {
+      LABELS = (await api("/api/labels")).labels;
+      LABEL_NAMES = Object.fromEntries(LABELS.map(l => [l.name, l.title]));
+    } catch { /* filters fall back to none, names to the key */ }
+  }
   await route();
 }
 

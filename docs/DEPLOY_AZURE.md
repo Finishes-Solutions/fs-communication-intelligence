@@ -226,6 +226,9 @@ A web page at `https://func-fs-ci-adm-dev-1026.azurewebsites.net/` for console a
 - **Action Items:** the same list agents get from `list_actionable`, for any person or window.
 - **Not Published:** held, restricted, bulk and failed messages, with metadata and reason only, never the subject or text.
 - **Labels:** shown by name ("Payment", "Needs Approval") or by stored key (`cat_payment_billing`, `approval_required`); switch with **Labels: Names / Keys** in the sidebar. Hovering a label shows the other form. The choice is remembered in that browser.
+- **Risk Analysis:** emails labelled Project Risk in the last 7, 30, 90 or 365 days: count and change against the period before, a chart per day or week, counts by category, sender company (email domain) and mailbox, how many are also urgent or need approval, and a feed with the AI's one-line risk and the full message. It also shows the risk label's measured precision and recall from Label Review. It uses only the stored label and risk text: there is no project name, risk type or severity yet, so nothing is grouped by those.
+- **Reports:** pick a dataset (messages, action items, project risks, run history, mailboxes, or label review results), a date range, filters and columns, and optionally group by mailbox, sender, sender company, label, day, week or month. Preview on screen, then export to CSV or Excel (up to 5,000 rows). Templates cover common reports; **Save Report** keeps a report in this browser with its date range relative ("last 30 days"). Reports hold metadata and AI proposals only (subject, sender, mailbox, date, labels, summary, action, risk). **Email bodies and attachment text are never exported.** Every preview and export is written to `audit_events` with the message ids it included. Cells that a spreadsheet could run as a formula are neutralized (subjects are untrusted).
+- **Label Review:** shows a message and asks, for each of the 21 labels, whether it applies (Yes/No), next to what the AI said. **Random Sample** is the mode that gives honest numbers; **Uncertain First** and **One Label** help tune thresholds but over-represent hard cases. **Results** shows precision (when the AI says yes, how often it's right) and recall (how many true cases it marks yes) per label, with sample sizes, and flags any label with fewer than 20 reviews on either side. Answers are stored in `label_reviews` (label decisions only, never text) and audited. A message's **Review Labels** button opens it for review.
 - **Communication Lab:** write an email (or start from a sample: invoice, change order, lien notice, failed inspection, newsletter, phishing, SSN, prompt injection), or pick a stored one. It runs the real screening, classifier, policy and routing and stores nothing. It shows a verdict ("Action item", "Project risk", "Restricted"…), each pipeline step, why, the AI proposal, every label against its thresholds, the difference from what was stored, and the message's files. Each run calls Azure OpenAI once.
 
 **Original files.** From the deploy that includes this, processing keeps each attachment's original file in the private container `attachments` of `stfscievidev1026`. Each distinct file is stored once, and inline signature images are skipped. Each processing pass also backfills up to 100 files for mail processed earlier. Files are **not malware-scanned** (your decision, 2026-10-28), so open unexpected downloads with care. The console serves a file only when you may read its message; restricted, held and bulk mail never get file access.
@@ -250,6 +253,12 @@ Then run it. It creates only what's missing, sets up file storage, applies the d
 
 ```bash
 CHAT_DEPLOYMENT=gpt-4.1-mini ADMINS="matthews@finishessolutions.com" bash scripts/azure/4-admin-console.sh
+```
+
+**Risk Analysis, Reports and Label Review need migration `0008_label_reviews.sql`.** Apply it once from your Mac, before or right after merging (ingestion is unaffected; until it's applied those three pages show an error and the rest of the console works):
+
+```bash
+make azure-migrate AZ_PSQL=psql
 ```
 
 Add the two secrets it prints (`ADMIN_FUNCTION_APP`, `ADMIN_PUBLIC_URL`) to the GitHub environment `development`, then merge the pull request (or rerun **Deploy (development)**). The migrations (`0005`, `0006`) must be applied **before** the new ingestion code deploys; otherwise the capture and processing timers fail every tick until they are. To add another admin later, rerun the script with their address in `ADMINS`.
