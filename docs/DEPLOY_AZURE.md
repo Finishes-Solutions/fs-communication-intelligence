@@ -235,7 +235,8 @@ A web page at `https://func-fs-ci-adm-dev-1026.azurewebsites.net/` for console a
 - **Schedule & runs:** how often capture runs, its look-back, active hours, weekdays only, processing on/off. Below that, every run with its counts.
 - **Mailboxes:** filter, approve or unapprove, exclude or un-exclude (with a reason), approve all enrolled, change mode, and exclude a person or domain in every mailbox.
 - **Messages:** search or list published mail by mailbox, sender, label and date. A message shows the AI summary, action and risk, labels, people, the body, and its **files**: preview (PDF, images, text), download, or the extracted text. Signature images and logos aren't processed or shown: every inline image, and any attached image of 100 KB or less. There's also an **Open in Outlook** link, which works only for mailboxes your account can open.
-- **Action items:** the same list agents get from `list_actionable`, for any person or window.
+- **Action items:** the same list agents get from `list_actionable`, for any person or window. With a person profile (below), it shows that person's confident items plus a separate **Possible** list, and has a panel to edit profiles.
+- **Label check:** go through emails one at a time (from a person's action items, recent mail, project risks, or a label) and mark each label *Applies* / *Doesn't*, and whether it's really an action item for the person, with a reason when it isn't (someone else's, FYI only, automated, group email, already handled). The side panel shows how often the AI is right per label and, once a label has 20 checked emails with at least 5 of each answer, the "yes" threshold that would have scored best. Suggestions are never applied automatically.
 - **Not published:** held, restricted, bulk and failed messages, with metadata and reason only, never the subject or text.
 - **Communication Lab:** write an email (or start from a sample: invoice, change order, lien notice, failed inspection, newsletter, phishing, SSN, prompt injection), or pick a stored one. It runs the real screening, classifier, policy and routing and stores nothing. It shows a verdict ("Action item", "Project risk", "Restricted"…), each pipeline step, why, the AI proposal, every label against its thresholds, the difference from what was stored, and the message's files. Each run calls Azure OpenAI once.
 
@@ -264,6 +265,29 @@ CHAT_DEPLOYMENT=gpt-4.1-mini ADMINS="matthews@finishessolutions.com" bash script
 ```
 
 Add the two secrets it prints (`ADMIN_FUNCTION_APP`, `ADMIN_PUBLIC_URL`) to the GitHub environment `development`, then merge the pull request (or rerun **Deploy (development)**). The migrations (`0005`, `0006`) must be applied **before** the new ingestion code deploys; otherwise the capture and processing timers fail every tick until they are. To add another admin later, rerun the script with their address in `ADMINS`.
+
+### Action items in two steps, and person profiles
+
+1. **Step 1, the classifier,** tags whether an email asks *someone* to act (`action_required`, `approval_required`). It is told to say no for FYI, newsletters, marketing, automated notifications and requests to a whole group.
+2. **Step 2, the person check,** runs for each person with a profile. A separate AI call decides whether the email is really *that person's* action item. It sees the profile (name, addresses, role, and who they are **not**), who the email went to directly and who was only copied. It returns a probability, the person's own action line and a reason. Rules answer first without the AI: no request, possible bulk mail, automated sender, sent by the person, or not sent to them at all.
+
+A person's list (console, MCP `list_actionable`, `ci actionable`) is step 2's confident "yes". Its unsure answers are listed separately as **possible**. Someone without a profile falls back to a simpler rule: named by the classifier, or the email was sent to them alone.
+
+Set up Chuck Sr. once (console: **Action items → People with a person check**, or Cloud Shell). Put Chuck Jr.'s real address and role in the "not to be confused with" text:
+
+```bash
+ci people set chuck_sr --name "Chuck Sr." --address chuckc@finishesetc.net --role "Owner and CEO; approves contracts, draws, change orders and capital decisions" --not-to-confuse "Chuck Jr. (his address), different role; also called Chuck. Mail meant for Chuck Jr. is not Chuck Sr.'s."
+```
+
+Changing a profile only affects mail processed afterwards. To apply it to mail already processed, run `ci process --remask --limit 0` (this re-runs everything, including the classifier).
+
+**Deploying this change:** it adds tables (migrations `0008`, `0009`). Apply them **before** merging, or the new code fails on every processing run until they exist:
+
+```bash
+cd ~/fs-communication-intelligence && git fetch origin && git checkout matthew/nice-lovelace-4sqyit && git pull --ff-only origin matthew/nice-lovelace-4sqyit && make azure-migrate AZ_PSQL=psql && git checkout main
+```
+
+Then merge, set up the profiles as above, and re-run the processed mail with `ci process --remask --limit 0`.
 
 ## What isn't done yet
 

@@ -119,8 +119,12 @@ def build_server(
         description="Emails that ask a person to act or approve, plus project risks (schedule "
         "delays, cost overruns, disputes, liens, failed inspections, safety, quality, financing, "
         "parties not performing), from the last N hours. "
-        "`person` is one email address or several comma-separated addresses for someone with "
-        "more than one mailbox." + _TRUST
+        "`person` is one email address, several comma-separated addresses for someone with "
+        "more than one mailbox, or a profile key. When the person has a profile, a separate "
+        "per-person check decides which emails are really theirs (it tells apart people with "
+        "similar names, e.g. Chuck Sr. and Chuck Jr.): `actions` are its confident answers and "
+        "`possible` the ones it was unsure about; treat `possible` as needing confirmation."
+        + _TRUST
     )
     def list_actionable(
         person: str | None = None, hours: float = 24, include_risks: bool = True, limit: int = 50
