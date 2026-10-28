@@ -86,7 +86,7 @@ client() {  # client <label> <redirect uri>...
 }
 echo
 echo "Connector settings (all platforms):"
-echo "  MCP server URL:     $(az functionapp show -g "$RG" -n "$SRCH_APP" --query defaultHostName -o tsv | sed 's#^#https://#')/mcp"
+echo "  MCP server URL:     https://$(app_host "$SRCH_APP")/mcp"
 echo "  Authorization URL:  https://login.microsoftonline.com/$TENANT/oauth2/v2.0/authorize"
 echo "  Token URL:          https://login.microsoftonline.com/$TENANT/oauth2/v2.0/token"
 echo "  Scope:              $API_URI/Communications.Search offline_access"

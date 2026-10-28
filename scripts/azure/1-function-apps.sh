@@ -34,7 +34,7 @@ done
 PGHOST="$PG.postgres.database.azure.com"
 AOAI_EP="$(endpoint "$AOAI")"; LANG_EP="$(endpoint "$LANG_SVC")"; SAFE_EP="$(endpoint "$SAFE")"
 ING_CLIENT="$(mi "$ING_MI" clientId)"; SRCH_CLIENT="$(mi "$SRCH_MI" clientId)"
-SRCH_HOST="$(az functionapp show -g "$RG" -n "$SRCH_APP" --query defaultHostName -o tsv)"
+SRCH_HOST="$(app_host "$SRCH_APP")"
 
 echo "== app settings"
 az functionapp config appsettings set -g "$RG" -n "$ING_APP" --only-show-errors >/dev/null --settings \

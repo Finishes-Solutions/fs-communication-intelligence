@@ -29,3 +29,18 @@ role() {  # role <principal object id> <role name> <scope>
   echo "  role ok: $2"
 }
 uuid() { python3 -c 'import uuid; print(uuid.uuid4())'; }
+app_host() {  # app_host <function app>: its default host name; fails loudly if Azure returns none
+  local h
+  h="$(az functionapp show -g "$RG" -n "$1" \
+    --query "defaultHostName || properties.defaultHostName || hostNames[0] || enabledHostNames[0]" \
+    -o tsv 2>/dev/null)"
+  if [ -z "$h" ] || [ "$h" = "None" ]; then
+    h="$(az resource show -g "$RG" -n "$1" --resource-type Microsoft.Web/sites \
+      --query "properties.defaultHostName" -o tsv 2>/dev/null)"
+  fi
+  if [ -z "$h" ] || [ "$h" = "None" ]; then
+    echo "ERROR: could not read the host name of $1; see Function App -> Overview -> Default domain" >&2
+    return 1
+  fi
+  echo "$h"
+}
