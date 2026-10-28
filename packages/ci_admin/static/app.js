@@ -125,7 +125,47 @@ const TONES = {
   mode: { test: "info", production: "good", paused: "warn" },
 };
 const stateBadge = (kind, value) => badge(nice(value), TONES[kind][value] ?? "", true);
-function labelBadges(list, tone) { return (list || []).map(x => badge(nice(x), tone || "")); }
+// Classifier labels: a friendly name or the stored key, switchable from the sidebar.
+// Elements carry data-label so a switch repaints them in place, with no reload
+// (reloading the lab could re-run a stored email through Azure OpenAI).
+const LABEL_NAMES = {
+  spam: "Spam", phishing: "Phishing", pii: "Personal Info", sensitive_pii: "Sensitive Personal Info",
+  potential_phi: "Health Info", credentials: "Credentials", confidential_business: "Confidential",
+  project_related: "Project", invoice_receipt: "Invoice", approval_required: "Needs Approval",
+  action_required: "Needs Action", urgent: "Urgent", newsletter: "Newsletter", project_risk: "Project Risk",
+  cat_development_construction: "Construction", cat_payment_billing: "Payment", cat_leasing_operations: "Leasing",
+  cat_compliance_legal: "Legal & Compliance", cat_capital_finance: "Finance", cat_vendor_performance: "Vendor Issues",
+  cat_general_governance: "Governance",
+};
+const prefs = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode */ } },
+};
+let LABEL_MODE = prefs.get("label_mode") === "keys" ? "keys" : "names";
+const labelName = key => LABEL_NAMES[key] || nice(key);
+function paintLabel(el) {
+  const key = el.dataset.label, keys = LABEL_MODE === "keys";
+  el.textContent = keys ? key : labelName(key);
+  el.title = keys ? labelName(key) : key;
+  el.classList.toggle("key", keys);
+}
+function labelEl(key, tag) {
+  const el = h(tag || "span", { "data-label": key });
+  paintLabel(el);
+  return el;
+}
+function setLabelMode(mode) {
+  LABEL_MODE = mode;
+  prefs.set("label_mode", mode);
+  document.querySelectorAll("[data-label]").forEach(paintLabel);
+  document.querySelectorAll(".label-mode button").forEach(b => b.classList.toggle("on", b.dataset.mode === mode));
+}
+function labelModeSwitch() {
+  return h("div", { class: "label-mode-row" }, h("span", { class: "muted small" }, "Labels"),
+    h("div", { class: "seg label-mode" }, [["names", "Names"], ["keys", "Keys"]].map(([m, t]) =>
+      h("button", { type: "button", class: m === LABEL_MODE ? "on" : "", "data-mode": m, onclick: () => setLabelMode(m) }, t))));
+}
+function labelBadges(list, tone) { return (list || []).map(x => badge(labelEl(x), tone || "")); }
 function countBadges(obj) { return Object.entries(obj || {}).sort().map(([k, v]) => badge(`${nice(k)} ${num(v)}`, "outline")); }
 
 function emptyState(title, text, iconName) {
@@ -304,11 +344,11 @@ async function overview() {
         bars((d.versions || []).map(r => [h("span", {}, nice(r.processing_state), r.reason ? h("span", { class: "muted" }, ` · ${nice(r.reason)}`) : null),
           r.versions, TONES.state[r.processing_state]]))),
       card({ title: "Labels", sub: "Messages the classifier marked yes" },
-        bars((d.labels || []).map(r => [nice(r.label), r.messages]),
+        bars((d.labels || []).map(r => [labelEl(r.label), r.messages]),
           emptyState("No Labels Yet", "Labels appear once mail is classified.", "spark")),
         (d.uncertain_labels || []).length ? h("div", { style: "margin-top:18px" },
           h("div", { class: "section-title" }, "Uncertain (Review or Unresolved)"),
-          h("div", { class: "badges" }, d.uncertain_labels.map(r => badge(`${nice(r.label)} · ${r.decision} · ${num(r.messages)}`, "warn")))) : null)),
+          h("div", { class: "badges" }, d.uncertain_labels.map(r => h("span", { class: "badge warn" }, labelEl(r.label), ` · ${r.decision} · ${num(r.messages)}`)))) : null)),
     h("div", { class: "cols" },
       card({ title: "Attachments", sub: "Text extraction and stored originals" },
         bars((d.extraction || []).map(r => [nice(r.extraction_status), r.attachments,
@@ -464,7 +504,11 @@ async function mailboxesPage() {
 }
 
 function labelSelect(value) {
-  return h("select", {}, h("option", { value: "" }, "Any label"), LABELS.map(l => h("option", { value: l.name, selected: l.name === value }, nice(l.name))));
+  return h("select", {}, h("option", { value: "" }, "Any label"), LABELS.map(l => {
+    const opt = labelEl(l.name, "option");
+    opt.value = l.name; opt.selected = l.name === value;
+    return opt;
+  }));
 }
 
 function msgRow(r, onPick, extra) {
@@ -877,7 +921,7 @@ function labResult(r, person, message) {
       return h("div", { class: "lgroup" }, h("div", { class: "lgroup-title" }, name), rows.map(l => {
         const changed = stored && (stored.has(l.label) !== (l.decision === "yes"));
         return h("div", { class: "lrow" + (changed ? " changed" : "") },
-          h("div", { class: "lname" }, h("div", { style: "font-weight:500" }, nice(l.label)), h("div", { class: "muted small" }, l.question)),
+          h("div", { class: "lname" }, h("div", { style: "font-weight:500" }, labelEl(l.label)), h("div", { class: "muted small" }, l.question)),
           h("span", {}, badge(nice(l.decision), tone[l.decision])),
           gauge(l),
           h("span", { class: "prob" }, l.probability === null ? "—" : l.probability.toFixed(2)),
@@ -971,6 +1015,7 @@ async function render() {
   who.replaceChildren(
     CFG && CFG.environment ? h("div", { class: "env" }, h("span", { class: "dot " + (CFG.environment === "production" ? "good" : "info") }),
       `${nice(CFG.environment)} environment`) : null,
+    labelModeSwitch(),
     h("div", { class: "who" }, h("span", { class: "avatar" }, initials(name)),
       h("div", { class: "who-text", style: "min-width:0" }, h("div", { class: "who-name" }, name), h("div", { class: "who-role" }, "Console admin")),
       h("button", { class: "btn sm ghost", title: "Sign out", "aria-label": "Sign out", onclick: signOut }, icon("logout"))));

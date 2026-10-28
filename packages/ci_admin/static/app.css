@@ -442,3 +442,13 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.35); }
   .grid { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
   .stat-value { font-size: 24px; }
 }
+
+/* label display switch (Names / Keys) */
+.key { font-family: var(--mono); font-size: 0.92em; }
+.label-mode-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 8px 10px; }
+.label-mode button { padding: 3px 10px; font-size: 12px; }
+@media (max-width: 900px) {
+  .label-mode-row { padding: 0; }
+  .label-mode-row > .muted { display: none; }
+  .side-foot { display: flex; align-items: center; gap: 4px; }
+}
