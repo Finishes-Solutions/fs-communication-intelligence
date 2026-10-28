@@ -17,13 +17,18 @@ import hashlib
 import html
 import json
 import logging
+import random
 import re
+import time
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any
+
+import psycopg
 
 from ci_core.db import AppRole, Connection, required
 from ci_core.runtime import EligibleScope, active_config, require_capture_scope
@@ -214,17 +219,31 @@ def store_message(
             content_fingerprint(message, attachments),
         ),
     )
-    for role, address, name in participants(message):
-        pid = required(
-            conn.execute(
-                "INSERT INTO participants (provider, provider_identity, email_normalized,"
-                " display_name)"
-                " VALUES ('email', %s, %s, %s) ON CONFLICT (provider, provider_identity)"
-                " DO UPDATE SET display_name = coalesce(EXCLUDED.display_name,"
-                " participants.display_name) RETURNING id::text",
-                (address, address, name),
-            ).fetchone()
-        )["id"]
+    # Sorted, so concurrent captures always take participant locks in the same
+    # order (no deadlocks), and existing rows are only locked when a display
+    # name is missing (busy addresses appear on thousands of messages).
+    for role, address, name in sorted(participants(message), key=lambda p: (p[1], p[0])):
+        row = conn.execute(
+            "INSERT INTO participants (provider, provider_identity, email_normalized,"
+            " display_name) VALUES ('email', %s, %s, %s)"
+            " ON CONFLICT (provider, provider_identity) DO NOTHING RETURNING id::text",
+            (address, address, name),
+        ).fetchone()
+        if row is None:
+            row = required(
+                conn.execute(
+                    "SELECT id::text, display_name FROM participants"
+                    " WHERE provider = 'email' AND provider_identity = %s",
+                    (address,),
+                ).fetchone()
+            )
+            if name and row["display_name"] is None:
+                conn.execute(
+                    "UPDATE participants SET display_name = %s"
+                    " WHERE id = %s AND display_name IS NULL",
+                    (name, row["id"]),
+                )
+        pid = row["id"]
         conn.execute(
             "INSERT INTO communication_participants (communication_id, participant_id, role)"
             " VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
@@ -316,18 +335,50 @@ def capture_mailbox(
             except GraphError as exc:
                 result.counts[f"error_{type(exc).__name__}"] += 1
                 continue
-            outcome = store_message(
-                conn,
-                dataset=dataset,
-                scope=scope,
-                corpus_id=corpus_id,
-                message=message,
-                attachments=attachments,
-                profile=profile,
-            )
-            conn.commit()
+            try:
+                outcome = _store_with_retry(
+                    conn,
+                    partial(
+                        store_message,
+                        conn,
+                        dataset=dataset,
+                        scope=scope,
+                        corpus_id=corpus_id,
+                        message=message,
+                        attachments=attachments,
+                        profile=profile,
+                    ),
+                )
+            except psycopg.Error as exc:  # one message must not fail the whole capture
+                conn.rollback()
+                result.counts[f"error_db_{type(exc).__name__}"] += 1
+                log.warning("message not stored: %s", type(exc).__name__)
+                continue
             result.counts[outcome] += 1
     return result
+
+
+_RETRYABLE = (psycopg.errors.DeadlockDetected, psycopg.errors.SerializationFailure)
+
+
+def _store_with_retry(
+    conn: Connection,
+    store: Callable[[], str],
+    attempts: int = 4,
+    sleep: Callable[[float], None] = time.sleep,
+) -> str:
+    """Store and commit one message, retrying lock conflicts with a short jittered pause."""
+    for attempt in range(attempts):
+        try:
+            outcome = store()
+            conn.commit()
+            return outcome
+        except _RETRYABLE:
+            conn.rollback()
+            if attempt == attempts - 1:
+                raise
+            sleep(0.2 * (attempt + 1) + random.random() * 0.3)  # noqa: S311 - jitter
+    raise AssertionError("unreachable")
 
 
 def capture_window(

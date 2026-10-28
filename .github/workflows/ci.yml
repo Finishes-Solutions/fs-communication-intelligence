@@ -1,9 +1,12 @@
 name: CI
 
+# Docs-only changes don't need lint, tests or package builds.
 on:
   pull_request:
+    paths-ignore: ["docs/**", "**/*.md"]
   push:
     branches: [main]
+    paths-ignore: ["docs/**", "**/*.md"]
 
 permissions:
   contents: read
