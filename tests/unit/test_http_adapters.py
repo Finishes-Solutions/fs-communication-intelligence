@@ -19,6 +19,7 @@ from ci_processing.azure import (
     AzureOpenAIClassifier,
     AzureOpenAIEmbedder,
     AzureScreener,
+    AzureServiceError,
 )
 from ci_processing.classification import LABELS, ClassificationInput
 from ci_processing.screening import CheckDecision
@@ -236,3 +237,18 @@ def test_tokens_are_cached_until_near_expiry() -> None:
     first, again, other = (cached.get_token(s).token for s in ("a", "a", "b"))
     assert (first, again, other) == ("t1", "t1", "t2")  # cached; separate scope, separate token
     assert calls["n"] == 2
+
+
+def test_failures_name_the_call_and_status_but_no_content() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/chat/completions" in request.url.path:
+            return httpx.Response(404, json={"error": {"code": "DeploymentNotFound"}})
+        return httpx.Response(401, json={"error": {"code": "PermissionDenied"}})
+
+    item = ClassificationInput("Secret subject", "Secret body", to=("pat@example.com",))
+    with pytest.raises(AzureServiceError) as chat:
+        AzureOpenAIClassifier("https://aoai", "gpt", "v", azure(handler)).classify(item)
+    assert str(chat.value) == "chat HTTP 404 DeploymentNotFound"
+    with pytest.raises(AzureServiceError) as emb:
+        AzureOpenAIEmbedder("https://aoai", "emb", "v", 4, azure(handler)).embed(["Secret body"])
+    assert str(emb.value) == "embeddings HTTP 401 PermissionDenied"

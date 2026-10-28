@@ -93,10 +93,23 @@ class AzureHttp:
                 self._sleep(min(float(response.headers.get("Retry-After", 2**attempt)), 60.0))
                 continue
             code = ""
-            with contextlib.suppress(ValueError):
+            with contextlib.suppress(ValueError, AttributeError):
                 code = str(response.json().get("error", {}).get("code", ""))
-            raise AzureServiceError(f"HTTP {response.status_code} {code}".strip())
-        raise AzureServiceError("retries exhausted")
+            raise AzureServiceError(f"{_service(url)} HTTP {response.status_code} {code}".strip())
+        raise AzureServiceError(f"{_service(url)} retries exhausted")
+
+
+def _service(url: str) -> str:
+    """Which call failed, as a short code (never content)."""
+    for marker, name in (
+        ("/chat/completions", "chat"),
+        ("/embeddings", "embeddings"),
+        (":analyze-text", "language"),
+        ("shieldPrompt", "content_safety"),
+    ):
+        if marker in url:
+            return name
+    return "azure"
 
 
 def _pieces(text: str, size: int) -> list[str]:

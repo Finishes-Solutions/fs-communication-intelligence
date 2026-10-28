@@ -29,6 +29,7 @@ import httpx
 
 from ci_core.db import Connection, required
 from ci_email.graph import GraphClient, GraphError
+from ci_processing.azure import AzureServiceError
 from ci_processing.chunking import chunk_text
 from ci_processing.classification import (
     LABELS,
@@ -473,6 +474,8 @@ def process_one(conn: Connection, backends: Backends) -> str | None:
         return disposition.value
     except Exception as exc:  # recorded as a content-free code, then the run continues
         code = type(exc).__name__[:60]
+        if isinstance(exc, AzureServiceError):  # its message is service, status and code only
+            code = f"{code}: {exc}"[:120]
         log.warning("processing failed for version %s: %s", job["version_id"], code)
         conn.execute(
             "UPDATE communication_versions SET processing_state = 'failed', last_error_code = %s"
