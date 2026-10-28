@@ -289,6 +289,21 @@ All three use the values printed in step 6: **MCP server URL** `https://<search 
 
 The hosted endpoint is written to the MCP standard (Streamable HTTP; OAuth protected-resource metadata at `/.well-known/oauth-protected-resource/mcp`). One known Entra quirk to watch for: some clients send a `resource` parameter that Entra rejects with **AADSTS9010010**. If you see that code, send it to me.
 
+**What the MCP tools do.** Every tool shows only what the signed-in person may read, and every call is audited (IDs and counts, never text).
+
+| Tool | Use it for |
+|---|---|
+| `search_email` | Finding emails by meaning and keywords, with filters for mailbox, sender, label, property, entity and dates |
+| `list_email` | The newest emails matching filters, e.g. a mailbox's mail since a date |
+| `list_actionable` | Action items, approvals and project risks; with `person`, that person's (the per-person check tells Chuck Sr. from Chuck Jr.) |
+| `get_email` | One email in full, with its people, labels and attachments |
+| `get_attachment` | An attachment's extracted text, a page at a time |
+| `get_thread` | The whole conversation an email belongs to, oldest first |
+| `email_stats` | Counts of emails, action items and risks by mailbox, sender, domain, label, property, entity, day, week or month |
+| `risk_overview` | Project-risk trends: change from the previous period, top categories, properties, companies and mailboxes, newest risks |
+
+Dates: `since_date` and `until_date` (YYYY-MM-DD, both inclusive) pick an exact period on `search_email`, `list_email` and `email_stats`.
+
 **Links and attachments in results.** Outlook links (`web_link`) open only in the mailbox owner's own Outlook. Every email in MCP results therefore also carries `view_url`, a read-only page on the admin console (`/read/<id>`). It opens for **console admins only**, after Microsoft sign-in; anyone else sees "Can't open this email". Stored attachments carry `download_url` (the same page with `?file=`, which downloads the original). Attachment files are not malware-scanned yet, so keep downloads to admins. The tool `get_attachment` returns an attachment's full extracted text a page at a time (pass the `attachment_id` that `get_email` lists); the file itself never goes to Copilot, ChatGPT or Claude. The deploy workflow sets the search app's `ADMIN_PUBLIC_URL` from the GitHub secret of the same name; without it, results carry no `view_url`.
 
 **Troubleshooting a connection.** The search app logs every request (method, path, status, whether a token was sent) and why a token was rejected, never the token. Check after a connection attempt:

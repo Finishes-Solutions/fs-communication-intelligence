@@ -176,7 +176,7 @@ Rules:
 
 ## 8. Retrieval API and agent access
 
-- Endpoints: `POST /api/search` and `GET /api/communications/{id}` (plus a bounded excerpt endpoint), all mirrored as MCP tools `search_email`, `get_email` and `list_email` over Streamable HTTP at `/mcp`.
+- Endpoints: `POST /api/search` and `GET /api/communications/{id}` (plus a bounded excerpt endpoint), all mirrored as MCP tools `search_email`, `get_email` and `list_email` over Streamable HTTP at `/mcp`. Also built (2026-10-28): `list_actionable`, `get_attachment`, `get_thread`, `email_stats` and `risk_overview`, all through the same authorized, audited retrieval code (`docs/DEPLOY_AZURE.md` §10). The REST endpoints are not built.
 - Auth uses Entra v2 tokens for the search API app registration (scope `Communications.Search`). Validate issuer/tenant, audience and expiry. App roles: `Communications.Reader.All` (every enrolled mailbox) and `Communications.Reader.Own` (own mailbox plus explicit `access_grants`). Set "Assignment required" = Yes.
 - Authorization is applied in SQL **before** ranking. Caller parameters can only narrow results.
 - pgvector settings for the search role: `hnsw.iterative_scan = relaxed_order`. Add an acceptance test where a user granted one small mailbox among large ones gets a full page of correct results.

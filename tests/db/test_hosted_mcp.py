@@ -230,8 +230,11 @@ def test_tools_use_the_callers_identity(app: Any) -> None:
             "search_email",
             "get_email",
             "get_attachment",
+            "get_thread",
             "list_email",
             "list_actionable",
+            "email_stats",
+            "risk_overview",
         }
         report = call_tool(
             client,
@@ -285,4 +288,72 @@ def test_served_through_the_azure_functions_adapter(app: Any) -> None:
 
     anonymous, signed, tools = asyncio.run(scenario())
     assert (anonymous, signed) == (401, 200)
-    assert len(tools["result"]["tools"]) == 5
+    assert len(tools["result"]["tools"]) == 8
+
+
+def test_threads_stats_risks_and_date_filters(app: Any, database_ready: str) -> None:
+    with TestClient(app, base_url=BASE) as client:
+        found = call_tool(client, token(), "search_email", {"query": "change order"})
+        co7 = next(r for r in found["results"] if r["subject"].startswith("Change Order 7"))
+        co8 = next(r for r in found["results"] if r["subject"].startswith("Change Order 8"))
+        alone = call_tool(
+            client, token(), "get_thread", {"communication_id": co8["communication_id"]}
+        )
+        assert alone["count"] == 1  # three mailbox copies of one message, collapsed
+        with connect(dbname=database_ready) as conn:  # make CO7 a reply in CO8's thread
+            conn.execute(
+                "UPDATE email_messages SET conversation_id = 'AAQkAGsynconvco8'"
+                " WHERE communication_id = %s",
+                (co7["communication_id"],),
+            )
+            conn.commit()
+        try:
+            thread = call_tool(
+                client, token(), "get_thread", {"communication_id": co8["communication_id"]}
+            )
+            stranger = call_tool(
+                client,
+                token(roles=[], oid="stranger-oid"),
+                "get_thread",
+                {"communication_id": co8["communication_id"]},
+            )
+        finally:
+            with connect(dbname=database_ready) as conn:
+                conn.execute(
+                    "UPDATE email_messages SET conversation_id = 'AAQkAGsynconv0002'"
+                    " WHERE communication_id = %s",
+                    (co7["communication_id"],),
+                )
+                conn.commit()
+        times = [m["received_at"] for m in thread["messages"]]
+        assert thread["count"] == 2 and times == sorted(times)  # oldest first
+        assert all(
+            m["view_url"].startswith("https://admin.example/read/") for m in thread["messages"]
+        )
+        assert stranger == {"found": False, "note": "Not found in authorized, indexed mail."}
+
+        stats = call_tool(
+            client, token(), "email_stats", {"group_by": "property", "since_days": 365, "limit": 3}
+        )
+        assert stats["group_by"] == "property" and 0 < len(stats["groups"]) <= 3
+        assert stats["total_groups"] >= len(stats["groups"])
+        assert {"key", "messages", "actions", "risks"} <= set(stats["groups"][0])
+        risks = call_tool(client, token(), "risk_overview", {"days": 365, "item_limit": 2})
+        assert risks["total"] >= 1 and len(risks["items"]) <= 2
+        assert risks["items"][0]["view_url"].startswith("https://admin.example/read/")
+
+        # Exact dates: the fixture mail is from September and October 2026.
+        october = call_tool(
+            client,
+            token(),
+            "list_email",
+            {"since_date": "2026-10-01", "until_date": "2026-10-31", "limit": 100},
+        )
+        before = call_tool(
+            client,
+            token(),
+            "list_email",
+            {"since_date": "2000-01-01", "until_date": "2000-01-31", "limit": 100},
+        )
+        assert october["results"] and before["results"] == []
+        assert all(r["received_at"] >= "2026-10-01" for r in october["results"])

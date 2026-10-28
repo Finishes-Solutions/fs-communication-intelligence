@@ -1,5 +1,5 @@
-"""MCP tools ``search_email``, ``get_email``, ``get_attachment``, ``list_email``,
-``list_actionable``.
+"""MCP tools ``search_email``, ``list_email``, ``list_actionable``, ``get_email``,
+``get_attachment``, ``get_thread``, ``email_stats`` and ``risk_overview``.
 
 Two transports share one tool set and the same authorized retrieval code
 (database role ``ci_search``, grants applied in SQL before ranking, an audit row
@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from urllib.parse import quote
 
@@ -33,6 +33,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from ci_core.db import Connection, connect
 from ci_core.settings import Settings
 from ci_processing.embedding import Embedder
+from ci_retrieval import reports
 from ci_retrieval import search as retrieval
 from ci_retrieval.entra import EntraAccessToken, EntraTokenVerifier
 from ci_retrieval.identity import Principal
@@ -51,6 +52,11 @@ _NAMES = (
     " the AI found written in each email."
     " `property` and `entity` keep only emails whose names contain that text"
     ' (case-insensitive, e.g. property="willow", entity="capital company").'
+)
+
+_DATES = (
+    " since_date and until_date (YYYY-MM-DD, both inclusive) pick an exact period and"
+    " take precedence over since_days."
 )
 
 _LINKS = (
@@ -80,12 +86,24 @@ def build_server(
     server: MCPServer[Any] = MCPServer(
         name="fs-communications",
         instructions="Finishes Solutions email evidence, limited to what the signed-in "
-        "person is authorized to read." + _TRUST,
+        "person is authorized to read. Which tool: search_email finds emails by meaning and "
+        "keywords; list_email lists the newest by mailbox, sender, label, property, entity or "
+        "dates; list_actionable gives action items, approvals and project risks (per person); "
+        "get_email reads one email and lists its attachments; get_attachment reads an "
+        "attachment's text; get_thread reads the whole conversation; email_stats counts emails, "
+        "action items and risks by mailbox, sender, domain, label, property, entity or period; "
+        "risk_overview shows project-risk trends." + _TRUST,
         **server_options,
     )
 
-    def _since(days: float | None) -> datetime | None:
+    def _since(days: float | None, day: str | None = None) -> datetime | None:
+        if day:
+            return _day(day, "since_date")
         return datetime.now(UTC) - timedelta(days=days) if days else None
+
+    def _until(day: str | None) -> datetime | None:
+        """until_date is inclusive: emails up to the end of that day (UTC)."""
+        return _day(day, "until_date") + timedelta(days=1) if day else None
 
     def linked(data: dict[str, Any]) -> dict[str, Any]:
         result: dict[str, Any] = with_links(data, view_base)
@@ -93,6 +111,7 @@ def build_server(
 
     @server.tool(
         description="Search authorized, indexed company email by meaning and keywords."
+        + _DATES
         + _NAMES
         + _LINKS
         + _TRUST
@@ -102,6 +121,8 @@ def build_server(
         mailbox: str | None = None,
         sender: str | None = None,
         since_days: float | None = None,
+        since_date: str | None = None,
+        until_date: str | None = None,
         label: str | None = None,
         property: str | None = None,
         entity: str | None = None,
@@ -116,7 +137,8 @@ def build_server(
                 retrieval.Filters(
                     mailbox=mailbox,
                     sender=sender,
-                    since=_since(since_days),
+                    since=_since(since_days, since_date),
+                    until=_until(until_date),
                     label=label,
                     property=property,
                     entity=entity,
@@ -154,12 +176,14 @@ def build_server(
 
     @server.tool(
         description="List recent authorized emails, newest first, optionally by mailbox, "
-        "sender or label (e.g. cat_payment_billing)." + _NAMES + _LINKS + _TRUST
+        "sender or label (e.g. cat_payment_billing)." + _DATES + _NAMES + _LINKS + _TRUST
     )
     def list_email(
         mailbox: str | None = None,
         sender: str | None = None,
         since_days: float | None = 1,
+        since_date: str | None = None,
+        until_date: str | None = None,
         label: str | None = None,
         property: str | None = None,
         entity: str | None = None,
@@ -172,7 +196,8 @@ def build_server(
                 retrieval.Filters(
                     mailbox=mailbox,
                     sender=sender,
-                    since=_since(since_days),
+                    since=_since(since_days, since_date),
+                    until=_until(until_date),
                     label=label,
                     property=property,
                     entity=entity,
@@ -207,7 +232,92 @@ def build_server(
             )
         return linked(found)
 
+    @server.tool(
+        description="Read the whole conversation an email belongs to, oldest first: every"
+        " message in the thread you are authorized to read, with each one's AI summary,"
+        " action and risk. Use get_email for one message's full text." + _LINKS + _TRUST
+    )
+    def get_thread(communication_id: str, limit: int = 50) -> dict[str, Any]:
+        with connector() as conn:
+            found = retrieval.get_thread(conn, principal_of(), communication_id, limit)
+        return linked(found) if found else {"found": False, "note": NOT_FOUND}
+
+    @server.tool(
+        description="Count authorized emails, grouped by mailbox, sender, sender_domain,"
+        " label, property, entity, day, week or month, with action-item, project-risk and"
+        " flagged counts in each group. dataset: messages (all), actions (action items and"
+        " approvals; with `person`, that person's) or risks (project risks). Use it for"
+        " questions like 'which properties had the most risks this month' or 'who sends us"
+        " the most invoices'. Counts only; use list_email or search_email for the emails."
+        + _DATES
+        + _NAMES
+    )
+    def email_stats(
+        group_by: str,
+        dataset: str = "messages",
+        since_days: float | None = 30,
+        since_date: str | None = None,
+        until_date: str | None = None,
+        mailbox: str | None = None,
+        sender: str | None = None,
+        label: str | None = None,
+        property: str | None = None,
+        entity: str | None = None,
+        person: str | None = None,
+        limit: int = 25,
+    ) -> dict[str, Any]:
+        with connector() as conn:
+            found = reports.report_groups(
+                conn,
+                principal_of(),
+                dataset,
+                group_by,
+                retrieval.Filters(
+                    mailbox=mailbox,
+                    sender=sender,
+                    since=_since(since_days, since_date),
+                    until=_until(until_date),
+                    label=label,
+                    property=property,
+                    entity=entity,
+                ),
+                person=person,
+                action="mcp_email_stats",
+            )
+        groups = found["groups"]
+        top = max(1, min(limit, 200))
+        return found | {"groups": groups[:top], "total_groups": len(groups)}
+
+    @server.tool(
+        description="Project-risk overview for the last `days` (max 366): how many risk"
+        " emails versus the previous period, a trend by day or week, the top categories,"
+        " properties, companies (sender domains) and mailboxes, which other signals came"
+        " with them (urgent, approval needed, invoice), and the newest risk emails with the"
+        " AI's one-line risk. category narrows to one cat_ label, e.g."
+        " cat_development_construction." + _LINKS + _TRUST
+    )
+    def risk_overview(
+        days: int = 30,
+        mailbox: str | None = None,
+        category: str | None = None,
+        item_limit: int = 25,
+    ) -> dict[str, Any]:
+        with connector() as conn:
+            found = reports.risk_overview(
+                conn, principal_of(), days=days, mailbox=mailbox, category=category
+            )
+        items = found["items"]
+        top = max(0, min(item_limit, 200))
+        return linked(found | {"items": items[:top], "items_total": len(items)})
+
     return server
+
+
+def _day(value: str, name: str) -> datetime:
+    try:
+        return datetime.combine(date.fromisoformat(value.strip()), time.min, UTC)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a date like 2026-10-01") from exc
 
 
 NOT_FOUND = "Not found in authorized, indexed mail."
