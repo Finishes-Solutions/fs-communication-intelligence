@@ -241,6 +241,13 @@ def build_admin_app(
                 )
         return _lab_cache[0]
 
+    def lab_now() -> lab.LabBackends:
+        """The lab's backends with the console's switches for the paid checks applied,
+        as processing applies them (ci_cli.backends.with_switches)."""
+        with connector("ci_operator") as conn:
+            schedule = ops.read_schedule(conn)
+        return lab.with_switches(lab_ready(), settings, schedule)
+
     async def authenticate(request: Request) -> Principal | Response:
         header = request.headers.get("authorization", "")
         scheme, _, token = header.partition(" ")
@@ -654,7 +661,7 @@ def build_admin_app(
         person = lab.addresses(body.get("person"))
         received_by = lab.addresses(body.get("received_by")) or person
         result = lab.run(
-            lab_ready(),
+            lab_now(),
             item,
             person,
             received_by=received_by,
@@ -676,7 +683,7 @@ def build_admin_app(
             (p["email_normalized"] for p in email["participants"] if p["role"] == "from"), ""
         )
         result = lab.run(
-            lab_ready(),
+            lab_now(),
             lab.stored_input(email),
             person,
             received_by=[email["mailbox"]],

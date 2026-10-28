@@ -340,6 +340,8 @@ async function overview() {
         backlog.oldest_fetched_at ? `Oldest ${short(backlog.oldest_fetched_at)}` : "Nothing waiting"),
       stat("Processing", "zap", s.processing_enabled ? "On" : "Off", failed ? `${num(failed)} failed` : "No failures"),
     ),
+    (s.prompt_shield_enabled === false || s.masking_enabled === false)
+      ? note(`Testing mode: ${[s.prompt_shield_enabled === false ? "prompt-injection check" : "", s.masking_enabled === false ? "masking" : ""].filter(Boolean).join(" and ")} switched off in Schedule & Runs.`, "warn") : null,
     card({ title: "Run a Capture Now", sub: "Pulls mail from every eligible mailbox for the window you choose. Duplicates are skipped.",
       actions: [field("Look Back (Hours)", hours),
         h("button", { class: "btn primary", style: "align-self:flex-end", onclick: guard(async () => {
@@ -406,6 +408,8 @@ async function schedulePage() {
     weekdays_only: h("input", { type: "checkbox", checked: s.weekdays_only }),
     time_zone: h("input", { value: s.time_zone, class: "tz" }),
     processing_enabled: h("input", { type: "checkbox", checked: s.processing_enabled }),
+    prompt_shield_enabled: h("input", { type: "checkbox", checked: s.prompt_shield_enabled !== false }),
+    masking_enabled: h("input", { type: "checkbox", checked: s.masking_enabled !== false }),
   };
   const save = guard(async () => {
     const body = {
@@ -413,6 +417,7 @@ async function schedulePage() {
       capture_window_hours: Number(f.capture_window_hours.value), active_start_hour: Number(f.active_start_hour.value),
       active_end_hour: Number(f.active_end_hour.value), weekdays_only: f.weekdays_only.checked,
       time_zone: f.time_zone.value.trim(), processing_enabled: f.processing_enabled.checked,
+      prompt_shield_enabled: f.prompt_shield_enabled.checked, masking_enabled: f.masking_enabled.checked,
     };
     await post("/api/schedule", body, "PUT");
     toast("Schedule saved."); route();
@@ -432,6 +437,12 @@ async function schedulePage() {
         setting("Weekdays Only", "Skip Saturday and Sunday.", switchEl(f.weekdays_only)),
         setting("Processing", "Screen, classify, embed and publish captured mail.", switchEl(f.processing_enabled)))),
     note("The Azure app settings CAPTURE_ENABLED and PROCESSING_ENABLED are a hard off switch above this schedule."),
+    card({ title: "Paid Safety Checks", sub: "Billed per 1,000 characters. Turn off only while testing; changes apply from the next processing run.", flush: true, class: "spaced" },
+      h("div", { class: "settings" },
+        setting("Prompt-Injection Check", "Azure Prompt Shields. Off: email text reaches the classifier and AI agents without this check.", switchEl(f.prompt_shield_enabled)),
+        setting("Mask Sensitive Numbers and Credentials", "Azure AI Language. Off: nothing is masked, and mail the classifier marks as holding ID, bank or card numbers or credentials is restricted (hidden) instead.", switchEl(f.masking_enabled)))),
+    (s.prompt_shield_enabled === false || s.masking_enabled === false)
+      ? note("A safety check is off. Mail processed now is recorded; run ci process --rescreen --limit 0 to redo it with the checks on.", "warn") : null,
     card({ title: "Run History", sub: `${(runs.runs || []).length} most recent runs`, flush: true, class: "spaced" }, runsTable(runs.runs)),
   );
 }
