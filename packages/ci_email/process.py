@@ -735,13 +735,33 @@ def process_all(
     limit: int | None = None,
     workers: int = 4,
     max_seconds: float | None = None,
+    progress: Callable[[dict[str, int]], None] | None = None,
+    progress_seconds: float = 60.0,
 ) -> Counter[str]:
     """Process until nothing is queued, ``limit`` versions are done, or ``max_seconds``
-    pass (checked before each claim, so a run can overrun by one message)."""
+    pass (checked before each claim, so a run can overrun by one message).
+
+    ``progress`` receives the counts so far about every ``progress_seconds`` (from
+    one worker at a time); a failing callback is logged and never stops the run."""
     counts: Counter[str] = Counter()
     budget = [limit if limit is not None else 10**12]
     lock = threading.Lock()
     deadline = time.monotonic() + max_seconds if max_seconds is not None else None
+    running: Counter[str] = Counter()
+    last_report = [time.monotonic()]
+
+    def report(outcome: str) -> None:
+        with lock:
+            running[outcome] += 1
+            due = progress is not None and time.monotonic() - last_report[0] >= progress_seconds
+            if due:
+                last_report[0] = time.monotonic()
+                snapshot = dict(running)
+        if due and progress is not None:
+            try:
+                progress(snapshot)
+            except Exception as exc:  # progress is informational only
+                log.warning("progress not recorded: %s", type(exc).__name__)
 
     def take() -> bool:
         if deadline is not None and time.monotonic() >= deadline:
@@ -758,6 +778,7 @@ def process_all(
                 if outcome is None:
                     break
                 local[outcome] += 1
+                report(outcome)
         return local
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
