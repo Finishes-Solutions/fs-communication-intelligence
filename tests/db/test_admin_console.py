@@ -21,9 +21,10 @@ from ci_core.db import AppRole, Connection, connect
 from ci_core.settings import Settings
 from ci_email.capture import capture_window
 from ci_email.fixture import FixtureGraphClient
-from ci_email.process import Backends, process_all
+from ci_email.process import Backends, process_all, store_missing_originals
 from ci_processing.classification import FakeClassifier
 from ci_processing.embedding import FakeEmbedder
+from ci_processing.originals import DirectoryStore
 from ci_processing.screening import FakeScreener
 from ci_retrieval.entra import EntraTokenVerifier
 from ci_retrieval.identity import READER_ALL
@@ -63,7 +64,12 @@ def auth(**overrides: Any) -> dict[str, str]:
 
 
 @pytest.fixture(scope="module")
-def database_ready(database: str) -> Iterator[str]:
+def files(tmp_path_factory: pytest.TempPathFactory) -> DirectoryStore:
+    return DirectoryStore(tmp_path_factory.mktemp("originals"))
+
+
+@pytest.fixture(scope="module")
+def database_ready(database: str, files: DirectoryStore) -> Iterator[str]:
     def connector(role: AppRole | None = None) -> Connection:
         return connect(dbname=database, role=role)
 
@@ -82,7 +88,12 @@ def database_ready(database: str) -> Iterator[str]:
     process_all(
         lambda: connector("ci_ingest"),
         Backends(
-            FakeScreener(), FakeClassifier(), FakeEmbedder(), graph=graph, extraction_enabled=True
+            FakeScreener(),
+            FakeClassifier(),
+            FakeEmbedder(),
+            graph=graph,
+            extraction_enabled=True,
+            originals=files,
         ),
         workers=1,
     )
@@ -90,7 +101,7 @@ def database_ready(database: str) -> Iterator[str]:
 
 
 @pytest.fixture
-def client(database_ready: str) -> Iterator[TestClient]:
+def client(database_ready: str, files: DirectoryStore) -> Iterator[TestClient]:
     settings = Settings(
         deployment_environment="development",
         attachment_unsupported_policy="publish_partial",
@@ -107,6 +118,7 @@ def client(database_ready: str) -> Iterator[TestClient]:
         ),
         connector=lambda role: connect(dbname=database_ready, role=role),  # type: ignore[arg-type]
         lab_backends=lambda: LabBackends(FakeScreener(), FakeClassifier()),
+        originals=files,
     )
     with TestClient(app, base_url=BASE) as c:
         yield c
@@ -296,3 +308,63 @@ def test_requeue_failed(client: TestClient, database_ready: str) -> None:
     response = client.post("/api/requeue-failed", headers=auth())
     assert response.status_code == 200 and response.json()["requeued"] == 0
     assert latest_audit(database_ready, "requeue_failed") is not None
+
+
+def invoice_detail(client: TestClient) -> dict[str, Any]:
+    found = client.get("/api/messages?q=invoice%204471&since_days=0", headers=auth()).json()
+    first = found["results"][0]["communication_id"]
+    detail: dict[str, Any] = client.get(f"/api/messages/{first}", headers=auth()).json()
+    return detail
+
+
+def test_original_files_are_served_only_for_authorized_messages(client: TestClient) -> None:
+    detail = invoice_detail(client)
+    pdf = next(a for a in detail["attachments"] if a["name"] == "Invoice-4471.pdf")
+    logo = next(a for a in detail["attachments"] if a["is_inline"])
+    assert pdf["file_id"] and logo["file_id"] is None  # signature images are not kept
+    url = f"/api/messages/{detail['communication_id']}/files/{pdf['file_id']}"
+    response = client.get(url, headers=auth())
+    assert response.status_code == 200 and response.content.startswith(b"%PDF")
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["content-disposition"].startswith("attachment;")
+    assert response.headers["content-security-policy"] == "sandbox; default-src 'none'"
+    assert client.get(url).status_code == 401
+    assert client.get(url, headers=auth(roles=[READER_ALL])).status_code == 403
+    # An admin with no reader role, a hash from another message and a malformed id: 404.
+    assert client.get(url, headers=auth(roles=[ADMIN_ROLE])).status_code == 404
+    other = client.get("/api/messages?since_days=0", headers=auth()).json()["results"]
+    elsewhere = next(r for r in other if r["communication_id"] != detail["communication_id"])
+    wrong = f"/api/messages/{elsewhere['communication_id']}/files/{pdf['file_id']}"
+    assert client.get(wrong, headers=auth()).status_code == 404
+    bad = f"/api/messages/{detail['communication_id']}/files/..%2F..%2Fetc"
+    assert client.get(bad, headers=auth()).status_code == 404
+
+
+def test_missing_originals_are_backfilled(database_ready: str, files: DirectoryStore) -> None:
+    def ingest() -> Connection:
+        return connect(dbname=database_ready, role="ci_ingest")
+
+    with connect(dbname=database_ready) as conn:
+        cleared = conn.execute(
+            "UPDATE email_attachments SET original_stored_at = NULL"
+            " WHERE original_stored_at IS NOT NULL RETURNING sha256"
+        ).fetchall()
+        conn.commit()
+    assert cleared
+    for path in files.root.rglob("*"):
+        if path.is_file():
+            path.unlink()
+    counts = store_missing_originals(
+        ingest,
+        Backends(
+            FakeScreener(),
+            FakeClassifier(),
+            FakeEmbedder(),
+            graph=FixtureGraphClient.from_directory(),
+            extraction_enabled=True,
+            originals=files,
+        ),
+        limit=500,
+    )
+    assert counts["originals_backfilled"] >= 1 and not counts["original_download_failed"]
+    assert all(files.get(r["sha256"]) is not None for r in cleared if r["sha256"])

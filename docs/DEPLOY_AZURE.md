@@ -216,28 +216,32 @@ A web page at `https://func-fs-ci-adm-dev-1026.azurewebsites.net/` for console a
 - **Overview:** mode, schedule, backlog, message states and reasons, labels, attachment extraction, failures, and recent runs. Also **Run capture now** (any look-back) and **Requeue failed**.
 - **Schedule & runs:** how often capture runs, its look-back, active hours, weekdays only, processing on/off. Below that, every run with its counts.
 - **Mailboxes:** filter, approve or unapprove, exclude or un-exclude (with a reason), approve all enrolled, change mode, and exclude a person or domain in every mailbox.
-- **Messages:** search or list published mail by mailbox, sender, label and date. A message shows the AI summary, action and risk, labels, people, the body, each attachment's extracted text, and an **Open in Outlook** link (it works only for mailboxes your account can open). Original attachment files aren't stored yet; that comes with malware scanning in E2.
+- **Messages:** search or list published mail by mailbox, sender, label and date. A message shows the AI summary, action and risk, labels, people, the body, and its **files**: preview (PDF, images, text), download, or the extracted text. There's also an **Open in Outlook** link, which works only for mailboxes your account can open.
 - **Action items:** the same list agents get from `list_actionable`, for any person or window.
 - **Not published:** held, restricted, bulk and failed messages, with metadata and reason only, never the subject or text.
-- **Lab:** paste an email or re-run a stored one. It runs the real screening, classifier and routing rules, stores nothing, and explains why the email would or wouldn't be an action item or risk for a given person. Each run calls Azure OpenAI once.
+- **Communication Lab:** write an email (or start from a sample: invoice, change order, lien notice, failed inspection, newsletter, phishing, SSN, prompt injection), or pick a stored one. It runs the real screening, classifier, policy and routing and stores nothing. It shows a verdict ("Action item", "Project risk", "Restricted"…), each pipeline step, why, the AI proposal, every label against its thresholds, the difference from what was stored, and the message's files. Each run calls Azure OpenAI once.
+
+**Original files.** From the deploy that includes this, processing keeps each attachment's original file in the private container `attachments` of `stfscievidev1026`. Each distinct file is stored once, and inline signature images are skipped. Each processing pass also backfills up to 100 files for mail processed earlier. Files are **not malware-scanned** (your decision, 2026-10-28), so open unexpected downloads with care. The console serves a file only when you may read its message; restricted, held and bulk mail never get file access.
 
 Access takes both the delegated scope `Communications.Admin` and the app role `Communications.Admin` on the search API registration. Everyone else gets 403. Content goes through the same authorized search as the agents, so the console shows exactly what your Reader role allows. Every change and every lab run is written to `audit_events` (lab runs record the input hash only). The app has its own identity (`id-fs-ci-admin-dev`), with database roles `ci_operator` and `ci_search` and no mailbox access.
 
-Set it up once, from Cloud Shell:
+Set it up once, from Cloud Shell in the repository folder. First see what already exists (this changes nothing):
+
+```bash
+CHECK_ONLY=1 bash scripts/azure/4-admin-console.sh
+```
+
+Then run it. It creates only what's missing, sets up file storage, applies the database migrations and creates the console's database login:
 
 ```bash
 CHAT_DEPLOYMENT=gpt-4.1-mini ADMINS="matthews@finishessolutions.com" bash scripts/azure/4-admin-console.sh
 ```
 
-```bash
-make azure-migrate AZ_PSQL=psql && make azure-db-principals AZ_PSQL=psql
-```
-
-Add the two secrets it prints (`ADMIN_FUNCTION_APP`, `ADMIN_PUBLIC_URL`) to the GitHub environment `development`, then rerun **Deploy (development)**. Apply the migration (`0005_ops.sql`) **before** the new ingestion code deploys: until it exists, the capture and processing timers fail every tick. To add another admin later, rerun the script with their address in `ADMINS`.
+Add the two secrets it prints (`ADMIN_FUNCTION_APP`, `ADMIN_PUBLIC_URL`) to the GitHub environment `development`, then merge the pull request (or rerun **Deploy (development)**). The migrations (`0005`, `0006`) must be applied **before** the new ingestion code deploys; otherwise the capture and processing timers fail every tick until they are. To add another admin later, rerun the script with their address in `ADMINS`.
 
 ## What isn't done yet
 
 - Per-folder delta sync and new-mail notifications (the hourly window is the stopgap); deletions and moves after capture aren't tracked.
 - REST endpoints (MCP only for now), dead-letter alerts and dashboards, and infrastructure as Bicep (these scripts are the interim).
 - monday.com Executive Hub feed.
-- OCR and malware scanning for attachments (the extraction exception to L11 still applies).
+- OCR and malware scanning for attachments (the extraction and original-file exceptions to L11 still apply).

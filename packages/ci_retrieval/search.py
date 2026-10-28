@@ -319,7 +319,8 @@ def get_email(
         (communication_id,),
     ).fetchall()
     attachments = conn.execute(
-        "SELECT name, content_type, size_bytes, is_inline, extraction_status"
+        "SELECT name, content_type, size_bytes, is_inline, extraction_status,"
+        " CASE WHEN original_stored THEN sha256 END AS file_id"
         " FROM published_email_attachments WHERE communication_id = %s ORDER BY name",
         (communication_id,),
     ).fetchall()
@@ -494,3 +495,30 @@ def list_actionable(
         "risks": risks,
         "coverage": coverage(conn),
     }
+
+
+def attachment_file(
+    conn: Connection, principal: Principal, communication_id: str, file_id: str
+) -> dict[str, Any] | None:
+    """Name and type of a stored original, only if the caller may read its message.
+
+    ``file_id`` is the file's SHA-256; it must belong to this published message,
+    so knowing a hash from elsewhere does not open a file.
+    """
+    auth = authorize(conn, principal)
+    row = None
+    if not auth.empty:
+        row = conn.execute(
+            f"SELECT a.name, a.content_type, a.size_bytes FROM published_email_attachments a"  # noqa: S608
+            f" WHERE a.communication_id = %(id)s::uuid AND a.sha256 = %(file)s"
+            f" AND a.original_stored AND {_AUTH.format(a='a')} LIMIT 1",
+            _params(auth, Filters()) | {"id": communication_id, "file": file_id},
+        ).fetchone()
+    _audit(
+        conn,
+        principal,
+        "get_attachment",
+        {"found": row is not None, "result_ids": [communication_id], "file": file_id},
+    )
+    conn.commit()
+    return dict(row) if row else None

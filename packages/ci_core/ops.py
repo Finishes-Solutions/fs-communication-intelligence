@@ -218,6 +218,7 @@ def overview(conn: Connection) -> dict[str, Any]:
             " ORDER BY messages DESC"
         ),
         "extraction": rows("SELECT * FROM ops_extraction_counts ORDER BY attachments DESC"),
+        "originals": rows("SELECT * FROM ops_original_counts ORDER BY attachments DESC"),
     }
 
 

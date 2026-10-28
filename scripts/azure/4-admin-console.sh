@@ -1,23 +1,51 @@
 #!/usr/bin/env bash
 # Step 4 (Azure Cloud Shell, Bash; needs an Entra admin who can grant consent):
-# the admin console. Creates its own managed identity, storage account and Flex
-# Consumption Function App; adds the scope and app role Communications.Admin to
-# the existing search API registration (keeping everything already there);
-# gives that role to the named admins; registers a browser (SPA) sign-in app
-# with no secret; and lets GitHub deploy the app. Safe to re-run.
+# the admin console and original attachment files, in one go. Safe to re-run:
+# it checks what already exists and only creates what is missing.
 #
 #   CHAT_DEPLOYMENT=gpt-4.1-mini ADMINS="matthews@finishessolutions.com" \
 #     bash scripts/azure/4-admin-console.sh
 #
-# Afterwards: `make azure-db-principals` (database login for the new identity)
-# and `make azure-migrate` (schedule and run-history tables), then add the two
-# GitHub secrets this prints and rerun the deploy workflow.
+# CHECK_ONLY=1 prints what exists and what would be created, and changes nothing.
+# Different names? Export them first (see scripts/azure/common.sh), e.g.
+# ADM_APP=my-admin-app EVI_ST=mystorage bash scripts/azure/4-admin-console.sh
+#
+# What it does:
+#  1. Admin console: managed identity id-fs-ci-admin-dev, storage account and
+#     Flex Consumption Function App; scope + app role Communications.Admin on the
+#     existing search API registration (keeping what is there); the role for
+#     ADMINS; a browser (SPA) sign-in app with no secret; GitHub deploy access.
+#  2. Original files: private container "attachments" in the evidence storage
+#     account; the ingestion identity may write, the console identity may read;
+#     ATTACHMENT_STORE_ORIGINALS=true on the ingestion app. No malware scanning
+#     (Matthew, 2026-10-28; CLAUDE.md section 3a).
+#  3. Database (when psql and local/azure-dev.env are present): migrations
+#     0005-0006 and the console identity's database login.
+# Then add the two GitHub secrets it prints and merge/redeploy.
 set -euo pipefail
-: "${CHAT_DEPLOYMENT:?set CHAT_DEPLOYMENT to the name of your Azure OpenAI chat deployment}"
-: "${ADMINS:?set ADMINS to the sign-in addresses allowed into the admin console}"
 source "$(dirname "$0")/common.sh"
 graph() { az rest --method "$1" --uri "https://graph.microsoft.com/v1.0/$2" \
   --headers Content-Type=application/json ${3:+--body "$3"} --only-show-errors; }
+
+have() { "$@" >/dev/null 2>&1 && echo "exists " || echo "MISSING"; }
+echo "== what is already there"
+printf '  %s  resource group     %s\n' "$(have az group show -n "$RG")" "$RG"
+printf '  %s  ingestion app      %s\n' "$(have az functionapp show -g "$RG" -n "$ING_APP")" "$ING_APP"
+printf '  %s  ingestion identity %s\n' "$(have az identity show -g "$RG" -n "$ING_MI")" "$ING_MI"
+printf '  %s  search API (Entra) %s\n' "$( [ -n "$(az ad app list --display-name "$API_NAME" --query "[0].appId" -o tsv)" ] && echo "exists " || echo "MISSING")" "$API_NAME"
+printf '  %s  admin identity     %s\n' "$(have az identity show -g "$RG" -n "$ADM_MI")" "$ADM_MI"
+printf '  %s  admin storage      %s\n' "$(have az storage account show -g "$RG" -n "$ADM_ST")" "$ADM_ST"
+printf '  %s  admin app          %s\n' "$(have az functionapp show -g "$RG" -n "$ADM_APP")" "$ADM_APP"
+printf '  %s  sign-in app        FS Communications Admin Console\n' "$( [ -n "$(az ad app list --display-name "FS Communications Admin Console" --query "[0].appId" -o tsv)" ] && echo "exists " || echo "MISSING")"
+printf '  %s  evidence storage   %s\n' "$(have az storage account show -g "$RG" -n "$EVI_ST")" "$EVI_ST"
+printf '  %s  files container    %s/%s\n' "$( [ "$(az storage container-rm exists -g "$RG" --storage-account "$EVI_ST" -n "$EVI_CONTAINER" --query exists -o tsv 2>/dev/null)" = "true" ] && echo "exists " || echo "MISSING")" "$EVI_ST" "$EVI_CONTAINER"
+for needed in "$ING_APP:functionapp" "$ING_MI:identity"; do
+  name="${needed%%:*}"; kind="${needed#*:}"
+  az "$kind" show -g "$RG" -n "$name" >/dev/null 2>&1 || { echo "ERROR: $name is missing; run scripts/azure/1-function-apps.sh first" >&2; exit 1; }
+done
+if [ "${CHECK_ONLY:-0}" = "1" ]; then echo "CHECK_ONLY=1: nothing changed."; exit 0; fi
+: "${CHAT_DEPLOYMENT:?set CHAT_DEPLOYMENT to the name of your Azure OpenAI chat deployment}"
+: "${ADMINS:?set ADMINS to the sign-in addresses allowed into the admin console}"
 
 echo "== identity, storage and Function App"
 if ! az identity show -g "$RG" -n "$ADM_MI" >/dev/null 2>&1; then
@@ -116,6 +144,34 @@ consent "$SPA_SP" "$API_SP" "Communications.Admin"
 consent "$SPA_SP" "$GRAPH_SP" "openid profile"
 echo "  redirect https://$ADM_HOST/ and consent ok"
 
+echo "== original attachment files: $EVI_ST/$EVI_CONTAINER (private)"
+if ! az storage account show -g "$RG" -n "$EVI_ST" >/dev/null 2>&1; then
+  az storage account create -g "$RG" -n "$EVI_ST" -l "$LOC" --sku Standard_LRS --kind StorageV2 \
+    --min-tls-version TLS1_2 --allow-blob-public-access false --only-show-errors >/dev/null
+  echo "  storage account created"
+else
+  az storage account update -g "$RG" -n "$EVI_ST" --allow-blob-public-access false \
+    --min-tls-version TLS1_2 --only-show-errors >/dev/null
+  echo "  storage account exists (public blob access kept off)"
+fi
+if [ "$(az storage container-rm exists -g "$RG" --storage-account "$EVI_ST" -n "$EVI_CONTAINER" --query exists -o tsv)" != "true" ]; then
+  az storage container-rm create -g "$RG" --storage-account "$EVI_ST" -n "$EVI_CONTAINER" \
+    --public-access off --only-show-errors >/dev/null
+  echo "  container created"
+fi
+EVI_ID="$(az storage account show -g "$RG" -n "$EVI_ST" --query id -o tsv)"
+CONTAINER_SCOPE="$EVI_ID/blobServices/default/containers/$EVI_CONTAINER"
+role "$(mi "$ING_MI" principalId)" "Storage Blob Data Contributor" "$CONTAINER_SCOPE"   # writes files
+role "$ADM_P" "Storage Blob Data Reader" "$CONTAINER_SCOPE"                            # serves them
+if [ "$(az storage account show -g "$RG" -n "$EVI_ST" --query networkRuleSet.defaultAction -o tsv)" = "Deny" ]; then
+  echo "  WARNING: $EVI_ST only accepts selected networks. The Function Apps have no VNet, so"
+  echo "  storing and serving files will fail until you allow access (Networking -> Public"
+  echo "  network access -> Enabled from all networks; Entra sign-in is still required)."
+fi
+az functionapp config appsettings set -g "$RG" -n "$ING_APP" --only-show-errors >/dev/null --settings \
+  "ATTACHMENT_STORE_ORIGINALS=true" "EVIDENCE_BLOB_ACCOUNT=$EVI_ST" "EVIDENCE_BLOB_CONTAINER=$EVI_CONTAINER"
+echo "  ingestion app keeps originals from its next deploy"
+
 echo "== app settings"
 PGHOST="$PG.postgres.database.azure.com"
 az functionapp config appsettings set -g "$RG" -n "$ADM_APP" --only-show-errors >/dev/null --settings \
@@ -129,7 +185,7 @@ az functionapp config appsettings set -g "$RG" -n "$ADM_APP" --only-show-errors 
   "AZURE_LANGUAGE_ENDPOINT=$(endpoint "$LANG_SVC")" \
   "AZURE_CONTENT_SAFETY_ENDPOINT=$(endpoint "$SAFE")" \
   "ENTRA_TENANT_ID=$TENANT" "SEARCH_API_CLIENT_ID=$API_APP_ID" "SEARCH_API_APP_ID_URI=$API_URI" \
-  "ADMIN_SPA_CLIENT_ID=$SPA_ID"
+  "ADMIN_SPA_CLIENT_ID=$SPA_ID" "EVIDENCE_BLOB_ACCOUNT=$EVI_ST" "EVIDENCE_BLOB_CONTAINER=$EVI_CONTAINER"
 az functionapp config appsettings delete -g "$RG" -n "$ADM_APP" --setting-names AzureWebJobsStorage \
   --only-show-errors >/dev/null || true
 echo "  settings ok"
@@ -142,13 +198,24 @@ role "$ADM_P" "Cognitive Services User" "$(cog "$SAFE")"
 role "$(mi "$GH_MI" principalId)" "Website Contributor" \
   "$(az functionapp show -g "$RG" -n "$ADM_APP" --query id -o tsv)"
 
+echo "== database"
+cd "$(dirname "$0")/../.."
+if command -v psql >/dev/null && [ -f local/azure-dev.env ]; then
+  make azure-migrate AZ_PSQL=psql && make azure-db-principals AZ_PSQL=psql
+  DB_DONE=1
+else
+  echo "  skipped (needs psql and local/azure-dev.env); run from a machine that has them:"
+  echo "    make azure-migrate AZ_PSQL=psql && make azure-db-principals AZ_PSQL=psql"
+  DB_DONE=0
+fi
+
 cat <<OUT
 
-Done. Next:
-  1. make azure-db-principals    (database login for $ADM_MI: ci_operator + ci_search)
-  2. make azure-migrate          (adds the schedule and run-history tables)
-  3. Add two SECRETS to the GitHub environment "development":
-       ADMIN_FUNCTION_APP   $ADM_APP
-       ADMIN_PUBLIC_URL     https://$ADM_HOST
-  4. Rerun "Deploy (development)" in GitHub Actions, then open https://$ADM_HOST/
+Done.$( [ "$DB_DONE" = 1 ] || echo " Database step still to do (see above).")
+Add two SECRETS to the GitHub environment "development"
+(GitHub -> repo Settings -> Environments -> development -> Add environment secret):
+  ADMIN_FUNCTION_APP   $ADM_APP
+  ADMIN_PUBLIC_URL     https://$ADM_HOST
+Then merge the admin-console pull request (or rerun "Deploy (development)").
+Open https://$ADM_HOST/ and sign in as one of: $ADMINS
 OUT

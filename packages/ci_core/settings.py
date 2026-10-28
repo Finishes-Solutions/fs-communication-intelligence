@@ -133,6 +133,13 @@ class Settings(BaseSettings):
     # to L11 approved by Matthew on 2026-10-28 for the first real-mail run.
     attachment_extraction_enabled: bool = False
     attachment_max_bytes: int = 25 * 1024 * 1024
+    # Keep original attachment files in Blob Storage (evidence account, container
+    # "attachments"), without malware scanning: approved by Matthew on 2026-10-28
+    # (CLAUDE.md section 3a). Locally they go to LOCAL_ORIGINALS_DIR instead.
+    attachment_store_originals: bool = False
+    evidence_blob_account: str | None = None
+    evidence_blob_container: str = "attachments"
+    local_originals_dir: str = "local/originals"
 
     # Ingestion Function App switches. Capture and processing stay off until
     # someone turns them on; the database mode (runtime_config) still applies.

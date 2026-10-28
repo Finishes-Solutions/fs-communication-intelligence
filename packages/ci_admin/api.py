@@ -12,8 +12,10 @@ Operations (schedule, run history, scope, mode, requeue) run as database role
 content goes through the same authorized retrieval code as the MCP tools
 (``ci_search``, grants from the token's roles, audited per call), so the
 console shows exactly what that person may read: restricted mail never.
-Attachment originals are not stored (E1); the console shows extracted text and
-the Outlook link.
+Original attachment files (kept without malware scanning, CLAUDE.md section
+3a) are served only for a message the caller may read, always as a download
+with a sandboxing CSP, and typed from a short allow-list so a file can never
+run as a page of this site.
 """
 
 from __future__ import annotations
@@ -21,10 +23,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
@@ -54,6 +58,7 @@ from ci_core.runtime import RuntimeConfigError, active_config, eligible_mailboxe
 from ci_core.settings import Settings
 from ci_processing.classification import LABELS, POLICY_VERSION
 from ci_processing.embedding import Embedder
+from ci_processing.originals import OriginalStore
 from ci_retrieval import search as retrieval
 from ci_retrieval.entra import EntraTokenVerifier
 from ci_retrieval.identity import Principal
@@ -65,12 +70,23 @@ ADMIN_ROLE = "Communications.Admin"
 STATIC = Path(__file__).parent / "static"
 
 Connector = Callable[[str], Connection]
+# Types the browser may preview; everything else is served as an opaque download.
+PREVIEW_TYPES = {
+    "application/pdf",
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "text/plain",
+    "text/csv",
+}
+MAX_FILE_BYTES = 30 * 1024 * 1024
 Handler = Callable[[Request, Principal, dict[str, Any]], Any]
 
 _CSP = (
-    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-    "connect-src 'self' https://login.microsoftonline.com; frame-ancestors 'none'; "
-    "base-uri 'none'; form-action 'none'; object-src 'none'"
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; "
+    "connect-src 'self' https://login.microsoftonline.com; frame-src blob:; "
+    "object-src blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
 )
 _HEADERS = [
     (b"content-security-policy", _CSP.encode()),
@@ -93,10 +109,11 @@ class SecurityHeaders:
 
         async def with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
-                names = {k for k, _ in _HEADERS}
-                message["headers"] = [
-                    (k, v) for k, v in message.get("headers", []) if k not in names
-                ] + _HEADERS
+                # A response may set its own (stricter) value, e.g. a file download.
+                present = {k.lower() for k, _ in message.get("headers", [])}
+                message["headers"] = list(message.get("headers", [])) + [
+                    (k, v) for k, v in _HEADERS if k not in present
+                ]
             await send(message)
 
         await self.app(scope, receive, with_headers)
@@ -152,6 +169,7 @@ def build_admin_app(
     verifier: EntraTokenVerifier | None = None,
     connector: Connector = _role_connect,
     lab_backends: Callable[[], lab.LabBackends] | None = None,
+    originals: OriginalStore | None = None,
 ) -> Starlette:
     tenant = settings.entra_tenant_id or settings.graph_tenant_id or ""
     settings.require("search_api_client_id", "search_api_app_id_uri", "admin_spa_client_id")
@@ -166,6 +184,10 @@ def build_admin_app(
     if verifier.required_scope != ADMIN_SCOPE:
         raise ValueError("the admin console needs a verifier for Communications.Admin")
     _lab_cache: list[lab.LabBackends] = []
+    if originals is None:
+        from ci_cli.backends import original_store
+
+        originals = original_store(settings)
 
     def lab_ready() -> lab.LabBackends:
         if not _lab_cache:
@@ -216,7 +238,7 @@ def build_admin_app(
                 return JSONResponse({"error": exc.detail}, exc.status_code)
             except (OperatorError, ValueError, RuntimeConfigError) as exc:
                 return JSONResponse({"error": str(exc)}, 400)
-            return _json(data)
+            return data if isinstance(data, Response) else _json(data)
 
         return run
 
@@ -379,6 +401,35 @@ def build_admin_app(
             raise HTTPException(404, "not found in mail you are authorized to see")
         return found
 
+    def attachment(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        file_id = request.path_params["file_id"].lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", file_id):
+            raise HTTPException(404, "no such file")
+        with connector("ci_search") as conn:
+            meta = retrieval.attachment_file(conn, principal, request.path_params["id"], file_id)
+        if meta is None:
+            raise HTTPException(404, "not found in mail you are authorized to see")
+        if originals is None:
+            raise HTTPException(404, "original files are not configured")
+        data = originals.get(file_id)
+        if data is None:
+            raise HTTPException(404, "the original file is not stored")
+        if len(data) > MAX_FILE_BYTES:
+            raise HTTPException(413, "file too large to serve")
+        declared = (meta["content_type"] or "").split(";")[0].strip().lower()
+        media = declared if declared in PREVIEW_TYPES else "application/octet-stream"
+        name = (meta["name"] or "attachment").replace("\r", " ").replace("\n", " ")
+        return Response(
+            data,
+            media_type=media,
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}",
+                "Content-Security-Policy": "sandbox; default-src 'none'",
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "no-store",
+            },
+        )
+
     def actionable(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
         hours = _float(request.query_params.get("hours"), "hours") or 24
         with connector("ci_search") as conn:
@@ -469,6 +520,7 @@ def build_admin_app(
         Route("/api/requeue-failed", endpoint(requeue), methods=["POST"]),
         Route("/api/messages", endpoint(messages)),
         Route("/api/messages/{id}", endpoint(message)),
+        Route("/api/messages/{id}/files/{file_id}", endpoint(attachment)),
         Route("/api/actionable", endpoint(actionable)),
         Route("/api/lab/classify", endpoint(lab_classify), methods=["POST"]),
         Route("/api/lab/reclassify", endpoint(lab_reclassify), methods=["POST"]),

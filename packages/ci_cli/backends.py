@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ci_core.settings import (
     ClassifierBackend,
+    DeploymentEnvironment,
     EmbedderBackend,
     GraphAuth,
     GraphBackend,
@@ -16,6 +17,7 @@ from ci_email.graph import GraphClient
 from ci_email.process import Backends
 from ci_processing.classification import Classifier, FakeClassifier
 from ci_processing.embedding import Embedder, FakeEmbedder
+from ci_processing.originals import AzureBlobStore, DirectoryStore, OriginalStore
 from ci_processing.screening import FakeScreener, Screener
 
 
@@ -80,6 +82,15 @@ def classifier(settings: Settings) -> Classifier:
     )
 
 
+def original_store(settings: Settings) -> OriginalStore | None:
+    """Where original attachment files live (None when not configured)."""
+    if settings.deployment_environment is DeploymentEnvironment.LOCAL:
+        return DirectoryStore(settings.local_originals_dir)
+    if settings.evidence_blob_account:
+        return AzureBlobStore(settings.evidence_blob_account, settings.evidence_blob_container)
+    return None
+
+
 def processing_backends(settings: Settings) -> Backends:
     return Backends(
         screener=screener(settings),
@@ -88,4 +99,5 @@ def processing_backends(settings: Settings) -> Backends:
         graph=graph_client(settings) if settings.attachment_extraction_enabled else None,
         extraction_enabled=settings.attachment_extraction_enabled,
         attachment_max_bytes=settings.attachment_max_bytes,
+        originals=original_store(settings) if settings.attachment_store_originals else None,
     )

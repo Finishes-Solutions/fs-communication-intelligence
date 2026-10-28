@@ -22,7 +22,7 @@ from ci_core.runtime import EmptyScopeError, RuntimeConfigError
 from ci_core.settings import Settings
 from ci_email.capture import capture_window
 from ci_email.inventory import sync_inventory
-from ci_email.process import process_all
+from ci_email.process import process_all, store_missing_originals
 
 log = logging.getLogger("ci.scheduled")
 
@@ -110,14 +110,16 @@ def run_processing(settings: Settings) -> dict[str, int] | None:
         conn.commit()
     status, error = "succeeded", None
     try:
+        configured = backends.processing_backends(settings)
         counts = dict(
             process_all(
                 lambda: connect(role="ci_ingest"),
-                backends.processing_backends(settings),
+                configured,
                 workers=settings.processing_workers,
                 max_seconds=settings.processing_minutes * 60,
             )
         )
+        counts.update(store_missing_originals(lambda: connect(role="ci_ingest"), configured))
     except Exception as exc:
         counts, status, error = {}, "failed", type(exc).__name__[:60]
         log.exception("processing failed")
