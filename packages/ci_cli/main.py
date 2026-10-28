@@ -23,6 +23,8 @@ The database comes from the standard ``PG*`` environment variables; locally,
     ci process [--limit N] [--retry-failed]   extract, screen, classify, embed, publish
     ci process --retry-attachments --limit 0  re-read failed attachments (the app reprocesses)
     ci process --remask --limit 0             reprocess everything under the masking rules
+    ci process --retry-skipped [--domain D] --limit 0
+                                              process skipped bulk/automated mail in full
     ci stats                                  counts by state, outcome, label, extraction
     ci search "QUERY" [--mailbox ADDRESS]     authorized search as the signed-in person
     ci actionable [--person ADDRESS] [--hours 24] [--out FILE.md]
@@ -142,6 +144,12 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="reprocess every processed message so the current masking rules apply",
     )
+    process.add_argument(
+        "--retry-skipped",
+        action="store_true",
+        help="process mail the bulk/automated pre-filter skipped in full (paid steps run)",
+    )
+    process.add_argument("--domain", help="with --retry-skipped: only this sender domain")
     sub.add_parser("stats")
     search = sub.add_parser("search")
     search.add_argument("query")

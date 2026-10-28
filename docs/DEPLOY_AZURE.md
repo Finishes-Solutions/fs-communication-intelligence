@@ -177,6 +177,16 @@ ci schedule set --processing-on
 
 Each message is unsearchable for a few minutes while it is reprocessed. `SENSITIVE_DATA_POLICY=restrict` on the ingestion app brings back the old rule. The original attachment files kept in Blob Storage are not masked; only the admin console can open them.
 
+**Cost controls (2026-10-28).** Two changes cut the per-email cost of the AI services:
+
+- *Bulk and automated mail is skipped before any paid step.* A message from a no-reply, notifications or alerts address, or with an unsubscribe link (and not a reply or forward), is recorded as not indexed with reason `not_indexed:automated_sender` or `not_indexed:bulk_unsubscribe`. Prompt Shields, masking, classification and embeddings are not called. Mail with a real attachment (not a signature image or logo) is never skipped, because invoices and scans often come from no-reply addresses. Some systems send project content from a no-reply address, e.g. a project-management tool's RFI or change-order notices. List their domains on the ingestion app so they are always processed in full: `BULK_PREFILTER_ALLOW_DOMAINS=example-pm.com,example-sign.net`. `BULK_PREFILTER_ENABLED=false` turns the rule off. `ci stats` lists the skipped mail by sender domain. To process skipped mail in full afterwards (all of it, or one domain), run this; the paid steps then run for those messages:
+
+```bash
+ci process --retry-skipped --domain example-pm.com --limit 0
+```
+
+- *Prompt Shields reads only what the classifier reads*: the subject, the first 12,000 characters of the body, and the first 3,000 characters of up to 5 attachments. Masking still covers all indexed text. The trade-off: text past those limits is indexed without the prompt-injection check. Agents are already told that returned email text is untrusted. With `SENSITIVE_DATA_POLICY=restrict` the whole text is still screened, because that mode's PII check must see everything indexed.
+
 If Cloud Shell can't reach the database (timeout), add its address: `az postgres flexible-server firewall-rule create -g fs-communication-intelligence --server-name psql-fs-ci-dev-1026b --name cloudshell --start-ip-address $(curl -s https://api.ipify.org) --end-ip-address $(curl -s https://api.ipify.org)`.
 
 ### Backfill further back

@@ -8,8 +8,9 @@ the new version becomes ``published``, the prior one ``superseded``, and
 published also withdraws any previously published version of the same
 message.
 
-Screening runs before classification; restricted and held content is never
-classified by AI, embedded or published. Classification of identical content
+Obvious bulk and automated mail is skipped first, before any paid step
+(ci_processing.prefilter). Screening runs before classification; restricted
+and held content is never classified by AI, embedded or published. Classification of identical content
 is reused across mailbox copies. Logs carry ids, counts and codes only.
 """
 
@@ -51,6 +52,7 @@ from ci_processing.extraction import (
 )
 from ci_processing.originals import OriginalStore, OriginalStoreError
 from ci_processing.policy import Disposition, Outcome, classification_outcome, screening_gate
+from ci_processing.prefilter import PREFILTER_VERSION, bulk_skip_reason
 from ci_processing.redaction import RedactionUnavailable, Redactor
 from ci_processing.routing import ROUTING_VERSION, PersonProfile, PersonRouter, rule_out
 from ci_processing.screening import Screener
@@ -77,6 +79,9 @@ class Backends:
     # Set: mask sensitive numbers and credentials (SENSITIVE_DATA_POLICY=mask).
     # None: restrict messages that contain them instead.
     redactor: Redactor | None = None
+    # Skip obvious bulk and automated mail before any paid step (ci_processing.prefilter).
+    prefilter: bool = False
+    prefilter_allow_domains: frozenset[str] = frozenset()
 
 
 def _sha(text: str) -> str:
@@ -516,12 +521,90 @@ def _route_people(
         )
 
 
+def _screen_text(
+    job: dict[str, Any], body: str, attachments: list[dict[str, Any]], backends: Backends
+) -> str:
+    """With masking on, the screener runs only Prompt Shields, so it gets only the
+    text the classifier reads (subject, body and attachment caps below); masking
+    still covers all indexed text. Without masking, the PII check must see
+    everything that would be indexed."""
+    if backends.redactor is None:
+        return "\n\n".join([job["title"] or "", body, *(a["content"] for a in attachments)])
+    return "\n\n".join(
+        [
+            job["title"] or "",
+            body[:CLASSIFY_BODY_CHARS],
+            *(
+                a["content"][:CLASSIFY_ATTACHMENT_CHARS]
+                for a in attachments[:CLASSIFY_MAX_ATTACHMENTS]
+            ),
+        ]
+    )
+
+
+def _prefilter(
+    conn: Connection, job: dict[str, Any], backends: Backends, sender: str, body: str
+) -> Outcome | None:
+    """Skip obvious bulk and automated mail with no paid call (ci_processing.prefilter),
+    unless an operator asked for this message to be processed in full."""
+    if conn.execute(
+        "SELECT 1 FROM policy_decisions WHERE version_id = %s AND check_name = 'prefilter'"
+        " AND reason_code = 'operator_override'",
+        (job["version_id"],),
+    ).fetchone():
+        return None
+    has_real_attachment = any(
+        not is_signature_image(a["name"], a["content_type"], a["size_bytes"], a["is_inline"])
+        for a in conn.execute(
+            "SELECT name, content_type, size_bytes, is_inline FROM email_attachments"
+            " WHERE version_id = %s",
+            (job["version_id"],),
+        ).fetchall()
+    )
+    reason = bulk_skip_reason(
+        sender=sender,
+        subject=job["title"] or "",
+        body=body,
+        has_real_attachment=has_real_attachment,
+        allowed_domains=backends.prefilter_allow_domains,
+    )
+    if reason is None:
+        return None
+    conn.execute(
+        "INSERT INTO policy_decisions (version_id, check_name, decision, reason_code,"
+        " policy_version, service_ref) VALUES (%s, 'prefilter', 'reject', %s, %s, 'rules')",
+        (job["version_id"], reason, PREFILTER_VERSION),
+    )
+    return Outcome(Disposition.NOT_INDEXED, (reason,))
+
+
+def _not_published(conn: Connection, job: dict[str, Any], outcome: Outcome) -> Disposition:
+    state = "held" if outcome.disposition is Disposition.HELD else "rejected"
+    reason = f"{outcome.disposition.value}:{','.join(outcome.reason_codes)}"
+    _withdraw_prior(conn, job)
+    conn.execute(
+        "UPDATE communication_versions SET processing_state = %s, hold_reason_code = %s"
+        " WHERE id = %s",
+        (state, reason, job["version_id"]),
+    )
+    conn.execute(
+        "UPDATE communications SET active_version_id = NULL WHERE id = %s",
+        (job["communication_id"],),
+    )
+    return outcome.disposition
+
+
 def process_version(conn: Connection, job: dict[str, Any], backends: Backends) -> Disposition:
     if backends.extraction_enabled and backends.graph is not None:
         _extract_attachments(conn, job, backends)
     body, attachments = _texts(conn, job["version_id"])
-    screen_text = "\n\n".join([job["title"] or "", body, *(a["content"] for a in attachments)])
-    screening = backends.screener.screen(screen_text)
+    people = _participants(conn, job["communication_id"])
+    sender = (people.get("from") or [""])[0]
+    if backends.prefilter:
+        skipped = _prefilter(conn, job, backends, sender, body)
+        if skipped is not None:
+            return _not_published(conn, job, skipped)
+    screening = backends.screener.screen(_screen_text(job, body, attachments, backends))
     for check in screening.checks:
         conn.execute(
             "INSERT INTO policy_decisions (version_id, check_name, decision, reason_code,"
@@ -544,8 +627,6 @@ def process_version(conn: Connection, job: dict[str, Any], backends: Backends) -
             outcome = Outcome(Disposition.HELD, ("redaction_pending",))
         else:
             body, attachments = _texts(conn, job["version_id"])
-    people = _participants(conn, job["communication_id"])
-    sender = (people.get("from") or [""])[0]
     result: ClassificationResult | None = None
     item: ClassificationInput | None = None
     if outcome is None:
@@ -566,19 +647,7 @@ def process_version(conn: Connection, job: dict[str, Any], backends: Backends) -
         _store_classification(conn, job["version_id"], result, outcome, reused_from)
 
     if not outcome.disposition.embedded:
-        state = "held" if outcome.disposition is Disposition.HELD else "rejected"
-        reason = f"{outcome.disposition.value}:{','.join(outcome.reason_codes)}"
-        _withdraw_prior(conn, job)
-        conn.execute(
-            "UPDATE communication_versions SET processing_state = %s, hold_reason_code = %s"
-            " WHERE id = %s",
-            (state, reason, job["version_id"]),
-        )
-        conn.execute(
-            "UPDATE communications SET active_version_id = NULL WHERE id = %s",
-            (job["communication_id"],),
-        )
-        return outcome.disposition
+        return _not_published(conn, job, outcome)
 
     if backends.router is not None and result is not None and item is not None:
         _route_people(conn, job, backends.router, result, item)
@@ -747,6 +816,35 @@ def requeue_for_remask(conn: Connection) -> int:
         ).fetchall()
     ]
     return _requeue(conn, versions)
+
+
+def requeue_skipped(conn: Connection, domain: str | None = None) -> int:
+    """Reprocess mail the pre-filter skipped (all of it, or one sender domain) in full:
+    each requeued message carries an override, so the pre-filter lets it through."""
+    domain = (domain or "").strip().lower().lstrip("@") or None
+    versions = [
+        r["id"]
+        for r in conn.execute(
+            "SELECT v.id FROM communication_versions v"
+            " WHERE v.processing_state = 'rejected' AND EXISTS (SELECT 1 FROM policy_decisions d"
+            "  WHERE d.version_id = v.id AND d.check_name = 'prefilter' AND d.decision = 'reject')"
+            " AND (%(domain)s::text IS NULL OR EXISTS (SELECT 1 FROM communication_participants cp"
+            "  JOIN participants p ON p.id = cp.participant_id"
+            "  WHERE cp.communication_id = v.communication_id AND cp.role = 'from'"
+            "  AND (p.email_normalized LIKE '%%@' || %(domain)s"
+            "   OR p.email_normalized LIKE '%%.' || %(domain)s)))",
+            {"domain": domain},
+        ).fetchall()
+    ]
+    _requeue(conn, versions)
+    with conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO policy_decisions (version_id, check_name, decision, reason_code,"
+            " policy_version, service_ref) VALUES (%s, 'prefilter', 'allow',"
+            " 'operator_override', %s, 'operator')",
+            [(v, PREFILTER_VERSION) for v in versions],
+        )
+    return len(versions)
 
 
 def retry_failed(conn: Connection) -> int:

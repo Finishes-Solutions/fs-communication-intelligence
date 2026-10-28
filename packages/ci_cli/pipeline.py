@@ -24,6 +24,7 @@ from ci_email.process import (
     process_all,
     requeue_failed_attachments,
     requeue_for_remask,
+    requeue_skipped,
     retry_failed,
 )
 from ci_processing.chunking import CHUNKER_VERSION
@@ -193,6 +194,11 @@ def process(args: argparse.Namespace) -> None:
             count = requeue_for_remask(conn)
             conn.commit()
         print(f"requeued {count} message(s) to be reprocessed under the masking rules")
+    if args.retry_skipped:
+        with connect(role="ci_ingest") as conn:
+            count = requeue_skipped(conn, args.domain)
+            conn.commit()
+        print(f"requeued {count} skipped bulk/automated message(s) to be processed in full")
     if args.limit == 0:  # requeue only; the Function App's process timer picks them up
         return
     counts = process_all(
@@ -223,6 +229,13 @@ def stats() -> None:
             " GROUP BY 1 ORDER BY 2 DESC",
             "attachment extraction": "SELECT extraction_status AS k, count(*) AS n"
             " FROM email_attachments GROUP BY 1 ORDER BY 2 DESC",
+            "skipped by the bulk pre-filter, by sender domain (top 25)": "SELECT"
+            " split_part(p.email_normalized, '@', 2) || ' ' || d.reason_code AS k, count(*) AS n"
+            " FROM policy_decisions d JOIN communication_versions v ON v.id = d.version_id"
+            " JOIN communication_participants cp ON cp.communication_id = v.communication_id"
+            "  AND cp.role = 'from' JOIN participants p ON p.id = cp.participant_id"
+            " WHERE d.check_name = 'prefilter' AND d.decision = 'reject'"
+            " GROUP BY 1 ORDER BY 2 DESC LIMIT 25",
             "classification reused across copies": "SELECT (reused_from IS NOT NULL)::text AS k,"
             " count(*) AS n FROM classification_runs GROUP BY 1",
         }
