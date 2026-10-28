@@ -162,6 +162,12 @@ def test_page_and_sign_in_config_are_public_and_locked_down(client: TestClient) 
     csp = page.headers["content-security-policy"]
     assert "script-src 'self'" in csp and "frame-ancestors 'none'" in csp
     assert page.headers["x-content-type-options"] == "nosniff"
+    # Every console page is a plain path serving the same locked-down page.
+    for path in ("/overview", "/reports", "/messages?q=invoice", "/review", "/check"):
+        same = client.get(path)
+        assert same.status_code == 200 and same.text == page.text, path
+        assert same.headers["content-security-policy"] == csp
+    assert client.get("/not-a-page").status_code == 404
     config = client.get("/config.json").json()
     assert config == {
         "tenant_id": TENANT,
