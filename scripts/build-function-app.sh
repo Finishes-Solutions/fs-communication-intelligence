@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Package one Function App (ingestion | search) as a zip ready for Flex Consumption.
+# Package one Function App (ingestion | search | admin) as a zip ready for Flex Consumption.
 # A deployed Function App cannot see sibling folders, so the shared packages and
 # all dependencies (Linux x86_64 wheels for the target Python) go inside the zip.
 #
@@ -7,16 +7,16 @@
 #   PYTHON_VERSION=3.14 bash scripts/build-function-app.sh search dist
 set -euo pipefail
 
-app="${1:?usage: build-function-app.sh ingestion|search [outdir]}"
+app="${1:?usage: build-function-app.sh ingestion|search|admin [outdir]}"
 out="${2:-dist}"
 python_version="${PYTHON_VERSION:-3.14}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
-case "$app" in ingestion|search) ;; *) echo "unknown app: $app" >&2; exit 2 ;; esac
+case "$app" in ingestion|search|admin) ;; *) echo "unknown app: $app" >&2; exit 2 ;; esac
 
 build="$(mktemp -d)"
 trap 'rm -rf "$build"' EXIT
 cp -R "$root/apps/$app/." "$build/"
-for pkg in ci_core ci_email ci_processing ci_retrieval ci_cli; do
+for pkg in ci_core ci_email ci_processing ci_retrieval ci_cli ci_admin; do
   cp -R "$root/packages/$pkg" "$build/$pkg"
 done
 

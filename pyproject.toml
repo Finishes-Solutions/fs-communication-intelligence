@@ -12,6 +12,7 @@ dependencies = [
     "pydantic==2.14.1",
     "pydantic-settings==2.16.0",
     "pypdf==6.21.3",
+    "tzdata==2025.2",
 ]
 
 [project.scripts]
@@ -36,6 +37,7 @@ packages = [
     "packages/ci_processing",
     "packages/ci_retrieval",
     "packages/ci_cli",
+    "packages/ci_admin",
 ]
 
 [tool.ruff]
@@ -53,7 +55,7 @@ select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
 python_version = "3.14"
 strict = true
 mypy_path = "packages"
-packages = ["ci_core", "ci_email", "ci_processing", "ci_retrieval", "ci_cli"]
+packages = ["ci_core", "ci_email", "ci_processing", "ci_retrieval", "ci_cli", "ci_admin"]
 plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]

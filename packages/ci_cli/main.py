@@ -26,6 +26,12 @@ The database comes from the standard ``PG*`` environment variables; locally,
     ci actionable [--person ADDRESS] [--hours 24] [--out FILE.md]
     ci mcp                                    MCP server over stdio for Claude
 
+    ci schedule show                          when the ingestion app captures (also in the console)
+    ci schedule set [--on|--off] [--every 60] [--window 2] [--hours 6-20]
+                    [--weekdays-only|--every-day] [--time-zone America/Chicago]
+                    [--processing-on|--processing-off]
+    ci run-capture [--hours 24]               capture at the next 5-minute tick
+
 Production changes (``--dataset production``, ``mode set production``) also
 need ``--confirm-production``.
 """
@@ -37,11 +43,13 @@ import getpass
 import os
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime
 
 import psycopg
 
 from ci_cli import pipeline
 from ci_cli.seed import seed
+from ci_core import ops
 from ci_core.db import Connection, connect
 from ci_core.operator import (
     OperatorError,
@@ -118,6 +126,40 @@ def _parser() -> argparse.ArgumentParser:
     actionable.add_argument("--limit", type=int, default=50)
     actionable.add_argument("--out")
     sub.add_parser("mcp", help="MCP server over stdio for Claude Desktop / Claude Code")
+
+    schedule = sub.add_parser("schedule", help="when the ingestion app captures and processes")
+    schedule_action = schedule.add_subparsers(dest="action", required=True)
+    schedule_action.add_parser("show")
+    sset = schedule_action.add_parser("set")
+    on_off = sset.add_mutually_exclusive_group()
+    on_off.add_argument("--on", dest="capture_enabled", action="store_const", const=True)
+    on_off.add_argument("--off", dest="capture_enabled", action="store_const", const=False)
+    sset.add_argument(
+        "--every",
+        dest="capture_interval_min",
+        type=int,
+        choices=ops.INTERVALS,
+        help="minutes between captures",
+    )
+    sset.add_argument(
+        "--window",
+        dest="capture_window_hours",
+        type=float,
+        help="hours each capture looks back (must cover the interval)",
+    )
+    sset.add_argument("--hours", help="active local hours, e.g. 6-20")
+    sset.add_argument("--weekdays-only", dest="weekdays_only", action="store_const", const=True)
+    sset.add_argument("--every-day", dest="weekdays_only", action="store_const", const=False)
+    sset.add_argument("--time-zone", dest="time_zone")
+    processing = sset.add_mutually_exclusive_group()
+    processing.add_argument(
+        "--processing-on", dest="processing_enabled", action="store_const", const=True
+    )
+    processing.add_argument(
+        "--processing-off", dest="processing_enabled", action="store_const", const=False
+    )
+    run_now = sub.add_parser("run-capture", help="ask the ingestion app to capture now")
+    run_now.add_argument("--hours", type=float, help="look-back (default: the schedule's window)")
     return parser
 
 
@@ -171,6 +213,44 @@ def _seed(conn: Connection, actor: str) -> None:
     print("Next: ci capture --hours 24, then ci process.")
 
 
+def _schedule(args: argparse.Namespace, conn: Connection, actor: str) -> None:
+    if args.action == "set":
+        changes = {
+            k: getattr(args, k)
+            for k in (
+                "capture_enabled",
+                "capture_interval_min",
+                "capture_window_hours",
+                "weekdays_only",
+                "time_zone",
+                "processing_enabled",
+            )
+            if getattr(args, k) is not None
+        }
+        if args.hours:
+            start, _, end = args.hours.partition("-")
+            try:
+                changes |= {"active_start_hour": int(start), "active_end_hour": int(end)}
+            except ValueError as exc:
+                raise OperatorError("--hours looks like 6-20") from exc
+        ops.update_schedule(conn, actor, **changes)
+    s = ops.read_schedule(conn)
+    print(
+        f"scheduled capture: {'on' if s.capture_enabled else 'off'}, every "
+        f"{s.capture_interval_min} min, looking back {s.capture_window_hours:g} h"
+    )
+    print(
+        f"active hours: {s.active_start_hour}:00-{s.active_end_hour}:00 {s.time_zone}"
+        f"{', weekdays only' if s.weekdays_only else ''}"
+    )
+    print(f"processing: {'on' if s.processing_enabled else 'off'}")
+    print(f"last capture started: {s.last_capture_started_at or 'never'}")
+    if s.run_requested_at:
+        print(f"capture requested at {s.run_requested_at}; not started yet")
+    print(f"now: {ops.capture_decision(s, datetime.now(UTC)).reason}")
+    print("(the Azure app settings CAPTURE_ENABLED / PROCESSING_ENABLED must also be true)")
+
+
 def _run(args: argparse.Namespace, conn: Connection) -> None:
     actor = args.actor
     if args.command == "seed":
@@ -207,6 +287,14 @@ def _run(args: argparse.Namespace, conn: Connection) -> None:
         else:
             exclude_mailbox(conn, args.address, actor, reason=args.reason, revoke=args.revoke)
             print(f"{'revoked exclusion of' if args.revoke else 'excluded'} mailbox {args.address}")
+        return
+
+    if args.command == "schedule":
+        _schedule(args, conn, actor)
+        return
+    if args.command == "run-capture":
+        ops.request_run(conn, actor, args.hours)
+        print("capture requested; the ingestion app starts it within about 5 minutes")
         return
 
     if args.action == "show":

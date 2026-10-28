@@ -1,17 +1,22 @@
 """Scheduled jobs run by the ingestion Function App (apps/ingestion).
 
-Both are off until switched on (``CAPTURE_ENABLED``, ``PROCESSING_ENABLED``),
-and both obey the database mode: paused or empty scope means nothing runs.
-They log ids, counts and codes only.
+Two switches must both be on for anything to run: the app setting
+(``CAPTURE_ENABLED`` / ``PROCESSING_ENABLED``, a hard kill switch in Azure) and
+the schedule in ``ci.ops_settings`` (changed from the admin console or
+``ci schedule``). The database mode still applies: paused or empty scope means
+nothing is captured or published. Every capture and every processing pass that
+did work is recorded in ``ci.ops_runs`` with counts and codes only.
 """
 
 from __future__ import annotations
 
 import logging
 from collections import Counter
+from datetime import UTC, datetime
 
 from ci_cli import backends
 from ci_cli.pipeline import capture_profile, connection_and_corpus
+from ci_core import ops
 from ci_core.db import AppRole, Connection, connect
 from ci_core.runtime import EmptyScopeError, RuntimeConfigError
 from ci_core.settings import Settings
@@ -26,48 +31,102 @@ def _connect(role: AppRole | None) -> Connection:
     return connect(role=role or "ci_ingest")
 
 
-def run_capture(settings: Settings) -> dict[str, int] | None:
-    """Inventory sync, then capture the last ``CAPTURE_HOURS`` from every eligible mailbox."""
-    if not settings.capture_enabled:
-        log.info("capture skipped: CAPTURE_ENABLED is false")
-        return None
+def capture_now(settings: Settings, hours: float) -> tuple[str, dict[str, int]]:
+    """Inventory sync, then capture the last ``hours`` from every eligible mailbox.
+
+    Returns a run status (``succeeded``, ``partial``, ``refused``) and counts.
+    """
     graph = backends.graph_client(settings)
     with connect(role="ci_ingest") as conn:
         connection, corpus = connection_and_corpus(conn, settings)
         states = sync_inventory(conn, graph, connection, corpus, "ingestion-function").states
         conn.commit()
     log.info("inventory states=%s", states)
+    total: Counter[str] = Counter({f"mailboxes_{k}": v for k, v in states.items()})
     try:
         results = capture_window(
             _connect,
             graph,
-            hours=settings.capture_hours,
+            hours=hours,
             include_sent=settings.email_include_sent,
             profile=capture_profile(settings),
             workers=settings.capture_workers,
         )
     except (EmptyScopeError, RuntimeConfigError) as exc:
         log.warning("capture refused: %s", type(exc).__name__)
-        return None
-    total: Counter[str] = Counter()
+        total["refused_" + type(exc).__name__] += 1
+        return "refused", dict(total)
     for r in results:
         total.update(r.counts)
         if r.error:
             total["mailbox_errors"] += 1
-            log.warning("capture error scope=%s code=%s", r.address.split("@")[-1], r.error)
+            log.warning("capture error code=%s", r.error)
     log.info("capture mailboxes=%d counts=%s", len(results), dict(total))
-    return dict(total)
+    return ("partial" if total["mailbox_errors"] else "succeeded"), dict(total)
+
+
+def run_capture(settings: Settings) -> dict[str, int] | None:
+    """Capture ``CAPTURE_HOURS`` now, ignoring the schedule (CLI and tests)."""
+    if not settings.capture_enabled:
+        log.info("capture skipped: CAPTURE_ENABLED is false")
+        return None
+    status, counts = capture_now(settings, settings.capture_hours)
+    return None if status == "refused" else counts
+
+
+def scheduler_tick(settings: Settings, now: datetime | None = None) -> ops.Decision:
+    """Run a capture if the schedule (or a "run now" request) says one is due."""
+    now = now or datetime.now(UTC)
+    if not settings.capture_enabled:
+        return ops.Decision(False, "CAPTURE_ENABLED app setting is false")
+    with connect(role="ci_ingest") as conn:
+        decision = ops.capture_decision(ops.read_schedule(conn), now)
+        if not decision.due:
+            return decision
+        if ops.capture_in_progress(conn, now):
+            return ops.Decision(False, "a capture is still running")
+        run_id = ops.begin_capture(conn, decision, now)
+        conn.commit()
+    try:
+        status, counts = capture_now(settings, decision.hours)
+        error = None
+    except Exception as exc:  # recorded as a code; the next tick tries again
+        status, counts, error = "failed", {}, type(exc).__name__[:60]
+        log.exception("capture failed")
+    with connect(role="ci_ingest") as conn:
+        ops.finish_run(conn, run_id, status, counts, error)
+    return decision
 
 
 def run_processing(settings: Settings) -> dict[str, int] | None:
     if not settings.processing_enabled:
         log.info("processing skipped: PROCESSING_ENABLED is false")
         return None
-    counts = process_all(
-        lambda: connect(role="ci_ingest"),
-        backends.processing_backends(settings),
-        workers=settings.processing_workers,
-        max_seconds=settings.processing_minutes * 60,
-    )
-    log.info("processing counts=%s", dict(counts))
-    return dict(counts)
+    with connect(role="ci_ingest") as conn:
+        if not ops.read_schedule(conn).processing_enabled:
+            log.info("processing skipped: turned off in the schedule")
+            return None
+        run_id = ops.start_run(conn, "process", "schedule")
+        conn.commit()
+    status, error = "succeeded", None
+    try:
+        counts = dict(
+            process_all(
+                lambda: connect(role="ci_ingest"),
+                backends.processing_backends(settings),
+                workers=settings.processing_workers,
+                max_seconds=settings.processing_minutes * 60,
+            )
+        )
+    except Exception as exc:
+        counts, status, error = {}, "failed", type(exc).__name__[:60]
+        log.exception("processing failed")
+    with connect(role="ci_ingest") as conn:
+        if counts or error:
+            if counts.get("failed"):
+                status = "partial"
+            ops.finish_run(conn, run_id, status, counts, error)
+        else:  # nothing was queued: keep the history to runs that did work
+            conn.execute("DELETE FROM ops_runs WHERE id = %s", (run_id,))
+    log.info("processing counts=%s", counts)
+    return counts

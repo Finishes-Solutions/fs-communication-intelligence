@@ -15,7 +15,7 @@ from typing import Any
 from ci_cli import backends
 from ci_cli.seed import CORPUS_KEY, READER_ALL_ROLE
 from ci_core.db import AppRole, Connection, connect, required
-from ci_core.operator import OperatorError, approve_mailbox, audit, set_mode
+from ci_core.operator import OperatorError, approve_all_enrolled, audit, set_mode
 from ci_core.settings import GraphBackend, Settings, load_settings
 from ci_email.capture import NORMALIZER_VERSION, capture_window
 from ci_email.fixture import FixtureGraphClient
@@ -92,14 +92,8 @@ def inventory_sync(conn: Connection, actor: str) -> None:
 
 
 def include_all_enrolled(conn: Connection, actor: str) -> None:
-    rows = conn.execute(
-        "SELECT m.primary_smtp_address AS address FROM source_scopes s"
-        " JOIN email_mailboxes m ON m.scope_id = s.id"
-        " WHERE s.scope_state = 'enrolled' AND NOT s.test_approved ORDER BY 1"
-    ).fetchall()
-    for r in rows:
-        approve_mailbox(conn, r["address"], "test", actor)
-    print(f"approved {len(rows)} enrolled mailbox(es) for test; exclusions still win")
+    count = approve_all_enrolled(conn, "test", actor)
+    print(f"approved {count} enrolled mailbox(es) for test; exclusions still win")
 
 
 def grant(conn: Connection, args: argparse.Namespace, actor: str) -> None:
