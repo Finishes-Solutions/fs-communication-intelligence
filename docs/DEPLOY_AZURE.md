@@ -242,6 +242,18 @@ Hard stop for the timers, whatever the schedule says:
 az functionapp config appsettings set -g fs-communication-intelligence -n func-fs-ci-ing-dev-1026 --settings CAPTURE_ENABLED=false PROCESSING_ENABLED=false -o none
 ```
 
+### Processing speed and Azure OpenAI rate limits
+
+`PROCESSING_WORKERS` (app setting) is how many emails are processed at once, and `PROCESSING_MINUTES` is how long each 5-minute timer run may work. The embedding deployment's tokens-per-minute quota sets the real ceiling: Azure checks it over windows of about 10 seconds, so a few emails with long attachments sent at once get HTTP 429 even when the minute's total would fit.
+
+All workers share one embedding budget, `EMBEDDING_TOKENS_PER_MINUTE` (default 300,000, below the dev deployment's 350K TPM so search queries still get through). After any 429, every worker waits for the service's Retry-After. An email fails only if throttling lasts more than 5 minutes for one request. Search queries wait at most 20 seconds. If you raise the deployment's capacity in the Azure portal, raise the setting to about 85% of it:
+
+```bash
+az functionapp config appsettings set -g fs-communication-intelligence -n func-fs-ci-ing-dev-1026 --settings EMBEDDING_TOKENS_PER_MINUTE=300000 -o none
+```
+
+More workers than about 16 do not help once embeddings are the limit. Mail that failed before this change: **Requeue failed** in Schedule & Runs (or `ci process --retry-failed`). A retried email is classified again, so the retry costs one more chat call.
+
 ## 10. Connect Claude, ChatGPT and Copilot Studio
 
 All three use the values printed in step 6: **MCP server URL** `https://<search host>/mcp`, the Entra **authorization** and **token** URLs, scope `api://<API id>/Communications.Search offline_access`, and that platform's own **client ID and secret**. Each person signs in as themselves. The server then shows them only what their app role and grants allow, and every call is audited.

@@ -276,7 +276,7 @@ def search(args: argparse.Namespace) -> None:
             conn,
             principal,
             args.query,
-            backends.embedder(settings),
+            backends.embedder(settings, interactive=True),
             retrieval.Filters(mailbox=args.mailbox),
             args.limit,
         )
@@ -352,4 +352,4 @@ def mcp() -> None:
     settings, principal = _principal()
     from ci_retrieval.mcp_server import run_stdio
 
-    run_stdio(principal, backends.embedder(settings))
+    run_stdio(principal, backends.embedder(settings, interactive=True))
