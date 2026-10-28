@@ -32,7 +32,7 @@ LANGUAGE_API = "2023-04-01"
 CONTENT_SAFETY_API = "2024-09-01"
 PII_DOC_CHARS = 5000
 PII_DOCS_PER_CALL = 5
-SHIELD_DOC_CHARS = 10_000
+SHIELD_DOC_CHARS = 9_000  # the prompt plus documents must stay under the service limit
 
 # PII categories that make a message restricted (CLAUDE.md section 7:
 # SSNs, government IDs, bank/card numbers). Routine contact details are not.
