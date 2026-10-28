@@ -544,3 +544,17 @@ def test_messages_filter_by_property_and_entity(client: TestClient) -> None:
     assert 0 < len(lots["results"]) < len(everything["results"])
     nothing = client.get("/api/messages?since_days=0&entity=zzz-no-such", headers=auth()).json()
     assert nothing["results"] == []
+
+
+def test_lab_returns_property_and_entity_names(client: TestClient) -> None:
+    result = client.post(
+        "/api/lab/classify",
+        headers=auth(),
+        json={
+            "subject": "Draw request for Example Commons",
+            "body": "Capital Company LLC asks you to approve the draw for Building B by Friday.",
+            "person": PAT,
+        },
+    ).json()
+    assert "Capital Company LLC" in result["entities_ai"]
+    assert {"Example Commons", "Building B"} <= set(result["properties_ai"])

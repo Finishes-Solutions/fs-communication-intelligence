@@ -179,6 +179,16 @@ Each message is unsearchable for a few minutes while it is reprocessed. `SENSITI
 
 If Cloud Shell can't reach the database (timeout), add its address: `az postgres flexible-server firewall-rule create -g fs-communication-intelligence --server-name psql-fs-ci-dev-1026b --name cloudshell --start-ip-address $(curl -s https://api.ipify.org) --end-ip-address $(curl -s https://api.ipify.org)`.
 
+### Backfill further back
+
+A requested capture can reach back up to 93 days. Give a start date (midnight Central time) instead of hours:
+
+```bash
+ci run-capture --since 2026-09-01
+```
+
+The ingestion app stops a single run after 2 hours. If a large backfill is cut off, request it again: it resumes, because emails already stored are skipped. Keep processing paused (`ci schedule set --processing-off`) while capturing if you want to change settings before the AI runs.
+
 ## 8. Test
 
 - `ci stats`: published, held/rejected by reason, failed codes, label counts, attachment extraction.
@@ -273,21 +283,39 @@ Add the two secrets it prints (`ADMIN_FUNCTION_APP`, `ADMIN_PUBLIC_URL`) to the 
 
 A person's list (console, MCP `list_actionable`, `ci actionable`) is step 2's confident "yes". Its unsure answers are listed separately as **possible**. Someone without a profile falls back to a simpler rule: named by the classifier, or the email was sent to them alone.
 
-Set up Chuck Sr. once (console: **Action items → People with a person check**, or Cloud Shell). Put Chuck Jr.'s real address and role in the "not to be confused with" text:
+Set up Chuck Sr. once (console: **Action items → People with a person check**, or Cloud Shell). Give every company address of his (one `--address` each; not the `chuckjr` one), and say who he is not:
 
 ```bash
-ci people set chuck_sr --name "Chuck Sr." --address chuckc@finishesetc.net --role "Owner and CEO; approves contracts, draws, change orders and capital decisions" --not-to-confuse "Chuck Jr. (his address), different role; also called Chuck. Mail meant for Chuck Jr. is not Chuck Sr.'s."
+ci people set chuck_sr --name "Chuck Sr." --address chuckc@finishesetc.net --not-to-confuse "Chuck Jr., whose email address contains chuckjr. Requests addressed to Chuck Jr. or sent to his chuckjr address are not Chuck Sr.'s, even when the email just says Chuck."
 ```
+
+Only Chuck Sr. has a list for now; Chuck Jr. has no profile of his own.
 
 Changing a profile only affects mail processed afterwards. To apply it to mail already processed, run `ci process --remask --limit 0` (this re-runs everything, including the classifier).
 
-**Deploying this change:** it adds tables (migrations `0008`, `0009`). Apply them **before** merging, or the new code fails on every processing run until they exist:
+### Properties, projects and legal entities
+
+The classifier also returns the **properties/projects** an email is about (up to 5) and the **legal entities** it names (up to 8: LLCs, LPs, trusts, funds, companies), exactly as written in the email or its attachments, never inferred. They appear in Messages, the Label check, the Lab, and agent results (`properties_ai`, `entities_ai`). Filter by them in **Messages** (Property, Entity boxes) or from agents (`search_email` / `list_email` with `property` or `entity`): a partial, case-insensitive match, so `property=willow` finds "Willow Creek Retail".
+
+Without a list, names appear as each email writes them ("WC Retail", "Willow Creek"). When you have the official lists, add them once; the classifier then prefers the canonical name, and aliases are mapped to it:
+
+```bash
+ci names add property "Willow Creek Retail" --alias "WC Retail" --alias "Willow Creek"
+```
+
+```bash
+ci names add entity "Capital Company LLC"
+```
+
+`ci names list` shows them, `ci names remove property "Willow Creek Retail"` removes one. New names apply to mail processed afterwards; `ci process --remask --limit 0` re-runs earlier mail.
+
+**Deploying this change:** it adds tables and columns (migrations `0008` to `0011`). Apply them **before** merging, or the new code fails on every processing run until they exist:
 
 ```bash
 cd ~/fs-communication-intelligence && git fetch origin && git checkout matthew/nice-lovelace-4sqyit && git pull --ff-only origin matthew/nice-lovelace-4sqyit && make azure-migrate AZ_PSQL=psql && git checkout main
 ```
 
-Then merge, set up the profiles as above, and re-run the processed mail with `ci process --remask --limit 0`.
+Then merge, set up the profile as above, and re-run the processed mail with `ci process --remask --limit 0`.
 
 ## What isn't done yet
 
