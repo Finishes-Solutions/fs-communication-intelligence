@@ -200,7 +200,7 @@ ci process --rescreen --limit 0
 
 The switches apply only under `SENSITIVE_DATA_POLICY=mask` and are for testing, not production.
 
-If Cloud Shell can't reach the database (timeout), add its address: `az postgres flexible-server firewall-rule create -g fs-communication-intelligence --server-name psql-fs-ci-dev-1026b --name cloudshell --start-ip-address $(curl -s https://api.ipify.org) --end-ip-address $(curl -s https://api.ipify.org)`.
+If Cloud Shell or your computer can't reach the database (timeout), add its address with `bash scripts/azure/allow-my-ip.sh <name>` (e.g. `matthew-work`); `--list` shows who is allowed and `<name> --remove` takes one away. The script copes with Azure CLI versions that name the firewall arguments differently (`--server-name/--name` or `--name/--rule-name`).
 
 ### Backfill further back
 
@@ -250,9 +250,17 @@ All three use the values printed in step 6: **MCP server URL** `https://<search 
 |---|---|---|
 | **Claude** (Team/Enterprise) | Admin settings → Connectors → Add custom connector: URL, then **Advanced settings** → OAuth client ID and secret | Redirect URI registered: `https://claude.ai/api/mcp/auth_callback`. If Claude shows a different callback, add it to the "FS Communications MCP - Claude" app registration. |
 | **Copilot Studio** | Agent → **Tools → Add a tool → Model Context Protocol** → OAuth 2.0, *Manual*: authorization URL, token URL, refresh URL (same as token), client ID/secret, scope | After saving, Copilot shows a **redirect URL**; add it to "FS Communications MCP - Copilot Studio" (Entra → App registrations → Authentication). Set the connection to **end-user credentials**, otherwise everyone using the agent searches as the maker. |
-| **ChatGPT** (Business/Enterprise, workspace admin enables custom connectors) | Settings → Connectors (Apps) → Create: URL, OAuth | **Highest risk.** ChatGPT has relied on OAuth *dynamic client registration*, which Entra doesn't offer. If it won't accept the pre-registered client ID/secret, ChatGPT is blocked. The fix is a small OAuth broker in front of Entra (CLAUDE.md §8). I'll build that only once you confirm it's needed. |
+| **ChatGPT** (developer mode for custom plugins; in a Business/Enterprise workspace an admin may need to allow it) | Plugins → **Add** → Add custom MCP server: Server URL, Authentication **OAuth** → **Advanced OAuth settings**: registration method **User-Defined OAuth Client**, client ID/secret, token endpoint auth method **client_secret_post**, base scopes `api://<API id>/Communications.Search offline_access`, Auth URL and Token URL (discovered), Registration URL empty, **Resource = `api://<API id>`** (not the server URL), PKCE ticked, **OIDC unticked** | **Verified 2026-10-28.** Each plugin gets its own callback URL (`https://chatgpt.com/connector/oauth/<id>`), shown in the dialog and changed if the plugin is recreated; add it to "FS Communications MCP - ChatGPT" (Entra → App registrations → Authentication, or `az ad app update --web-redirect-uris`, keeping the existing ones) before signing in, or sign-in fails with AADSTS50011. With Resource left as the server URL, sign-in succeeds but ChatGPT never gets a token (Entra refuses the mismatched resource) and shows "We couldn't connect your account". With OIDC on, ChatGPT asks Graph for the profile with a token meant for this API. No OAuth broker is needed. |
 
 The hosted endpoint is written to the MCP standard (Streamable HTTP; OAuth protected-resource metadata at `/.well-known/oauth-protected-resource/mcp`). One known Entra quirk to watch for: some clients send a `resource` parameter that Entra rejects with **AADSTS9010010**. If you see that code, send it to me.
+
+**Troubleshooting a connection.** The search app logs every request (method, path, status, whether a token was sent) and why a token was rejected, never the token. Check after a connection attempt:
+
+```bash
+az monitor app-insights query -g fs-communication-intelligence --app appi-fs-ci-dev --analytics-query "traces | where timestamp > ago(1h) and (message has 'token rejected' or message has 'mcp request') | project timestamp, message | order by timestamp desc | take 30" --query "tables[0].rows" -o tsv
+```
+
+(`-o table` prints nothing for this command; keep `--query "tables[0].rows" -o tsv`.) Only `bearer token: no` lines after you signed in means the client never got a token: look in Entra's sign-in logs, tab **User sign-ins (non-interactive)**. `token rejected: <reason>` means the server refused the token for that reason. `bearer token: yes` with 200 means it works.
 
 ## 11. Copilot Studio with Azure AI Search or other tools
 
