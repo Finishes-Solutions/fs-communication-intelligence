@@ -58,26 +58,23 @@ class FakeScreener:
 
     service_ref = "fake-screener-v1"
 
-    def __init__(self, unavailable: Collection[str] = ()) -> None:
+    def __init__(self, unavailable: Collection[str] = (), *, check_pii: bool = True) -> None:
         self.unavailable = frozenset(unavailable)
+        self.check_pii = check_pii  # False when sensitive data is masked instead
 
     def screen(self, text: str) -> ScreeningResult:
-        return ScreeningResult(
-            (
-                self._check(
-                    "pii",
-                    _SENSITIVE_PII.search(text) is not None,
-                    CheckDecision.REJECT,
-                    "sensitive_pii",
-                ),
-                self._check(
-                    "prompt_shield",
-                    _PROMPT_ATTACK.search(text) is not None,
-                    CheckDecision.HOLD,
-                    "prompt_attack",
-                ),
-            )
+        shield = self._check(
+            "prompt_shield",
+            _PROMPT_ATTACK.search(text) is not None,
+            CheckDecision.HOLD,
+            "prompt_attack",
         )
+        if not self.check_pii:
+            return ScreeningResult((shield,))
+        pii = self._check(
+            "pii", _SENSITIVE_PII.search(text) is not None, CheckDecision.REJECT, "sensitive_pii"
+        )
+        return ScreeningResult((pii, shield))
 
     def _check(self, name: str, hit: bool, decision: CheckDecision, reason: str) -> CheckResult:
         if name in self.unavailable:

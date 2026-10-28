@@ -16,7 +16,7 @@ nobody and the message arrived in one of the person's mailboxes. A
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from ci_processing.classification import (
@@ -27,6 +27,7 @@ from ci_processing.classification import (
     Decision,
 )
 from ci_processing.policy import Disposition, Outcome, classification_outcome, screening_gate
+from ci_processing.redaction import Redaction, RedactionUnavailable, Redactor
 from ci_processing.screening import Screener
 from ci_retrieval.search import ACTION_LABELS, RISK_LABELS
 
@@ -42,6 +43,7 @@ MAX_LAB_CHARS = 60_000
 class LabBackends:
     screener: Screener
     classifier: Classifier
+    redactor: Redactor | None = None  # None: SENSITIVE_DATA_POLICY=restrict
 
 
 def addresses(value: str | Sequence[str] | None) -> list[str]:
@@ -142,11 +144,30 @@ def run(
         for c in screening.checks
     ]
     gate = screening_gate(screening)
+    masked: dict[str, int] = {}
+    if gate is None and backends.redactor is not None:
+        try:
+            item, masked = _masked(backends.redactor, item)
+        except RedactionUnavailable:
+            gate = Outcome(Disposition.HELD, ("redaction_pending",))
     result = None if gate is not None else backends.classifier.classify(item)
-    outcome = gate or classification_outcome(result)  # type: ignore[arg-type]
+    if gate is not None:
+        outcome = gate
+    else:
+        assert result is not None  # noqa: S101 - classified when screening allowed
+        outcome = classification_outcome(result, mask_sensitive=backends.redactor is not None)
+    route = routing(result, outcome, person, received_by=received_by, direction=direction)
+    if masked:
+        route["why"].insert(
+            0,
+            "Masked before classification and indexing: "
+            + ", ".join(f"{k} x{n}" for k, n in sorted(masked.items()))
+            + ".",
+        )
     return {
         "input_sha256": item.sha256(),
         "screening": checks,
+        "masked": masked,
         "classified": result is not None,
         "model": result.model if result else None,
         "policy_version": result.policy_version if result else None,
@@ -162,8 +183,22 @@ def run(
         "action_for_ai": list(result.action_for) if result else [],
         "due_ai": result.due_text if result else None,
         "risk_ai": result.risk_text if result else None,
-        "routing": routing(result, outcome, person, received_by=received_by, direction=direction),
+        "routing": route,
     }
+
+
+def _masked(
+    redactor: Redactor, item: ClassificationInput
+) -> tuple[ClassificationInput, dict[str, int]]:
+    """The same masking processing applies, before classification."""
+    result: Redaction = redactor.redact(
+        [item.subject, item.body_text, *(text for _, text in item.attachments)]
+    )
+    subject, body, *texts = result.texts
+    attachments = tuple(
+        (name, text) for (name, _), text in zip(item.attachments, texts, strict=True)
+    )
+    return replace(item, subject=subject, body_text=body, attachments=attachments), result.counts
 
 
 def pasted_input(body: dict[str, Any]) -> ClassificationInput:

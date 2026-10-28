@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import json
 import time
+from collections import Counter
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -25,6 +26,7 @@ from ci_processing.classification import (
     ClassificationInput,
     ClassificationResult,
 )
+from ci_processing.redaction import Redaction, RedactionUnavailable, mask_all
 from ci_processing.screening import CheckDecision, CheckResult, ScreeningResult
 
 COGNITIVE_SCOPE = "https://cognitiveservices.azure.com/.default"
@@ -117,14 +119,25 @@ def _pieces(text: str, size: int) -> list[str]:
 
 
 class AzureScreener:
+    """``check_pii=False`` when sensitive data is masked instead (SENSITIVE_DATA_POLICY=mask):
+    the redactor finds those numbers and the message is not rejected for them."""
+
     def __init__(
-        self, language_endpoint: str, content_safety_endpoint: str, http: AzureHttp | None = None
+        self,
+        language_endpoint: str,
+        content_safety_endpoint: str,
+        http: AzureHttp | None = None,
+        *,
+        check_pii: bool = True,
     ) -> None:
         self._language = language_endpoint.rstrip("/")
         self._safety = content_safety_endpoint.rstrip("/")
         self._http = http or AzureHttp()
+        self._check_pii = check_pii
 
     def screen(self, text: str) -> ScreeningResult:
+        if not self._check_pii:
+            return ScreeningResult((self._shield(text),))
         return ScreeningResult((self._pii(text), self._shield(text)))
 
     def _pii(self, text: str) -> CheckResult:
@@ -173,6 +186,79 @@ class AzureScreener:
         except AzureServiceError, httpx.HTTPError, KeyError:
             return CheckResult("prompt_shield", CheckDecision.PENDING, "screening_unavailable", ref)
         return CheckResult("prompt_shield", CheckDecision.ALLOW, None, ref)
+
+
+# Masked when SENSITIVE_DATA_POLICY=mask: the restricted categories plus routing numbers.
+MASKED_PII = RESTRICTED_PII | {"ABARoutingNumber"}
+MASK_MIN_CONFIDENCE = 0.5
+
+
+def _mask_entities(text: str, entities: list[dict[str, Any]]) -> tuple[str, Counter[str]]:
+    """Replace each entity with ``[Category]``, by offset (code points) when it still
+    matches, else by its text. Later offsets first, so earlier ones stay valid."""
+    found: Counter[str] = Counter()
+    wanted = [
+        e
+        for e in entities
+        if e.get("category") in MASKED_PII
+        and e.get("confidenceScore", 0) >= MASK_MIN_CONFIDENCE
+        and e.get("text")
+    ]
+    for e in sorted(wanted, key=lambda e: int(e.get("offset", 0)), reverse=True):
+        label = f"[{e['category']}]"
+        start, length = int(e.get("offset", -1)), int(e.get("length", 0))
+        if start >= 0 and text[start : start + length] == e["text"]:
+            text = text[:start] + label + text[start + length :]
+        elif e["text"] in text:
+            text = text.replace(e["text"], label)
+        else:
+            continue
+        found[e["category"]] += 1
+    return text, found
+
+
+class AzureRedactor:
+    """Azure AI Language PII detection (in-tenant) plus credential masking."""
+
+    def __init__(self, language_endpoint: str, http: AzureHttp | None = None) -> None:
+        self._url = (
+            f"{language_endpoint.rstrip('/')}/language/:analyze-text?api-version={LANGUAGE_API}"
+        )
+        self._http = http or AzureHttp()
+
+    def redact(self, texts: Sequence[str]) -> Redaction:
+        counts: Counter[str] = Counter()
+        masked = mask_all(texts, counts)
+        pieces = [
+            (i, piece) for i, text in enumerate(masked) for piece in _pieces(text, PII_DOC_CHARS)
+        ]
+        out = [piece for _, piece in pieces]
+        todo = [k for k, (_, piece) in enumerate(pieces) if piece.strip()]
+        try:
+            for start in range(0, len(todo), PII_DOCS_PER_CALL):
+                batch = todo[start : start + PII_DOCS_PER_CALL]
+                body = {
+                    "kind": "PiiEntityRecognition",
+                    "parameters": {"modelVersion": "latest", "stringIndexType": "UnicodeCodePoint"},
+                    "analysisInput": {
+                        "documents": [
+                            {"id": str(k), "language": "en", "text": out[k]} for k in batch
+                        ]
+                    },
+                }
+                result = self._http.post(self._url, body)["results"]
+                if result.get("errors"):
+                    raise RedactionUnavailable("language document errors")
+                for document in result["documents"]:
+                    k = int(document["id"])
+                    out[k], found = _mask_entities(out[k], document.get("entities", []))
+                    counts.update(found)
+        except (AzureServiceError, httpx.HTTPError, KeyError, ValueError, TypeError) as exc:
+            raise RedactionUnavailable(type(exc).__name__) from exc
+        joined = [""] * len(masked)
+        for (i, _), piece in zip(pieces, out, strict=True):
+            joined[i] += piece
+        return Redaction(joined, dict(counts))
 
 
 _SYSTEM_PROMPT = """You classify one business email for Finishes Solutions, a real estate \

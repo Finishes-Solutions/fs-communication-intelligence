@@ -1,7 +1,8 @@
 """Fake screener/classifier/embedder and the section 7 decision rules.
 
 The fixture expectations test the plumbing (thresholds, rule order,
-restricted/review/held paths), not real classification quality.
+restricted/review/held paths), not real classification quality. They describe
+SENSITIVE_DATA_POLICY=restrict; mask mode is covered at the end.
 """
 
 import math
@@ -31,7 +32,7 @@ def outcome_for(subject: str, body: str, screener: FakeScreener | None = None) -
     if stopped:
         return stopped.disposition
     return classification_outcome(
-        FakeClassifier().classify(ClassificationInput(subject, body))
+        FakeClassifier().classify(ClassificationInput(subject, body)), mask_sensitive=False
     ).disposition
 
 
@@ -79,7 +80,7 @@ def test_missing_answer_is_unresolved_not_zero() -> None:
     del probabilities["credentials"]
     result = ClassificationResult("test", "p", "h", probabilities)
     assert result.decisions()["credentials"] is Decision.UNRESOLVED
-    assert classification_outcome(result).disposition is Disposition.REVIEW
+    assert classification_outcome(result, mask_sensitive=False).disposition is Disposition.REVIEW
 
 
 @pytest.mark.parametrize(
@@ -96,7 +97,34 @@ def test_missing_answer_is_unresolved_not_zero() -> None:
     ],
 )
 def test_rule_order(probabilities: dict[str, float], disposition: Disposition) -> None:
-    assert classification_outcome(_result(**probabilities)).disposition is disposition
+    outcome = classification_outcome(_result(**probabilities), mask_sensitive=False)
+    assert outcome.disposition is disposition
+
+
+@pytest.mark.parametrize(
+    ("probabilities", "disposition", "reasons"),
+    [
+        ({"credentials": 0.9}, Disposition.REVIEW, ("credentials",)),
+        ({"sensitive_pii": 0.9}, Disposition.REVIEW, ("sensitive_pii",)),
+        ({"potential_phi": 0.9}, Disposition.RESTRICTED, ("potential_phi",)),  # never masked
+        ({"credentials": 0.9, "potential_phi": 0.9}, Disposition.RESTRICTED, ("potential_phi",)),
+        ({"newsletter": 0.9}, Disposition.NOT_INDEXED, ("newsletter",)),
+        ({}, Disposition.INDEX, ()),
+    ],
+)
+def test_mask_mode_flags_masked_mail_for_review(
+    probabilities: dict[str, float], disposition: Disposition, reasons: tuple[str, ...]
+) -> None:
+    outcome = classification_outcome(_result(**probabilities), mask_sensitive=True)
+    assert (outcome.disposition, outcome.reason_codes) == (disposition, reasons)
+
+
+def test_mask_mode_screener_skips_the_pii_rejection() -> None:
+    text = "Employee SSN 123-45-6789"
+    assert {c.check_name for c in FakeScreener(check_pii=False).screen(text).checks} == {
+        "prompt_shield"
+    }
+    assert screening_gate(FakeScreener(check_pii=False).screen(text)) is None
 
 
 def test_screening_dependency_failure_holds_never_passes() -> None:

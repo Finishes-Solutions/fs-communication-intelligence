@@ -197,7 +197,11 @@ def build_admin_app(
                 from ci_cli import backends
 
                 _lab_cache.append(
-                    lab.LabBackends(backends.screener(settings), backends.classifier(settings))
+                    lab.LabBackends(
+                        backends.screener(settings),
+                        backends.classifier(settings),
+                        backends.redactor(settings),
+                    )
                 )
         return _lab_cache[0]
 

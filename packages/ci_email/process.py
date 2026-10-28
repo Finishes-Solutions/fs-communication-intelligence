@@ -42,11 +42,13 @@ from ci_processing.embedding import Embedder
 from ci_processing.extraction import (
     Extraction,
     ExtractionStatus,
+    clean_text,
     extract,
     is_signature_image,
 )
 from ci_processing.originals import OriginalStore, OriginalStoreError
 from ci_processing.policy import Disposition, Outcome, classification_outcome, screening_gate
+from ci_processing.redaction import RedactionUnavailable, Redactor
 from ci_processing.screening import Screener
 
 log = logging.getLogger(__name__)
@@ -67,6 +69,9 @@ class Backends:
     extraction_enabled: bool = False
     attachment_max_bytes: int = 25 * 1024 * 1024
     originals: OriginalStore | None = None  # keep original files (CLAUDE.md section 3a)
+    # Set: mask sensitive numbers and credentials (SENSITIVE_DATA_POLICY=mask).
+    # None: restrict messages that contain them instead.
+    redactor: Redactor | None = None
 
 
 def _sha(text: str) -> str:
@@ -148,7 +153,7 @@ def _extract_attachments(conn: Connection, job: dict[str, Any], backends: Backen
             ),
         )
         if result.status is ExtractionStatus.EXTRACTED and result.text:
-            text = result.text[:ATTACHMENT_CAP]
+            text = clean_text(result.text)[:ATTACHMENT_CAP]
             conn.execute(
                 "INSERT INTO version_texts (version_id, text_kind, ref, content, sha256, truncated)"
                 " VALUES (%s, 'attachment', %s, %s, %s, %s) ON CONFLICT DO NOTHING",
@@ -351,8 +356,10 @@ def _chunks(
     out: list[tuple[str, str | None, int, str, str]] = []
     for seq, text in enumerate(chunk_text(body)):
         out.append(("email_body", None, seq, text, f"{header}\n{text}"))
+    # One sequence across all attachments: chunks are unique per (version, kind, seq).
+    seq = 0
     for a in attachments:
-        for seq, text in enumerate(chunk_text(a["content"])):
+        for text in chunk_text(a["content"]):
             out.append(
                 (
                     "attachment_text",
@@ -362,6 +369,7 @@ def _chunks(
                     f"{header}Attachment: {a['name'] or ''}\n\n{text}",
                 )
             )
+            seq += 1
     return out
 
 
@@ -370,6 +378,38 @@ def _withdraw_prior(conn: Connection, job: dict[str, Any]) -> None:
         "UPDATE communication_versions SET processing_state = 'superseded'"
         " WHERE communication_id = %s AND processing_state = 'published' AND id <> %s",
         (job["communication_id"], job["version_id"]),
+    )
+
+
+def _redact(conn: Connection, job: dict[str, Any], redactor: Redactor) -> None:
+    """Mask the subject, body and attachment text in place, before anything is
+    classified, embedded or shown. The unmasked text is not kept (originals of
+    attachment files in Blob Storage are, admin-only)."""
+    rows = conn.execute(
+        "SELECT text_kind, ref, content FROM version_texts WHERE version_id = %s"
+        " ORDER BY text_kind DESC, ref",
+        (job["version_id"],),
+    ).fetchall()
+    title = job["title"] or ""
+    result = redactor.redact([clean_text(title), *(clean_text(r["content"]) for r in rows)])
+    masked_title, *masked = result.texts
+    for row, text in zip(rows, masked, strict=True):
+        if text != row["content"]:
+            conn.execute(
+                "UPDATE version_texts SET content = %s, sha256 = %s"
+                " WHERE version_id = %s AND text_kind = %s AND ref = %s",
+                (text, _sha(text), job["version_id"], row["text_kind"], row["ref"]),
+            )
+    if masked_title != title:
+        conn.execute(
+            "UPDATE communications SET title = %s WHERE id = %s",
+            (masked_title, job["communication_id"]),
+        )
+        job["title"] = masked_title
+    conn.execute(
+        "INSERT INTO policy_decisions (version_id, check_name, decision, reason_code,"
+        " policy_version, service_ref) VALUES (%s, 'redaction', 'allow', %s, %s, %s)",
+        (job["version_id"], result.reason_code(), POLICY_VERSION, type(redactor).__name__),
     )
 
 
@@ -393,6 +433,14 @@ def process_version(conn: Connection, job: dict[str, Any], backends: Backends) -
             ),
         )
     outcome = screening_gate(screening)
+    if outcome is None and backends.redactor is not None:
+        try:
+            _redact(conn, job, backends.redactor)
+        except RedactionUnavailable as exc:
+            log.warning("masking unavailable: %s", exc)
+            outcome = Outcome(Disposition.HELD, ("redaction_pending",))
+        else:
+            body, attachments = _texts(conn, job["version_id"])
     people = _participants(conn, job["communication_id"])
     sender = (people.get("from") or [""])[0]
     if outcome is None:
@@ -409,7 +457,7 @@ def process_version(conn: Connection, job: dict[str, Any], backends: Backends) -
             ),
         )
         result, reused_from = _classify(conn, backends, item)
-        outcome = classification_outcome(result)
+        outcome = classification_outcome(result, mask_sensitive=backends.redactor is not None)
         _store_classification(conn, job["version_id"], result, outcome, reused_from)
 
     if not outcome.disposition.embedded:
@@ -440,7 +488,7 @@ def process_version(conn: Connection, job: dict[str, Any], backends: Backends) -
                     job["communication_id"],
                     kind,
                     seq,
-                    text,
+                    clean_text(text),
                     _sha(emb_input),
                     backends.embedder.model,
                     str(vector),
@@ -529,15 +577,30 @@ def process_all(
     return counts
 
 
-def requeue_failed_attachments(conn: Connection) -> int:
-    """Reprocess every message with an attachment whose extraction failed or timed out.
+def _requeue(conn: Connection, versions: list[Any]) -> int:
+    """Remove a version's derived data (chunks, classification, screening records)
+    and put it back to ``fetched`` for the process timer. Until it is reprocessed
+    the message is not searchable (minutes). The caller commits."""
+    if not versions:
+        return 0
+    conn.execute(
+        "UPDATE classification_runs SET reused_from = NULL WHERE reused_from IN"
+        " (SELECT id FROM classification_runs WHERE version_id = ANY(%s))",
+        (versions,),
+    )
+    for table in ("chunks", "classification_runs", "policy_decisions"):
+        conn.execute(f"DELETE FROM {table} WHERE version_id = ANY(%s)", (versions,))  # noqa: S608
+    conn.execute(
+        "UPDATE communication_versions SET processing_state = 'fetched', hold_reason_code = NULL,"
+        " last_error_code = NULL WHERE id = ANY(%s)",
+        (versions,),
+    )
+    return len(versions)
 
-    The version's derived data (chunks, classification, screening records) is
-    removed and it goes back to ``fetched``, so the process timer extracts the
-    attachments again and re-screens, re-classifies and re-publishes with their
-    text. Until then the message is not searchable (minutes). Returns the number
-    of messages requeued; the caller commits.
-    """
+
+def requeue_failed_attachments(conn: Connection) -> int:
+    """Reprocess every message with an attachment whose extraction failed or timed out,
+    reading those attachments again. Returns the number of messages requeued."""
     versions = [
         r["version_id"]
         for r in conn.execute(
@@ -550,15 +613,10 @@ def requeue_failed_attachments(conn: Connection) -> int:
     if not versions:
         return 0
     conn.execute(
-        "UPDATE classification_runs SET reused_from = NULL WHERE reused_from IN"
-        " (SELECT id FROM classification_runs WHERE version_id = ANY(%s))",
-        (versions,),
-    )
-    for table in ("chunks", "classification_runs", "policy_decisions"):
-        conn.execute(f"DELETE FROM {table} WHERE version_id = ANY(%s)", (versions,))  # noqa: S608
-    conn.execute(
-        "DELETE FROM version_texts WHERE version_id = ANY(%s) AND text_kind = 'attachment'",
-        (versions,),
+        "DELETE FROM version_texts WHERE version_id = ANY(%s) AND text_kind = 'attachment'"
+        " AND ref IN (SELECT native_attachment_id FROM email_attachments"
+        "  WHERE version_id = ANY(%s) AND extraction_status IN ('failed', 'timeout'))",
+        (versions, versions),
     )
     conn.execute(
         "UPDATE email_attachments SET extraction_status = 'not_attempted', extractor = NULL,"
@@ -566,12 +624,21 @@ def requeue_failed_attachments(conn: Connection) -> int:
         " AND extraction_status IN ('failed', 'timeout')",
         (versions,),
     )
-    conn.execute(
-        "UPDATE communication_versions SET processing_state = 'fetched', hold_reason_code = NULL,"
-        " last_error_code = NULL WHERE id = ANY(%s)",
-        (versions,),
-    )
-    return len(versions)
+    return _requeue(conn, versions)
+
+
+def requeue_for_remask(conn: Connection) -> int:
+    """Reprocess every processed message so the current masking rules apply to text
+    that was stored or indexed before them. Extracted attachment text is kept (and
+    masked when reprocessed). Returns the number of messages requeued."""
+    versions = [
+        r["id"]
+        for r in conn.execute(
+            "SELECT id FROM communication_versions"
+            " WHERE processing_state IN ('published', 'rejected', 'held', 'failed')"
+        ).fetchall()
+    ]
+    return _requeue(conn, versions)
 
 
 def retry_failed(conn: Connection) -> int:
