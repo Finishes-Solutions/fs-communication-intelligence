@@ -19,7 +19,9 @@ name: Deploy (development)
 #   SEARCH_PUBLIC_URL      https://<search app default host name>
 # Optional (the admin console deploys only when both are set):
 #   ADMIN_FUNCTION_APP     name of the admin console Function App
-#   ADMIN_PUBLIC_URL       https://<admin app default host name>
+#   ADMIN_PUBLIC_URL       https://<admin app default host name>; also written to the
+#                          search app's ADMIN_PUBLIC_URL setting, so MCP results link to
+#                          the console's read-only email page (/read/<id>)
 
 on:
   workflow_dispatch:
@@ -124,6 +126,23 @@ jobs:
           package: dist/ingestion.zip
           sku: flexconsumption
           remote-build: false
+
+      - name: Link MCP results to the admin console
+        if: env.DO_SEARCH == 'true' && env.ADMIN_URL != ''
+        env:
+          APP: ${{ secrets.SEARCH_FUNCTION_APP }}
+        run: |
+          # Changing an app setting restarts the app, so only when it differs.
+          rg=$(az functionapp list --query "[?name=='$APP'].resourceGroup | [0]" -o tsv)
+          current=$(az functionapp config appsettings list -g "$rg" -n "$APP" \
+            --query "[?name=='ADMIN_PUBLIC_URL'].value | [0]" -o tsv)
+          if [ "$current" = "$ADMIN_URL" ]; then
+            echo "ADMIN_PUBLIC_URL already set"
+          else
+            az functionapp config appsettings set -g "$rg" -n "$APP" -o none \
+              --settings "ADMIN_PUBLIC_URL=$ADMIN_URL"
+            echo "ADMIN_PUBLIC_URL set"
+          fi
 
       - name: Deploy search app
         if: env.DO_SEARCH == 'true'

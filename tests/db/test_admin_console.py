@@ -163,7 +163,8 @@ def test_page_and_sign_in_config_are_public_and_locked_down(client: TestClient) 
     assert "script-src 'self'" in csp and "frame-ancestors 'none'" in csp
     assert page.headers["x-content-type-options"] == "nosniff"
     # Every console page is a plain path serving the same locked-down page.
-    for path in ("/overview", "/reports", "/messages?q=invoice", "/review", "/check"):
+    pages = ("/overview", "/reports", "/messages?q=invoice", "/review", "/check")
+    for path in (*pages, "/read/0b5a5d6e-0000-4000-8000-000000000001?file=ab"):
         same = client.get(path)
         assert same.status_code == 200 and same.text == page.text, path
         assert same.headers["content-security-policy"] == csp

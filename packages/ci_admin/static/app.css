@@ -527,3 +527,9 @@ a.btn { text-decoration: none; }
 .price-edit { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .card-foot-notes { display: grid; gap: 10px; padding: 12px 16px 16px; }
 .row-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* Read-only email page (/read/<id>): no console navigation, one message. */
+.shell.reader-only { grid-template-columns: 1fr; background: var(--bg); }
+.shell.reader-only .side { display: none; }
+.reader-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+.reader-page { max-width: 900px; margin: 0 auto; }

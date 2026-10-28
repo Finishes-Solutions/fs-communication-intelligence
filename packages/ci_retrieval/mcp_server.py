@@ -1,4 +1,5 @@
-"""MCP tools ``search_email``, ``get_email``, ``list_email``, ``list_actionable``.
+"""MCP tools ``search_email``, ``get_email``, ``get_attachment``, ``list_email``,
+``list_actionable``.
 
 Two transports share one tool set and the same authorized retrieval code
 (database role ``ci_search``, grants applied in SQL before ranking, an audit row
@@ -20,6 +21,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import quote
 
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings
@@ -51,6 +53,12 @@ _NAMES = (
     ' (case-insensitive, e.g. property="willow", entity="capital company").'
 )
 
+_LINKS = (
+    " Each email carries view_url, a read-only page in the admin console that console admins"
+    " can open after Microsoft sign-in; share view_url, not web_link (web_link opens only in"
+    " the mailbox owner's own Outlook)."
+)
+
 PrincipalSource = Callable[[], Principal]
 Connector = Callable[[], Connection]
 
@@ -64,8 +72,11 @@ def build_server(
     embedder: Embedder,
     *,
     connector: Connector = _search_connection,
+    view_base: str | None = None,
     **server_options: Any,
 ) -> MCPServer[Any]:
+    """``view_base`` is the admin console's address: results then link to its
+    read-only email page and attachment downloads (``with_links``)."""
     server: MCPServer[Any] = MCPServer(
         name="fs-communications",
         instructions="Finishes Solutions email evidence, limited to what the signed-in "
@@ -76,9 +87,14 @@ def build_server(
     def _since(days: float | None) -> datetime | None:
         return datetime.now(UTC) - timedelta(days=days) if days else None
 
+    def linked(data: dict[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any] = with_links(data, view_base)
+        return result
+
     @server.tool(
         description="Search authorized, indexed company email by meaning and keywords."
         + _NAMES
+        + _LINKS
         + _TRUST
     )
     def search_email(
@@ -92,7 +108,7 @@ def build_server(
         limit: int = 10,
     ) -> dict[str, Any]:
         with connector() as conn:
-            return retrieval.search(
+            found = retrieval.search(
                 conn,
                 principal_of(),
                 query,
@@ -107,16 +123,38 @@ def build_server(
                 ),
                 limit,
             )
+        return linked(found)
 
-    @server.tool(description="Read one email (bounded excerpt) by communication_id." + _TRUST)
+    @server.tool(
+        description="Read one email (bounded excerpt) by communication_id. `attachments` lists"
+        " its files with an attachment_id (pass it to get_attachment for the full extracted"
+        " text) and, when the original file is stored, a download_url (console admins only,"
+        " after sign-in)." + _LINKS + _TRUST
+    )
     def get_email(communication_id: str, max_chars: int = 8000) -> dict[str, Any]:
         with connector() as conn:
             found = retrieval.get_email(conn, principal_of(), communication_id, max_chars)
-        return found or {"found": False, "note": "Not found in authorized, indexed mail."}
+        return linked(found) if found else {"found": False, "note": NOT_FOUND}
+
+    @server.tool(
+        description="Read the text extracted from one attachment (PDF, Word, Excel, text),"
+        " a page at a time: pass the communication_id and the attachment_id from get_email;"
+        " when next_offset is not null, call again with offset=next_offset for the rest."
+        " Scanned images have no text (no OCR yet). download_url downloads the original file"
+        " for console admins after sign-in." + _TRUST
+    )
+    def get_attachment(
+        communication_id: str, attachment_id: str, offset: int = 0, max_chars: int = 20_000
+    ) -> dict[str, Any]:
+        with connector() as conn:
+            found = retrieval.get_attachment(
+                conn, principal_of(), communication_id, attachment_id, offset, max_chars
+            )
+        return linked(found) if found else {"found": False, "note": NOT_FOUND}
 
     @server.tool(
         description="List recent authorized emails, newest first, optionally by mailbox, "
-        "sender or label (e.g. cat_payment_billing)." + _NAMES + _TRUST
+        "sender or label (e.g. cat_payment_billing)." + _NAMES + _LINKS + _TRUST
     )
     def list_email(
         mailbox: str | None = None,
@@ -128,7 +166,7 @@ def build_server(
         limit: int = 25,
     ) -> dict[str, Any]:
         with connector() as conn:
-            return retrieval.list_email(
+            found = retrieval.list_email(
                 conn,
                 principal_of(),
                 retrieval.Filters(
@@ -141,6 +179,7 @@ def build_server(
                 ),
                 limit,
             )
+        return linked(found)
 
     @server.tool(
         description="Emails that ask a person to act or approve, plus project risks (schedule "
@@ -151,13 +190,14 @@ def build_server(
         "per-person check decides which emails are really theirs (it tells apart people with "
         "similar names, e.g. Chuck Sr. and Chuck Jr.): `actions` are its confident answers and "
         "`possible` the ones it was unsure about; treat `possible` as needing confirmation."
+        + _LINKS
         + _TRUST
     )
     def list_actionable(
         person: str | None = None, hours: float = 24, include_risks: bool = True, limit: int = 50
     ) -> dict[str, Any]:
         with connector() as conn:
-            return retrieval.list_actionable(
+            found = retrieval.list_actionable(
                 conn,
                 principal_of(),
                 person=person,
@@ -165,12 +205,36 @@ def build_server(
                 include_risks=include_risks,
                 limit=limit,
             )
+        return linked(found)
 
     return server
 
 
-def run_stdio(principal: Principal, embedder: Embedder) -> None:
-    build_server(lambda: principal, embedder).run("stdio")
+NOT_FOUND = "Not found in authorized, indexed mail."
+
+
+def with_links(data: Any, base: str | None, parent: str | None = None) -> Any:
+    """Adds view_url to every email (any dict with a communication_id) and
+    download_url to every stored attachment (a dict with a file_id), recursively.
+    The links point at the admin console, which checks the reader's own sign-in."""
+    if not base:
+        return data
+    root = base.rstrip("/")
+    if isinstance(data, list):
+        return [with_links(x, base, parent) for x in data]
+    if not isinstance(data, dict):
+        return data
+    cid = data.get("communication_id") or parent
+    out = {k: with_links(v, base, cid) for k, v in data.items()}
+    if data.get("communication_id"):
+        out["view_url"] = f"{root}/read/{quote(str(cid))}"
+    if cid and data.get("file_id"):
+        out["download_url"] = f"{root}/read/{quote(str(cid))}?file={quote(str(data['file_id']))}"
+    return out
+
+
+def run_stdio(principal: Principal, embedder: Embedder, view_base: str | None = None) -> None:
+    build_server(lambda: principal, embedder, view_base=view_base).run("stdio")
 
 
 def _token_principal() -> Principal:
@@ -201,6 +265,7 @@ def build_http_app(
         _token_principal,
         embedder,
         connector=connector,
+        view_base=settings.admin_public_url,
         token_verifier=verifier,
         auth=AuthSettings(
             issuer_url=f"https://login.microsoftonline.com/{tenant}/v2.0",

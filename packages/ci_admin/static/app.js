@@ -606,7 +606,7 @@ async function showMessage(id, holder) {
   }
 }
 
-function messageView(id, m) {
+function messageView(id, m, opts = {}) {
   const body = (m.text || []).find(t => t.source === "body");
   const sender = m.sender || "Unknown sender";
   const hasLabels = (m.labels || []).length || (m.uncertain_labels || []).length || m.review_flag;
@@ -618,8 +618,8 @@ function messageView(id, m) {
         h("div", { style: "min-width:200px;flex:1" }, h("div", { class: "who-name" }, sender),
           h("div", { class: "muted small" }, `To ${m.mailbox} · ${when(m.received_at)}`)),
         h("div", { class: "actions" }, safeLink(m.web_link, "Open in Outlook"),
-          h("button", { class: "btn sm", onclick: () => { navigate(`/review?id=${encodeURIComponent(id)}`); } }, icon("review"), "Review Labels"),
-          h("button", { class: "btn sm", onclick: () => { navigate(`/lab?id=${encodeURIComponent(id)}`); } }, icon("lab"), "Re-Run in Lab")))),
+          opts.readOnly ? null : h("button", { class: "btn sm", onclick: () => { navigate(`/review?id=${encodeURIComponent(id)}`); } }, icon("review"), "Review Labels"),
+          opts.readOnly ? null : h("button", { class: "btn sm", onclick: () => { navigate(`/lab?id=${encodeURIComponent(id)}`); } }, icon("lab"), "Re-Run in Lab")))),
     aiBlock(m) ? h("div", { class: "reader-section" }, aiBlock(m)) : null,
     nameChips(m) ? h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "Properties and Entities"), nameChips(m)) : null,
     hasLabels ? h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "Labels"),
@@ -756,6 +756,15 @@ async function fetchFile(id, fileId) {
   return res.arrayBuffer();
 }
 
+// Always a download, typed application/octet-stream, so a file can never run here.
+async function saveFile(id, a) {
+  const bytes = await fetchFile(id, a.file_id);
+  const link = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+  const el = h("a", { href: link, download: a.name || "attachment" });
+  document.body.append(el); el.click(); el.remove();
+  setTimeout(() => URL.revokeObjectURL(link), 10000);
+}
+
 function filesBlock(id, m) {
   const texts = m.text || [];
   const all = m.attachments || [];
@@ -787,13 +796,7 @@ function filesBlock(id, m) {
       } catch (e) { viewer.replaceChildren(h("p", { class: "status-failed" }, e.message)); }
     }
     async function download() {
-      try {
-        const bytes = await fetchFile(id, a.file_id);
-        const link = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
-        const el = h("a", { href: link, download: a.name || "attachment" });
-        document.body.append(el); el.click(); el.remove();
-        setTimeout(() => URL.revokeObjectURL(link), 10000);
-      } catch (e) { toast(e.message); }
+      try { await saveFile(id, a); } catch (e) { toast(e.message); }
     }
     function showText() {
       if (!viewer.hidden && viewer.dataset.mode === "text") { viewer.hidden = true; return; }
@@ -1707,6 +1710,35 @@ async function costsPage(refresh) {
   );
 }
 
+// ---------- read-only email page (/read/<id>[?file=<file id>]) ---------------
+// The link MCP results carry (view_url, download_url): one message, no console
+// navigation or actions. The same admin-only API and grants as the console.
+
+const isReader = () => location.pathname.startsWith("/read/");
+
+async function readerPage() {
+  const id = decodeURIComponent(location.pathname.split("/")[2] || "");
+  let m;
+  try { m = await api(`/api/messages/${encodeURIComponent(id)}`); }
+  catch (e) {
+    if (e.message === "signing in") throw e;
+    show(h("div", { class: "reader-page" }, pageHead("Can't Open This Email", null),
+      card({}, h("p", { style: "margin:0" }, e.message),
+        h("p", { class: "muted small" }, "This page is for console admins. If you need this email, ask an admin to share it with you."))));
+    return;
+  }
+  show(h("div", { class: "reader-page" },
+    h("div", { class: "reader-bar" }, h("span", { class: "muted small" }, "Email Intelligence · read-only view"),
+      h("a", { href: "/overview", target: "_self", class: "btn sm ghost" }, "Open Console")),
+    card({}, messageView(id, m, { readOnly: true }))));
+  const wanted = pageParams().get("file");
+  if (wanted) {
+    const a = (m.attachments || []).find(x => x.file_id === wanted);
+    if (a) await saveFile(id, a).catch(e => toast(e.message));
+    else toast("That file is not stored for this email.");
+  }
+}
+
 // ---------- router -----------------------------------------------------------
 
 const NAV = [
@@ -1722,7 +1754,7 @@ const NAV = [
 const NAV_GROUPS = ["Operations", "Mail", "Insights", "Tools"];
 const PAGES = { overview, schedule: schedulePage, costs: costsPage, mailboxes: mailboxesPage, messages: messagesPage,
   actionable: actionablePage, unpublished: unpublishedPage, lab: labPage,
-  risks: risksPage, reports: reportsPage, review: reviewPage, check: reviewPage };
+  risks: risksPage, reports: reportsPage, review: reviewPage, check: reviewPage, read: readerPage };
 
 function drawNav() {
   const nav = document.getElementById("tabs");
@@ -1758,12 +1790,15 @@ async function render() {
     main().replaceChildren(h("div", { class: "signin" }, h("div", { class: "signin-card" },
       h("div", { class: "brand-mark" }, icon("spark")),
       h("h1", {}, "Email Intelligence"),
-      h("p", {}, "Sign in with your Finishes Solutions account. Only console admins get in."),
+      h("p", {}, isReader()
+        ? "Sign in with your Finishes Solutions account to read this email. Only console admins can open it."
+        : "Sign in with your Finishes Solutions account. Only console admins get in."),
       h("button", { class: "btn primary lg block", onclick: signIn },
         h("span", { class: "ms-logo" }, h("span"), h("span"), h("span"), h("span")), "Sign In with Microsoft"))));
     return;
   }
   shell.classList.remove("signed-out");
+  shell.classList.toggle("reader-only", isReader());
   drawNav();
   nav.hidden = false;
   const name = store.get("who") || "Signed in";

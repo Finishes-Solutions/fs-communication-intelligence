@@ -978,6 +978,7 @@ def build_admin_app(
         Route("/api/reports/preview", endpoint(report_preview), methods=["POST"]),
         Route("/api/reports/export", endpoint(report_export), methods=["POST"]),
         *(Route(f"/{name}", page) for name in PAGES),
+        Route("/read/{id}", page),  # the read-only email page MCP results link to
         Mount("/", StaticFiles(directory=STATIC, html=True)),
     ]
     return Starlette(routes=routes, middleware=[Middleware(SecurityHeaders)])

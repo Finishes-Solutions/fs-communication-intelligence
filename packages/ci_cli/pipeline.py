@@ -360,4 +360,4 @@ def mcp() -> None:
     settings, principal = _principal()
     from ci_retrieval.mcp_server import run_stdio
 
-    run_stdio(principal, backends.embedder(settings, interactive=True))
+    run_stdio(principal, backends.embedder(settings, interactive=True), settings.admin_public_url)

@@ -186,6 +186,10 @@ class Settings(BaseSettings):
     # Admin console (apps/admin): the public SPA client the browser signs in
     # with. Tokens are for the search API registration, scope Communications.Console.
     admin_spa_client_id: str | None = None
+    # The admin console's public address (e.g. https://func-fs-ci-adm-dev-1026.azurewebsites.net).
+    # MCP results link to its read-only email page (/read/<id>), which only console
+    # admins can open; without it, results carry no view_url.
+    admin_public_url: str | None = None
 
     # Local-only principal for the MCP server and CLI (AUTH_MODE=local_test).
     local_test_principal_oid: str = "00000000-0000-0000-0000-00000000c0de"

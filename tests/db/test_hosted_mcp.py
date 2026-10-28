@@ -155,6 +155,7 @@ def app(database_ready: str) -> Any:
         search_public_url=BASE,
         search_api_client_id=API_ID,
         search_api_app_id_uri=API_URI,
+        admin_public_url="https://admin.example",
     )
     return build_http_app(
         settings,
@@ -228,6 +229,7 @@ def test_tools_use_the_callers_identity(app: Any) -> None:
         assert {t["name"] for t in listed["result"]["tools"]} == {
             "search_email",
             "get_email",
+            "get_attachment",
             "list_email",
             "list_actionable",
         }
@@ -240,6 +242,22 @@ def test_tools_use_the_callers_identity(app: Any) -> None:
         assert "Invoice 4471 for Lot 12 grading - payment due Friday" in {
             a["subject"] for a in report["actions"]
         }
+        invoice = next(a for a in report["actions"] if a["subject"].startswith("Invoice 4471"))
+        assert invoice["view_url"] == f"https://admin.example/read/{invoice['communication_id']}"
+        email = call_tool(
+            client, token(), "get_email", {"communication_id": invoice["communication_id"]}
+        )
+        (pdf,) = [a for a in email["attachments"] if a["name"] == "Invoice-4471.pdf"]
+        text = call_tool(
+            client,
+            token(),
+            "get_attachment",
+            {
+                "communication_id": invoice["communication_id"],
+                "attachment_id": pdf["attachment_id"],
+            },
+        )
+        assert text["total_chars"] > 0 and text["view_url"] == invoice["view_url"]
         # The same request from someone with no role and no grant finds nothing.
         empty = call_tool(
             client, token(roles=[], oid="stranger-oid"), "list_actionable", {"hours": 24 * 60}
@@ -267,4 +285,4 @@ def test_served_through_the_azure_functions_adapter(app: Any) -> None:
 
     anonymous, signed, tools = asyncio.run(scenario())
     assert (anonymous, signed) == (401, 200)
-    assert len(tools["result"]["tools"]) == 4
+    assert len(tools["result"]["tools"]) == 5
