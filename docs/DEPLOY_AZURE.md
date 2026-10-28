@@ -322,6 +322,31 @@ To set it up once:
 
 A new role can take up to 30 minutes to apply. Until then the page says so.
 
+### Choosing the AI model
+
+The **AI Model** card on the Costs page lists the chat deployments on the Azure OpenAI account and lets you pick the one that classifies email and runs the person check. For each it shows a price, the classification cost per 1,000 emails, and this month's usage.
+
+- **Use This Model** first classifies a synthetic test email; a model that fails is not switched to.
+- New mail uses the new model from the next processing run. Mail already processed keeps its labels.
+- **Use App Setting** goes back to `AZURE_OPENAI_CHAT_DEPLOYMENT`.
+- New models are deployed in the Azure AI Foundry portal first. The embedding model stays text-embedding-3-large.
+
+The list needs migration 0014 and `scripts/azure/6-cost-dashboard.sh`. That script also gives the console read-only access to the Azure OpenAI account. Until then, you can type a deployment name instead.
+
+### Who has access
+
+Run these in Cloud Shell or on a Mac signed in to Azure:
+
+```bash
+bash scripts/azure/people.sh list
+```
+
+```bash
+bash scripts/azure/people.sh add someone@finishessolutions.com
+```
+
+`add` grants both the admin console and search from Claude, ChatGPT and Copilot; add `console` or `search` after the address for just one. `remove` takes the same arguments. Both kinds of access show everyone's captured mail, so keep the list short.
+
 ### Action items in two steps, and person profiles
 
 1. **Step 1, the classifier,** tags whether an email asks *someone* to act (`action_required`, `approval_required`). It is told to say no for FYI, newsletters, marketing, automated notifications and requests to a whole group.

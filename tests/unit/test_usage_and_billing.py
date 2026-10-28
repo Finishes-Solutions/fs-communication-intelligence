@@ -226,3 +226,95 @@ def test_billed_costs_report_a_code_and_keep_the_last_good_figures(
     good = flaky.costs()
     stale = flaky.costs(refresh=True)
     assert stale["rows"] == good["rows"] and stale["stale_error"] == error
+
+
+def test_deployments_are_listed_without_embedding_models() -> None:
+    from ci_admin.models import DeploymentLister, account_name
+
+    assert account_name("https://aoai-fs-ci-dev-1026.openai.azure.com/") == "aoai-fs-ci-dev-1026"
+    assert account_name(None) is None
+    body = {
+        "value": [
+            {
+                "name": "text-embedding-3-large",
+                "sku": {"name": "DataZoneStandard", "capacity": 350},
+                "properties": {"model": {"name": "text-embedding-3-large", "version": "1"}},
+            },
+            {
+                "name": "gpt-4.1-mini",
+                "sku": {"name": "DataZoneStandard", "capacity": 500},
+                "properties": {
+                    "model": {"name": "gpt-4.1-mini", "version": "2025-04-14"},
+                    "provisioningState": "Succeeded",
+                },
+            },
+        ]
+    }
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json=body)
+
+    lister = DeploymentLister(
+        "sub",
+        "rg",
+        "aoai-x",
+        credential=FakeCredential(),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    listed = lister.deployments()
+    assert listed["available"] is True
+    assert listed["deployments"] == [
+        {
+            "deployment": "gpt-4.1-mini",
+            "model": "gpt-4.1-mini",
+            "version": "2025-04-14",
+            "sku": "DataZoneStandard",
+            "capacity": 500,
+            "state": "Succeeded",
+        }
+    ]
+    assert "/accounts/aoai-x/deployments" in seen[0]
+    lister.deployments()
+    assert len(seen) == 1  # cached
+
+    denied = DeploymentLister(
+        "sub",
+        "rg",
+        "aoai-x",
+        credential=FakeCredential(),
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda r: httpx.Response(403, json={"error": {"code": "AuthorizationFailed"}})
+            )
+        ),
+    )
+    assert denied.deployments() == {"available": False, "error": "HTTP 403 AuthorizationFailed"}
+
+
+def test_a_model_must_classify_the_test_email() -> None:
+    from ci_admin.models import try_model
+    from ci_core.operator import OperatorError
+    from ci_processing.classification import ClassificationResult, FakeClassifier
+
+    assert try_model(FakeClassifier())["labels_answered"] == len(LABELS)
+
+    class Fails(FakeClassifier):
+        def classify(self, item: ClassificationInput, known: object = ()) -> ClassificationResult:
+            raise RuntimeError("Azure OpenAI HTTP 404 DeploymentNotFound")
+
+    class Unreadable(FakeClassifier):
+        def classify(self, item: ClassificationInput, known: object = ()) -> ClassificationResult:
+            result = super().classify(item)
+            return ClassificationResult(
+                result.model,
+                result.policy_version,
+                result.input_sha256,
+                {lb.name: None for lb in LABELS},
+            )
+
+    with pytest.raises(OperatorError, match="DeploymentNotFound"):
+        try_model(Fails())
+    with pytest.raises(OperatorError, match="expected format"):
+        try_model(Unreadable())

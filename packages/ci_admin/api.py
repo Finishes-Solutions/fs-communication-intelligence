@@ -42,7 +42,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from ci_admin import billing, calibration, costs, lab, reports
+from ci_admin import billing, calibration, costs, lab, models, reports
 from ci_core import ops
 from ci_core.db import Connection, connect
 from ci_core.operator import (
@@ -61,7 +61,13 @@ from ci_core.operator import (
 from ci_core.runtime import RuntimeConfigError, active_config, eligible_mailboxes
 from ci_core.settings import Settings
 from ci_email.process import known_names, record_usage
-from ci_processing.classification import LABELS, LABELS_BY_NAME, POLICY_VERSION, KnownName
+from ci_processing.classification import (
+    LABELS,
+    LABELS_BY_NAME,
+    POLICY_VERSION,
+    Classifier,
+    KnownName,
+)
 from ci_processing.embedding import Embedder
 from ci_processing.originals import OriginalStore
 from ci_processing.routing import PersonProfile
@@ -203,6 +209,8 @@ def build_admin_app(
     lab_backends: Callable[[], lab.LabBackends] | None = None,
     originals: OriginalStore | None = None,
     cost_client: billing.CostClient | None = None,
+    deployment_lister: models.DeploymentLister | None = None,
+    model_classifier: Callable[[str | None], Classifier] | None = None,
 ) -> Starlette:
     tenant = settings.entra_tenant_id or settings.graph_tenant_id or ""
     settings.require("search_api_client_id", "search_api_app_id_uri", "admin_spa_client_id")
@@ -216,47 +224,71 @@ def build_admin_app(
     )
     if verifier.required_scope != ADMIN_SCOPE:
         raise ValueError("the admin console needs a verifier for Communications.Console")
-    _lab_cache: list[lab.LabBackends] = []
+    _lab_cache: dict[str, lab.LabBackends] = {}  # by chat deployment
     if cost_client is None and settings.azure_subscription_id:
         cost_client = billing.CostClient(
             settings.azure_subscription_id, settings.azure_resource_group
         )
+    openai_account = settings.azure_openai_account or models.account_name(
+        settings.azure_openai_endpoint
+    )
+    if deployment_lister is None and settings.azure_subscription_id and openai_account:
+        deployment_lister = models.DeploymentLister(
+            settings.azure_subscription_id, settings.azure_resource_group, openai_account
+        )
+
+    def classifier_for(deployment: str | None) -> Classifier:
+        """A classifier on that chat deployment (None: the app setting), for a test call."""
+        if model_classifier is not None:
+            return model_classifier(deployment)
+        from ci_cli import backends
+
+        chosen = (
+            settings.model_copy(update={"azure_openai_chat_deployment": deployment})
+            if deployment
+            else settings
+        )
+        return backends.classifier(chosen, lab_ready(deployment).meter)
+
     if originals is None:
         from ci_cli.backends import original_store
 
         originals = original_store(settings)
 
-    def lab_ready() -> lab.LabBackends:
-        if not _lab_cache:
+    def lab_ready(chat_deployment: str | None = None) -> lab.LabBackends:
+        """Lab backends for the console's chosen chat model (built once per model)."""
+        key = chat_deployment or ""
+        if key not in _lab_cache:
             if lab_backends is not None:
-                _lab_cache.append(lab_backends())
+                _lab_cache[key] = lab_backends()
             else:
                 from ci_cli import backends
                 from ci_processing.prefilter import allow_domains
                 from ci_processing.usage import Meter
 
                 meter = Meter()
-                _lab_cache.append(
-                    lab.LabBackends(
-                        backends.screener(settings, meter),
-                        backends.classifier(settings, meter),
-                        backends.redactor(settings, meter),
-                        backends.person_router(settings, meter),
-                        meter=meter,
-                        prefilter=settings.bulk_prefilter_enabled,
-                        prefilter_allow_domains=allow_domains(
-                            settings.bulk_prefilter_allow_domains
-                        ),
-                    )
+                chosen = (
+                    settings.model_copy(update={"azure_openai_chat_deployment": chat_deployment})
+                    if chat_deployment
+                    else settings
                 )
-        return _lab_cache[0]
+                _lab_cache[key] = lab.LabBackends(
+                    backends.screener(settings, meter),
+                    backends.classifier(chosen, meter),
+                    backends.redactor(settings, meter),
+                    backends.person_router(chosen, meter),
+                    meter=meter,
+                    prefilter=settings.bulk_prefilter_enabled,
+                    prefilter_allow_domains=allow_domains(settings.bulk_prefilter_allow_domains),
+                )
+        return _lab_cache[key]
 
     def lab_now() -> lab.LabBackends:
         """The lab's backends with the console's switches for the paid checks applied,
         as processing applies them (ci_cli.backends.with_switches)."""
         with connector("ci_operator") as conn:
             schedule = ops.read_schedule(conn)
-        return lab.with_switches(lab_ready(), settings, schedule)
+        return lab.with_switches(lab_ready(schedule.chat_deployment), settings, schedule)
 
     async def authenticate(request: Request) -> Principal | Response:
         header = request.headers.get("authorization", "")
@@ -721,11 +753,13 @@ def build_admin_app(
         with connector("ci_operator") as conn:
             audit(conn, principal.oid, action, None, None, details, actor_type="user")
             conn.commit()
-            meter = lab_ready().meter
-            if meter is not None:  # the lab's paid calls count on the cost page too
+            # The lab's paid calls count on the cost page too (every model used).
+            for built in list(_lab_cache.values()):
+                if built.meter is None:
+                    continue
                 try:
                     with conn.transaction():
-                        record_usage(conn, meter.drain(), source="lab")
+                        record_usage(conn, built.meter.drain(), source="lab")
                 except psycopg.Error as exc:  # e.g. before migration 0013
                     log.warning("lab usage not recorded: %s", type(exc).__name__)
 
@@ -753,6 +787,68 @@ def build_admin_app(
             "time_zone": time_zone,
             "resource_group": settings.azure_resource_group,
         }
+
+    def model_page(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        with connector("ci_operator") as conn:
+            if request.method == "PUT":
+                try:
+                    _switch_model(conn, principal, body)
+                except psycopg.errors.UndefinedColumn as exc:
+                    raise OperatorError("apply database migration 0014 first") from exc
+            schedule = ops.read_schedule(conn)
+            try:
+                with conn.transaction():
+                    prices = models.model_prices(conn)
+                    usage = models.usage_by_model(conn, schedule.time_zone)
+                    defaults = {p["key"]: p for p in costs.prices(conn)}
+            except psycopg.errors.UndefinedTable:
+                return {"available": False, "error": "migration_0014"}
+        listed = (
+            deployment_lister.deployments(refresh=request.query_params.get("refresh") == "1")
+            if deployment_lister is not None
+            else {"available": False, "error": "not_configured"}
+        )
+        chat_in, chat_out = defaults.get("openai_chat_input"), defaults.get("openai_chat_output")
+        return {
+            "available": True,
+            "current": schedule.chat_deployment or settings.azure_openai_chat_deployment,
+            "chosen_in_console": schedule.chat_deployment is not None,
+            "app_setting": settings.azure_openai_chat_deployment,
+            "deployments": listed,
+            "prices": prices,
+            "default_price": {
+                "input_usd_per_1m": chat_in["usd"] * 1_000_000 / chat_in["per_units"]
+                if chat_in
+                else None,
+                "output_usd_per_1m": chat_out["usd"] * 1_000_000 / chat_out["per_units"]
+                if chat_out
+                else None,
+            },
+            "suggested_prices": {k: list(v) for k, v in models.SUGGESTED_PRICES.items()},
+            "usage": usage,
+        }
+
+    def _switch_model(conn: Connection, principal: Principal, body: dict[str, Any]) -> None:
+        """Switch only to a listed chat deployment that classifies a synthetic test email."""
+        name = str(body.get("deployment") or "").strip() or None
+        if name is not None and not ops.DEPLOYMENT_NAME.match(name):
+            raise OperatorError("a deployment name is letters, digits, '.', '_' or '-'")
+        listed = deployment_lister.deployments() if deployment_lister is not None else None
+        if name is not None and listed and listed.get("available"):
+            known = {d["deployment"] for d in listed["deployments"]}
+            if name not in known:
+                raise OperatorError(f"{name} is not a chat deployment on the Azure OpenAI account")
+        models.try_model(classifier_for(name))
+        ops.update_schedule(conn, _actor(principal), chat_deployment=name)
+        conn.commit()
+
+    def model_price(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        with connector("ci_operator") as conn:
+            prices = models.set_model_price(
+                conn, _actor(principal), request.path_params["deployment"], body
+            )
+            conn.commit()
+            return {"prices": prices}
 
     def cost_prices(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
         with connector("ci_operator") as conn:
@@ -877,6 +973,8 @@ def build_admin_app(
         Route("/api/risks", endpoint(risks)),
         Route("/api/costs", endpoint(cost_page)),
         Route("/api/costs/prices", endpoint(cost_prices), methods=["PUT"]),
+        Route("/api/models", endpoint(model_page), methods=["GET", "PUT"]),
+        Route("/api/models/{deployment}/price", endpoint(model_price), methods=["PUT"]),
         Route("/api/reports/preview", endpoint(report_preview), methods=["POST"]),
         Route("/api/reports/export", endpoint(report_export), methods=["POST"]),
         *(Route(f"/{name}", page) for name in PAGES),

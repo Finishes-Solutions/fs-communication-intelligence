@@ -1533,8 +1533,81 @@ function billedError(code) {
   return key ? BILLED_ERRORS[key] : `Azure's billed costs could not be read (${code}).`;
 }
 
+// Price for a deployment: saved > list price for its model (unverified) > default chat price.
+function modelPrice(m, dep) {
+  const saved = (m.prices || []).find(p => p.deployment === dep.deployment);
+  if (saved) return { input: saved.input_usd_per_1m, output: saved.output_usd_per_1m, source: saved.verified ? "Checked" : "Saved" };
+  const list = m.suggested_prices[dep.model];
+  if (list) {
+    const zone = /datazone/i.test(dep.sku || "") ? 1.1 : 1;
+    return { input: +(list[0] * zone).toFixed(4), output: +(list[1] * zone).toFixed(4), source: "List price (unverified)" };
+  }
+  return { input: m.default_price.input_usd_per_1m, output: m.default_price.output_usd_per_1m, source: "Default chat price" };
+}
+
+function modelCard(m) {
+  if (!m.available) {
+    return card({ title: "AI Model", class: "spaced" }, note(m.error === "migration_0014"
+      ? "Choosing the model needs database migration 0014 (db/migrate.py apply)." : `Models unavailable (${m.error}).`, "warn"));
+  }
+  const per = m.usage.per_email;
+  const used = Object.fromEntries(m.usage.by_model.map(u => [u.deployment, u]));
+  const listed = m.deployments.available ? m.deployments.deployments : [];
+  const rows = listed.length ? [...listed] : [{ deployment: m.current, model: "", version: "", sku: "", state: "" }];
+  if (!rows.some(r => r.deployment === m.current)) rows.unshift({ deployment: m.current, model: "", version: "", sku: "", state: "" });
+  const switchTo = guard(async name => {
+    if (!await ask({ title: `Use ${name || "the app setting's model"}?`, confirm: "Test and Switch",
+      text: "A synthetic test email is classified first (no real mail). New mail uses the model from the next processing run; mail already processed keeps its labels." })) return;
+    toast("Testing the model…");
+    await post("/api/models", { deployment: name }, "PUT");
+    toast(`Switched to ${name || m.app_setting}.`); costsPage();
+  });
+  const inputs = {};
+  const savePrice = guard(async dep => {
+    const f = inputs[dep];
+    await post(`/api/models/${encodeURIComponent(dep)}/price`,
+      { input_usd_per_1m: Number(f.input.value), output_usd_per_1m: Number(f.output.value), verified: f.verified.checked }, "PUT");
+    toast(`Price saved for ${dep}.`); costsPage();
+  });
+  const per1000 = (pr) => ((per.input_tokens * pr.input + per.output_tokens * pr.output) / 1e6) * 1000;
+  const custom = h("input", { placeholder: "Deployment name", style: "width:180px" });
+  return card({ title: "AI Model", sub: `Classifies email and runs the person check. In use: ${m.current}${m.chosen_in_console ? " (chosen here)" : " (app setting)"}`, flush: true, class: "spaced",
+    actions: m.chosen_in_console ? h("button", { class: "btn sm", onclick: () => switchTo("") }, "Use App Setting") : null },
+    table([
+      ["Deployment", r => h("div", {}, h("div", { style: "font-weight:500" }, r.deployment),
+        h("div", { class: "muted small" }, [r.model, r.version, r.sku].filter(Boolean).join(" · ") || "details not listed"))],
+      ["Price per 1M Tokens (In / Out)", r => {
+        const pr = modelPrice(m, r);
+        inputs[r.deployment] = {
+          input: h("input", { type: "number", min: "0", step: "0.01", value: pr.input, style: "width:80px" }),
+          output: h("input", { type: "number", min: "0", step: "0.01", value: pr.output, style: "width:80px" }),
+          verified: h("input", { type: "checkbox", checked: pr.source === "Checked" }),
+        };
+        const f = inputs[r.deployment];
+        return h("div", { class: "price-edit" }, f.input, h("span", { class: "muted" }, "/"), f.output,
+          h("label", { class: "check small" }, f.verified, "Checked"),
+          h("button", { class: "btn sm", onclick: () => savePrice(r.deployment) }, "Save"),
+          h("div", { class: "muted small", style: "flex-basis:100%" }, pr.source));
+      }],
+      ["Classification per 1,000 Emails", r => usd(per1000(modelPrice(m, r))), "num"],
+      ["This Month", r => used[r.deployment] ? `${usd(used[r.deployment].usd)} · ${num(used[r.deployment].calls)} calls` : "—", "num"],
+      ["", r => r.deployment === m.current ? badge("In Use", "good", true)
+        : h("button", { class: "btn sm primary", onclick: () => switchTo(r.deployment) }, "Use This Model")],
+    ], rows),
+    h("div", { class: "card-foot-notes" },
+      m.deployments.available ? null : note(m.deployments.error === "not_configured"
+        ? "The list of deployments needs scripts/azure/6-cost-dashboard.sh. Until then, type a deployment name to test and switch."
+        : `The list of deployments could not be read (${m.deployments.error}). Type a deployment name to test and switch.`, "warn"),
+      m.deployments.available ? null : h("div", { class: "row-actions" }, custom,
+        h("button", { class: "btn sm", onclick: () => custom.value.trim() && switchTo(custom.value.trim()) }, "Test and Switch")),
+      note(`Per 1,000 emails uses ${per.measured ? `the measured average of the last 30 days (${num(per.emails)} emails)` : "an assumed average"}: ${num(per.input_tokens)} input and ${num(per.output_tokens)} output tokens per email. Reasoning models (gpt-5, o-series) also bill hidden reasoning tokens as output, so their real cost can be several times higher. New models are deployed in the Azure AI Foundry portal; embeddings stay on text-embedding-3-large.`)));
+}
+
 async function costsPage(refresh) {
-  const d = await api("/api/costs" + (refresh === true ? "?refresh=1" : ""));
+  const [d, models] = await Promise.all([
+    api("/api/costs" + (refresh === true ? "?refresh=1" : "")),
+    api("/api/models" + (refresh === true ? "?refresh=1" : "")),
+  ]);
   const billed = d.billed, m = d.metered;
   const now = new Date();
   const ym = (dt) => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`;
@@ -1580,6 +1653,7 @@ async function costsPage(refresh) {
     billed.available ? null : note(billedError(billed.error), "warn"),
     billed.stale_error ? note(`Showing the last figures read; the latest refresh failed (${billed.stale_error}).`, "warn") : null,
     m.available ? null : note("Metered usage needs database migration 0013 (db/migrate.py apply).", "warn"),
+    modelCard(models),
     note("Billed is what Azure charges, updated every 8–24 hours, so today's processing appears tomorrow. Estimated is counted as each AI call runs, priced with the unit prices below; compare the two to check the prices."),
     h("div", { class: "cols" },
       card({ title: "Billed by Service", sub: "This month, with last month for comparison", flush: true },
