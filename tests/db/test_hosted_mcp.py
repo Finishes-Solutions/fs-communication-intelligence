@@ -235,6 +235,8 @@ def test_tools_use_the_callers_identity(app: Any) -> None:
             "list_actionable",
             "email_stats",
             "risk_overview",
+            "find_knowledge",
+            "get_profile",
         }
         report = call_tool(
             client,
@@ -288,7 +290,7 @@ def test_served_through_the_azure_functions_adapter(app: Any) -> None:
 
     anonymous, signed, tools = asyncio.run(scenario())
     assert (anonymous, signed) == (401, 200)
-    assert len(tools["result"]["tools"]) == 8
+    assert len(tools["result"]["tools"]) == 10
 
 
 def test_threads_stats_risks_and_date_filters(app: Any, database_ready: str) -> None:
@@ -341,6 +343,20 @@ def test_threads_stats_risks_and_date_filters(app: Any, database_ready: str) -> 
         risks = call_tool(client, token(), "risk_overview", {"days": 365, "item_limit": 2})
         assert risks["total"] >= 1 and len(risks["items"]) <= 2
         assert risks["items"][0]["view_url"].startswith("https://admin.example/read/")
+
+        found = call_tool(client, token(), "find_knowledge", {"query": "northfield"})
+        org = next(r for r in found["results"] if r["kind"] == "organization")
+        assert org["name"] == "Northfield Framing Co." and "without human review" in found["note"]
+        profile = call_tool(client, token(), "get_profile", {"entity_id": org["entity_id"]})
+        assert profile["entity"]["entity_id"] == org["entity_id"]
+        assert any(f["relation"] == "works_for" for f in profile["facts"])
+        assert all(
+            e["view_url"].startswith("https://admin.example/read/")
+            for e in profile["recent_emails"]
+        )
+        assert profile["facts"][0]["view_url"].startswith("https://admin.example/read/")
+        missing = call_tool(client, token(), "get_profile", {"entity_id": 999_999})
+        assert missing == {"found": False, "note": "Not found in authorized, indexed mail."}
 
         # Exact dates: the fixture mail is from September and October 2026.
         october = call_tool(

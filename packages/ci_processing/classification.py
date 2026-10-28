@@ -20,7 +20,10 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Protocol
 
-POLICY_VERSION = "labels-2026-10-28c-uncalibrated"  # b: stricter action items; c: names
+from ci_processing.knowledge import Knowledge, LearnedName, Source, fake_extract, validate
+
+# b: stricter action items; c: names; d: knowledge (ci_processing.knowledge)
+POLICY_VERSION = "labels-2026-10-28d-uncalibrated"
 
 
 class Decision(StrEnum):
@@ -125,6 +128,9 @@ class ClassificationInput:
     cc: tuple[str, ...] = ()
     sent: str = ""
     attachments: tuple[tuple[str, str], ...] = ()  # (name, extracted text excerpt)
+    # Names the knowledge base learned from earlier mail, shown to the model as
+    # untrusted reference data. Not part of the hash: it is context, not the email.
+    learned: tuple[LearnedName, ...] = ()
 
     def sha256(self) -> str:
         canonical = json.dumps(
@@ -145,6 +151,11 @@ class ClassificationInput:
         parts = [self.subject, self.body_text, *(f"{n}\n{t}" for n, t in self.attachments)]
         return "\n".join(parts)
 
+    def source(self) -> Source:
+        """What extracted knowledge must be found in (ci_processing.knowledge.validate)."""
+        addresses = {a.strip().lower() for a in (self.sender, *self.to, *self.cc) if a.strip()}
+        return Source(self.full_text(), frozenset(addresses))
+
 
 @dataclass(frozen=True)
 class ClassificationResult:
@@ -163,6 +174,9 @@ class ClassificationResult:
     # matches (KnownName registry, ``ci names``).
     properties: tuple[str, ...] = ()
     entities: tuple[str, ...] = ()
+    # What the email says about properties, organizations, people and terms
+    # (ci_processing.knowledge); None from a run before knowledge extraction.
+    knowledge: Knowledge | None = None
 
     def decisions(self) -> dict[str, Decision]:
         """Every label gets a decision; a label the backend did not answer is unresolved."""
@@ -209,7 +223,7 @@ def normalize_names(
 
     Names with no match are kept as written."""
     lookup: dict[str, str] = {}
-    for k in known:
+    for k in known:  # the administrator's registry only
         if k.kind == kind:
             for alias in (k.canonical, *k.aliases):
                 lookup.setdefault(alias.casefold().strip(), k.canonical)
@@ -315,4 +329,13 @@ class FakeClassifier:
             else None,
             properties=clean_names(_FAKE_PROPERTY.findall(text), MAX_PROPERTIES),
             entities=clean_names((m.group(0) for m in _FAKE_ENTITY.finditer(text)), MAX_ENTITIES),
+            knowledge=validate(_fake_knowledge(item, text), item.source(), item.learned),
         )
+
+
+def _fake_knowledge(item: ClassificationInput, text: str) -> dict[str, object]:
+    raw = fake_extract(text, item.sender.lower())
+    listed = {n.name.casefold(): n.name for n in item.learned}
+    for name in raw["names"]:
+        name["known"] = listed.get(name["written"].casefold())
+    return raw

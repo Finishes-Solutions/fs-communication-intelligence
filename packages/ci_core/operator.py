@@ -324,3 +324,118 @@ def remove_name(conn: Connection, actor: str, kind: str, canonical: str) -> None
     if not removed:
         raise OperatorError(f"no {kind} named {canonical!r}")
     audit(conn, actor, "known_name_removed", "known_names", str(removed[0]["id"]), {"kind": kind})
+
+
+# ----- knowledge base corrections (migration 0016) ---------------------------
+# The base is built without approval; these let an operator correct it. They
+# change how entries are shown and counted, never the stored mentions, so each
+# one can be undone.
+
+
+def _entity(conn: Connection, entity_id: int) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT id, kind, name, name_override, merged_into, hidden FROM kg_entities WHERE id = %s",
+        (entity_id,),
+    ).fetchone()
+    if row is None:
+        raise OperatorError(f"no knowledge entry {entity_id}")
+    return dict(row)
+
+
+def knowledge_entry(conn: Connection, entity_id: int) -> dict[str, Any]:
+    """An entry's correction state and the entries merged into it (operators only)."""
+    entry = _entity(conn, entity_id)
+    entry["merged_from"] = conn.execute(
+        "SELECT id, name FROM kg_entities WHERE merged_into = %s ORDER BY id", (entity_id,)
+    ).fetchall()
+    return entry
+
+
+def hidden_knowledge(conn: Connection) -> list[dict[str, Any]]:
+    return conn.execute(
+        "SELECT id, kind, coalesce(name_override, name) AS name, updated_by, updated_at"
+        " FROM kg_entities WHERE hidden ORDER BY updated_at DESC NULLS LAST, id"
+    ).fetchall()
+
+
+def _touch(
+    conn: Connection, actor: str, entity_ids: list[int], changes: str, values: tuple[Any, ...]
+) -> None:
+    conn.execute(
+        f"UPDATE kg_entities SET {changes}, updated_by = %s, updated_at = now()"  # noqa: S608
+        " WHERE id = ANY(%s)",
+        (*values, actor, entity_ids),
+    )
+
+
+def merge_knowledge(conn: Connection, actor: str, source_id: int, target_id: int) -> None:
+    """Count ``source`` (and anything already merged into it) as ``target`` from now on.
+    Both must be the same kind; a target that is itself merged is followed to its root."""
+    source, target = _entity(conn, source_id), _entity(conn, target_id)
+    if target["merged_into"] is not None:
+        target = _entity(conn, target["merged_into"])
+    if source["kind"] != target["kind"]:
+        raise OperatorError(f"cannot merge a {source['kind']} into a {target['kind']}")
+    if source["id"] == target["id"] or source["merged_into"] == target["id"]:
+        raise OperatorError("those entries are already one")
+    moved = [
+        r["id"]
+        for r in conn.execute(
+            "SELECT id FROM kg_entities WHERE id = %s OR merged_into = %s", (source["id"],) * 2
+        ).fetchall()
+    ]
+    _touch(conn, actor, moved, "merged_into = %s", (target["id"],))
+    audit(
+        conn,
+        actor,
+        "knowledge_merge",
+        "kg_entities",
+        str(target["id"]),
+        {"source": source["id"], "entries": len(moved), "kind": source["kind"]},
+    )
+
+
+def unmerge_knowledge(conn: Connection, actor: str, entity_id: int) -> None:
+    entry = _entity(conn, entity_id)
+    if entry["merged_into"] is None:
+        raise OperatorError(f"knowledge entry {entity_id} is not merged")
+    _touch(conn, actor, [entity_id], "merged_into = NULL", ())
+    audit(
+        conn,
+        actor,
+        "knowledge_unmerge",
+        "kg_entities",
+        str(entity_id),
+        {"was_merged_into": entry["merged_into"]},
+    )
+
+
+def hide_knowledge(conn: Connection, actor: str, entity_id: int, *, hidden: bool = True) -> None:
+    """Hide an entry (and with it every fact naming it) from every reader, or show it again."""
+    entry = _entity(conn, entity_id)
+    _touch(conn, actor, [entity_id], "hidden = %s", (hidden,))
+    audit(
+        conn,
+        actor,
+        "knowledge_hide" if hidden else "knowledge_unhide",
+        "kg_entities",
+        str(entity_id),
+        {"kind": entry["kind"]},
+    )
+
+
+def rename_knowledge(conn: Connection, actor: str, entity_id: int, name: str | None) -> None:
+    """Set the name readers see (None or empty: back to the name emails use most)."""
+    entry = _entity(conn, entity_id)
+    cleaned = " ".join((name or "").split()) or None
+    if cleaned is not None and len(cleaned) > 120:
+        raise OperatorError("keep the name under 120 characters")
+    _touch(conn, actor, [entity_id], "name_override = %s", (cleaned,))
+    audit(
+        conn,
+        actor,
+        "knowledge_rename",
+        "kg_entities",
+        str(entity_id),
+        {"kind": entry["kind"], "cleared": cleaned is None},
+    )

@@ -810,3 +810,66 @@ def test_lab_returns_property_and_entity_names(client: TestClient) -> None:
     ).json()
     assert "Capital Company LLC" in result["entities_ai"]
     assert {"Example Commons", "Building B"} <= set(result["properties_ai"])
+
+
+def test_knowledge_page_profiles_and_corrections(client: TestClient, database_ready: str) -> None:
+    assert client.get("/api/knowledge", headers=auth(roles=[READER_ALL])).status_code == 403
+    listed = client.get("/api/knowledge?q=northfield&kind=organization", headers=auth()).json()
+    firm = listed["results"][0]
+    assert firm["name"] == "Northfield Framing Co." and listed["hidden"] == []
+    entry = client.get(f"/api/knowledge/{firm['entity_id']}", headers=auth()).json()
+    assert entry["entity"]["entity_id"] == firm["entity_id"]
+    assert entry["correction"] == {
+        "id": firm["entity_id"],
+        "kind": "organization",
+        "name": "Northfield Framing Co.",
+        "name_override": None,
+        "merged_into": None,
+        "hidden": False,
+        "merged_from": [],
+    }
+    url = f"/api/knowledge/{firm['entity_id']}"
+    assert (
+        client.post(f"{url}/rename", headers=auth(), json={"name": "Northfield"}).status_code == 200
+    )
+    renamed = client.get("/api/knowledge?q=northfield", headers=auth()).json()["results"]
+    assert renamed[0]["name"] == "Northfield"
+    row = latest_audit(database_ready, "knowledge_rename")
+    assert row is not None and row["actor_id"] == "matthew@finishessolutions.example"
+    assert client.post(f"{url}/hide", headers=auth()).json()["hidden"] is True
+    hidden = client.get("/api/knowledge", headers=auth()).json()
+    assert [h["id"] for h in hidden["hidden"]] == [firm["entity_id"]]
+    assert client.get(url, headers=auth()).status_code == 404  # readers no longer see it
+    assert client.post(f"{url}/unhide", headers=auth()).status_code == 200
+    assert client.post(f"{url}/rename", headers=auth(), json={"name": ""}).status_code == 200
+    assert client.post(f"{url}/merge", headers=auth(), json={"into": "x"}).status_code == 400
+    assert client.post(f"{url}/unmerge", headers=auth()).status_code == 400  # not merged
+    assert client.post(f"{url}/explode", headers=auth()).status_code == 404
+    assert client.get("/api/knowledge/abc", headers=auth()).status_code == 404
+
+
+def test_lab_shows_what_an_email_would_teach(client: TestClient) -> None:
+    result = client.post(
+        "/api/lab/classify",
+        headers=auth(),
+        json={
+            "subject": "Example Ridge grading schedule",
+            "sender": "jordan.rivera@acme-sitework.example",
+            "to": PAT,
+            "body": "Grading at Example Ridge starts Monday.\n\nJordan Rivera\nAcme Sitework LLC",
+        },
+    ).json()
+    knowledge = result["knowledge_ai"]
+    assert {n["written"] for n in knowledge["names"]} == {"Example Ridge", "Acme Sitework LLC"}
+    assert knowledge["people"][0]["email"] == "jordan.rivera@acme-sitework.example"
+    phishing = client.post(
+        "/api/lab/classify",
+        headers=auth(),
+        json={
+            "subject": "Updated banking details",
+            "sender": "jordan.rivera@acme-sitework-billing.example",
+            "to": PAT,
+            "body": "Please note our updated bank details.\n\nJordan Rivera\nAcme Sitework LLC",
+        },
+    ).json()
+    assert phishing["knowledge_ai"] is None  # phishing indicators teach nothing

@@ -21,6 +21,7 @@ from typing import Any
 
 import httpx
 
+from ci_processing import knowledge as kg
 from ci_processing.classification import (
     LABELS,
     MAX_ENTITIES,
@@ -374,6 +375,7 @@ is not written. Empty if none.
 companies, LLCs, LPs, trusts, funds and partnerships (e.g. "Capital Company LLC"), exactly \
 as written with their suffix (max 8). Not people, not email domains. Empty if none.
 """
+_SYSTEM_PROMPT += kg.prompt().replace("{", "{{").replace("}", "}}")
 
 _KNOWN_NAMES = """
 Known names (administrator list, trusted): when the email refers to one of these, including \
@@ -398,6 +400,7 @@ def _classifier_schema() -> dict[str, Any]:
             "risk",
             "properties",
             "entities",
+            "knowledge",
         ],
         "properties": {
             "labels": {
@@ -413,6 +416,7 @@ def _classifier_schema() -> dict[str, Any]:
             "risk": nullable,
             "properties": {"type": "array", "items": {"type": "string"}},
             "entities": {"type": "array", "items": {"type": "string"}},
+            "knowledge": kg.schema(),
         },
     }
 
@@ -459,13 +463,18 @@ class AzureOpenAIClassifier:
             "body": item.body_text,
             "attachments": [{"name": n, "text_excerpt": t} for n, t in item.attachments],
         }
+        messages = [
+            {"role": "system", "content": self._system + _known_section(known)},
+            {"role": "user", "content": json.dumps(email, ensure_ascii=False)},
+        ]
+        reference = kg.learned_reference(item.learned)
+        if reference:  # earlier email's names: data, never instructions
+            note = {"note": kg.LEARNED_NOTE, "learned_names": reference}
+            messages.append({"role": "user", "content": json.dumps(note, ensure_ascii=False)})
         response = self._http.post(
             self._url,
             {
-                "messages": [
-                    {"role": "system", "content": self._system + _known_section(known)},
-                    {"role": "user", "content": json.dumps(email, ensure_ascii=False)},
-                ],
+                "messages": messages,
                 "response_format": {
                     "type": "json_schema",
                     "json_schema": {
@@ -501,6 +510,7 @@ class AzureOpenAIClassifier:
             risk_text=content.get("risk") or None,
             properties=clean_names(content.get("properties"), MAX_PROPERTIES),
             entities=clean_names(content.get("entities"), MAX_ENTITIES),
+            knowledge=kg.validate(content.get("knowledge"), item.source(), item.learned),
         )
 
 

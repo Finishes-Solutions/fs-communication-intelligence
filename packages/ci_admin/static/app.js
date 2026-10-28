@@ -1034,6 +1034,7 @@ function labResult(r, person, message) {
     card({ title: "Why" }, h("ul", { class: "why" }, r.routing.why.map(w => h("li", {}, w)))),
     ai.length ? card({ title: "AI Proposal", sub: "A proposal, not an approval. Email text is untrusted; instructions inside it are ignored." },
       h("dl", { class: "kv" }, ai.flatMap(([k, x]) => [h("dt", {}, k), h("dd", {}, x)]))) : null,
+    r.knowledge_ai ? knowledgeCard(r.knowledge_ai) : null,
     r.stored ? card({ title: "Compared With What Was Stored" },
       r.changed_labels.length ? h("div", { class: "badges" }, h("span", { class: "muted small", style: "margin-right:4px" }, "Changed:"), labelBadges(r.changed_labels, "warn"))
         : h("div", { class: "status-succeeded" }, "Same labels as stored."),
@@ -1044,6 +1045,17 @@ function labResult(r, person, message) {
         h("span", { class: "zone-key z-yes" }), "Yes", " · marker = probability"),
       labelsBox) : card({}, h("p", { class: "muted", style: "margin:0" }, r.prefilter ? "Not classified: the bulk pre-filter skipped it, as in processing." : "Not classified: screening stopped it first, as in processing.")),
     message ? card({ title: "Files" }, filesBlock(message.communication_id, message)) : null);
+}
+
+// What processing would add to the knowledge base for this email.
+function knowledgeCard(k) {
+  const rows = [
+    ["Names", (k.names || []).map(n => `${n.written} (${KIND_TEXT[n.kind] || n.kind}${n.known ? `, = ${n.known}` : ""})`).join(" · ")],
+    ["People", (k.people || []).map(p => [p.name, p.email, p.title, p.organization].filter(Boolean).join(", ")).join(" · ")],
+    ["Facts", (k.relations || []).map(f => `${f.subject} ${ROLE_TEXT[f.relation] || f.relation}${f.role ? ` (${nice(f.role)})` : ""} ${f.object}`).join(" · ")],
+    ["Terms", (k.terms || []).map(t => `${t.term}: ${t.meaning}`).join(" · ")]].filter(([, x]) => x);
+  return card({ title: "Adds to the Knowledge Base", sub: "Only what is written in the email is kept; nothing is approved first." },
+    rows.length ? h("dl", { class: "kv" }, rows.flatMap(([n, x]) => [h("dt", {}, n), h("dd", {}, x)])) : h("p", { class: "muted small", style: "margin:0" }, "Nothing."));
 }
 
 // ---------- shared: downloads, dates, small charts ----------------------------
@@ -1739,6 +1751,128 @@ async function readerPage() {
   }
 }
 
+// ---------- knowledge base -----------------------------------------------------
+
+const KIND_TEXT = { property: "Property / Project", organization: "Organization", person: "Person", term: "Term" };
+const KIND_ICON = { property: "building", organization: "scale", person: "users", term: "text" };
+const ROLE_TEXT = { works_for: "Works for", role_on: "Role on", owns: "Owns", affiliate_of: "Affiliate of" };
+
+function kindBadge(kind) { return h("span", { class: "badge outline" }, icon(KIND_ICON[kind] || "layers"), KIND_TEXT[kind] || nice(kind)); }
+function entrySub(e) { return e.email || e.meaning || e.title || e.domain || (e.also_written || []).join(" · ") || ""; }
+// Support for a fact: one message from one sender is unconfirmed (no human approves entries).
+function support(f) {
+  const weak = f.messages < 2 || f.senders < 2;
+  return badge(`${num(f.messages)} msg${f.messages === 1 ? "" : "s"} · ${num(f.senders)} sender${f.senders === 1 ? "" : "s"}`, weak ? "warn" : "good");
+}
+
+async function knowledgePage() {
+  const p = pageParams();
+  const q = h("input", { placeholder: "Name, spelling or email address", value: p.get("q") || "" });
+  const kind = h("select", {}, h("option", { value: "" }, "Any kind"),
+    Object.entries(KIND_TEXT).map(([k, t]) => h("option", { value: k, selected: k === (p.get("kind") || "") }, t)));
+  const list = h("div", { class: "card" }, h("div", { class: "empty" }, h("div", { class: "spinner" }), "Loading…"));
+  const detail = h("div", { class: "card reader" }, h("div", { class: "placeholder" },
+    emptyState("Select an Entry", "Its facts, related entries and latest emails appear here.", "layers")));
+  const go = () => navigate("/knowledge?" + new URLSearchParams(Object.fromEntries(
+    [["q", q.value.trim()], ["kind", kind.value]].filter(([, v]) => v))));
+  show(pageHead("Knowledge", "Properties, organizations, people and terms learned from email, counted over the mail you may read."),
+    card({}, h("form", { class: "toolbar", onsubmit: e => { e.preventDefault(); go(); } },
+      searchBox(q), kind, h("button", { class: "btn primary", type: "submit" }, "Search"))),
+    h("div", { class: "inbox" }, list, detail),
+    note("Built automatically, without approval. A fact one sender stated once is marked in yellow: check its email before relying on it. Merge, rename or hide entries that are wrong; every change is audited and can be undone.", "warn"));
+  const d = await api("/api/knowledge?" + new URLSearchParams(Object.fromEntries(
+    [["q", p.get("q") || ""], ["kind", p.get("kind") || ""]].filter(([, v]) => v))));
+  const open = id => showEntry(id, detail);
+  list.replaceChildren(
+    h("div", { class: "card-head" }, h("h2", {}, p.get("q") ? "Matches" : "Most Mentioned"), h("span", { class: "muted small" }, `${num(d.results.length)} shown`)),
+    d.results.length
+      ? h("div", { class: "msg-list" }, d.results.map(e => {
+        const el = h("button", { class: "msg", type: "button" },
+          h("div", { class: "msg-top" }, h("span", { class: "msg-from" }, e.name), h("span", { class: "msg-time" }, `${num(e.messages)} msgs`)),
+          h("div", { class: "badges" }, kindBadge(e.kind), h("span", { class: "muted small" }, `#${e.entity_id} · last ${short(e.last_seen)}`)),
+          entrySub(e) ? h("div", { class: "msg-summary" }, entrySub(e)) : null);
+        el.addEventListener("click", () => {
+          el.parentElement.querySelectorAll(".on").forEach(x => x.classList.remove("on"));
+          el.classList.add("on"); open(e.entity_id);
+        });
+        return el;
+      }))
+      : emptyState("Nothing Learned Yet", "Entries appear as mail is processed; ci knowledge backfill adds mail processed earlier.", "layers"),
+    (d.hidden || []).length ? h("div", { class: "card-body" }, h("div", { class: "section-title" }, "Hidden Entries"),
+      table([["Entry", x => `#${x.id} ${x.name}`], ["Kind", x => KIND_TEXT[x.kind] || x.kind],
+        ["", x => h("button", { class: "btn sm", onclick: guard(async () => { await post(`/api/knowledge/${x.id}/unhide`); toast("Shown again"); route(); }) }, "Unhide")]],
+      d.hidden)) : null);
+  if (p.get("id")) open(p.get("id"));
+}
+
+async function showEntry(id, holder) {
+  holder.replaceChildren(h("div", { class: "placeholder" }, h("div", {}, h("div", { class: "spinner" }), "Loading…")));
+  try {
+    const d = await api(`/api/knowledge/${encodeURIComponent(id)}`);
+    holder.replaceChildren(entryView(d, holder));
+  } catch (e) {
+    if (e.message !== "signing in") holder.replaceChildren(h("div", { class: "placeholder status-failed" }, e.message));
+  }
+}
+
+function entryView(d, holder) {
+  const e = d.entity, c = d.correction || {};
+  const id = e.entity_id;
+  const act = (action, body, done) => guard(async () => { await post(`/api/knowledge/${id}/${action}`, body); toast(done); showEntry(id, holder); });
+  const rename = guard(async () => {
+    const name = await ask({ title: "Rename Entry", text: "The name every reader sees. Leave empty to go back to the name emails use most.",
+      input: { label: "Name", value: c.name_override || e.name } });
+    if (name === null) return;
+    await post(`/api/knowledge/${id}/rename`, { name }); toast("Renamed"); showEntry(id, holder);
+  });
+  const merge = guard(async () => {
+    const into = await ask({ title: "Merge Into Another Entry", text: `“${e.name}” will count as the other entry from now on (same kind only). Find its number (#) in the list. Undo with Unmerge.`,
+      input: { label: "Entry number", placeholder: "e.g. 42" } });
+    if (into === null) return;
+    await post(`/api/knowledge/${id}/merge`, { into: Number(into.replace("#", "")) }); toast("Merged"); route();
+  });
+  const hide = guard(async () => {
+    if (!await ask({ title: "Hide Entry", text: `“${e.name}” and every fact that names it disappear for every reader, including AI agents. Unhide it from the list later.`, confirm: "Hide", danger: true })) return;
+    await post(`/api/knowledge/${id}/hide`); toast("Hidden"); route();
+  });
+  const facts = d.facts || [];
+  const labels = d.activity?.labels || {};
+  return h("div", {},
+    h("div", { class: "reader-head" },
+      h("h2", {}, e.name),
+      h("div", { class: "reader-meta" },
+        kindBadge(e.kind), h("span", { class: "muted small" }, `#${id} · ${num(e.messages)} messages · ${short(e.first_seen)} to ${short(e.last_seen)}`),
+        h("div", { class: "actions" },
+          h("button", { class: "btn sm", onclick: rename }, "Rename"),
+          h("button", { class: "btn sm", onclick: merge }, "Merge Into…"),
+          h("button", { class: "btn sm", onclick: hide }, icon("hidden"), "Hide")))),
+    h("div", { class: "reader-section" }, h("dl", { class: "kv" }, [
+      ["Also Written", (e.also_written || []).join(" · ")], ["Email", e.email], ["Title", e.title], ["Meaning", e.meaning], ["Domain", e.domain],
+      ["Display Name", c.name_override ? `${c.name_override} (set by an admin)` : null]]
+      .filter(([, v]) => v).flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)]))),
+    (c.merged_from || []).length ? h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "Merged Into This Entry"),
+      h("div", { class: "badges" }, c.merged_from.map(m => h("span", { class: "badge outline" }, `#${m.id} ${m.name}`,
+        h("button", { class: "chip-x", title: "Unmerge", onclick: guard(async () => { await post(`/api/knowledge/${m.id}/unmerge`); toast("Unmerged"); showEntry(id, holder); }) }, icon("x")))))) : null,
+    h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "Facts"),
+      table([["", f => f.direction === "out" ? "→" : "←"],
+        ["Fact", f => `${ROLE_TEXT[f.relation] || nice(f.relation)}${f.role ? ` (${nice(f.role)})` : ""}`],
+        ["With", f => h("a", { href: `/knowledge?id=${f.other.entity_id}`, onclick: ev => { ev.preventDefault(); showEntry(f.other.entity_id, holder); } }, f.other.name)],
+        ["Support", f => h("div", { class: "badges" }, support(f), f.current === true ? badge("Current", "info") : f.current === false ? badge("Earlier", "outline") : null)],
+        ["Last Said", f => h("span", { class: "nowrap" }, short(f.last_seen))],
+        ["Evidence", f => h("span", { class: "muted small" }, f.evidence || "—", " ", h("a", { href: `/read/${encodeURIComponent(f.communication_id)}` }, "email"))]],
+      facts, null, emptyState("No Facts Yet", "Facts appear when emails state who works for whom, who has which role on a property, or who owns it.", "layers"))),
+    (d.related || []).length ? h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "Often Mentioned With"),
+      h("div", { class: "badges" }, d.related.map(r => h("button", { class: "badge outline", type: "button", onclick: () => showEntry(r.entity_id, holder) },
+        icon(KIND_ICON[r.kind] || "layers"), `${r.name} · ${num(r.shared_messages)}`)))) : null,
+    h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "Activity"),
+      h("div", { class: "badges" }, Object.keys(labels).length ? Object.entries(labels).map(([k, v]) => badge(`${labelName(k)} ${num(v)}`, k === "project_risk" ? "bad" : "")) : h("span", { class: "muted small" }, "No risks, action items or invoices.")),
+      columnChart((d.activity?.by_month || []).map(m => [m.month, m.messages]), h("p", { class: "muted small" }, "No email in the last 12 months."))),
+    h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "Latest Emails"),
+      (d.recent_emails || []).length ? h("div", { class: "msg-list" }, d.recent_emails.map(m => msgRow(m, x => { location.href = `/read/${encodeURIComponent(x.communication_id)}`; })))
+        : h("p", { class: "muted small" }, "None.")),
+    h("div", { class: "reader-section" }, h("p", { class: "muted small", style: "margin:0" }, d.note || "")));
+}
+
 // ---------- router -----------------------------------------------------------
 
 const NAV = [
@@ -1747,14 +1881,15 @@ const NAV = [
   null,
   ["messages", "Messages", "mail"], ["actionable", "Action Items", "check"], ["unpublished", "Not Published", "hidden"],
   null,
-  ["risks", "Risk Analysis", "alert"], ["reports", "Reports", "report"], ["review", "Label Review", "review"],
+  ["risks", "Risk Analysis", "alert"], ["knowledge", "Knowledge", "layers"], ["reports", "Reports", "report"],
+  ["review", "Label Review", "review"],
   null,
   ["lab", "Lab", "lab"],
 ];
 const NAV_GROUPS = ["Operations", "Mail", "Insights", "Tools"];
 const PAGES = { overview, schedule: schedulePage, costs: costsPage, mailboxes: mailboxesPage, messages: messagesPage,
   actionable: actionablePage, unpublished: unpublishedPage, lab: labPage,
-  risks: risksPage, reports: reportsPage, review: reviewPage, check: reviewPage, read: readerPage };
+  risks: risksPage, knowledge: knowledgePage, reports: reportsPage, review: reviewPage, check: reviewPage, read: readerPage };
 
 function drawNav() {
   const nav = document.getElementById("tabs");

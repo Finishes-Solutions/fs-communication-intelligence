@@ -44,6 +44,15 @@ The database comes from the standard ``PG*`` environment variables; locally,
     ci names add entity "Capital Company LLC"
     ci names remove property|entity NAME
 
+    ci knowledge list [QUERY] [--kind property|organization|person|term]
+                                              what the email taught the knowledge base
+    ci knowledge show ID                      one entry: facts, related entries, emails
+    ci knowledge merge ID --into ID           count two entries as one (undo: unmerge ID)
+    ci knowledge hide ID | unhide ID          hide a wrong entry from every reader
+    ci knowledge rename ID "NAME" | rename ID --clear
+    ci knowledge backfill                     knowledge for mail processed before it existed
+                                              (from stored classifications; no AI cost)
+
     ci people list                            whose action items get a per-person check
     ci people set chuck_sr --name "Chuck Sr." --address chuckc@finishesetc.net
                   [--role TEXT] [--not-to-confuse TEXT] [--disable]
@@ -73,16 +82,22 @@ from ci_core.operator import (
     approve_mailbox,
     exclude_mailbox,
     exclude_participant,
+    hide_knowledge,
     list_mailboxes,
     list_names,
     list_participant_exclusions,
     list_people,
+    merge_knowledge,
     remove_name,
+    rename_knowledge,
     set_mode,
     set_person,
+    unmerge_knowledge,
 )
 from ci_core.runtime import RuntimeConfigError, active_config, eligible_mailboxes
 from ci_core.settings import DeploymentEnvironment, SettingsError, load_settings
+from ci_email import knowledge_store
+from ci_email.process import known_names
 from ci_retrieval.identity import IdentityError
 
 
@@ -232,6 +247,24 @@ def _parser() -> argparse.ArgumentParser:
     nremove = names_action.add_parser("remove")
     nremove.add_argument("kind", choices=["property", "entity"])
     nremove.add_argument("name")
+    know = sub.add_parser("knowledge", help="the knowledge base learned from email")
+    know_action = know.add_subparsers(dest="action", required=True)
+    klist = know_action.add_parser("list")
+    klist.add_argument("query", nargs="?")
+    klist.add_argument("--kind", choices=["property", "organization", "person", "term"])
+    klist.add_argument("--limit", type=int, default=30)
+    know_action.add_parser("show").add_argument("entity_id", type=int)
+    kmerge = know_action.add_parser("merge", help="count ID as the --into entry from now on")
+    kmerge.add_argument("entity_id", type=int)
+    kmerge.add_argument("--into", type=int, required=True)
+    for name in ("unmerge", "hide", "unhide"):
+        know_action.add_parser(name).add_argument("entity_id", type=int)
+    krename = know_action.add_parser("rename")
+    krename.add_argument("entity_id", type=int)
+    krename.add_argument("name", nargs="?")
+    krename.add_argument("--clear", action="store_true", help="use the name emails use most")
+    kback = know_action.add_parser("backfill")
+    kback.add_argument("--limit", type=int, default=0, help="0 = all")
     run_now = sub.add_parser("run-capture", help="ask the ingestion app to capture now")
     run_when = run_now.add_mutually_exclusive_group()
     run_when.add_argument("--hours", type=float, help="look-back (default: the schedule's window)")
@@ -335,6 +368,26 @@ def _schedule(args: argparse.Namespace, conn: Connection, actor: str) -> None:
     print("(the Azure app settings CAPTURE_ENABLED / PROCESSING_ENABLED must also be true)")
 
 
+def _knowledge(args: argparse.Namespace, conn: Connection, actor: str) -> None:
+    if args.action == "backfill":
+        counts = knowledge_store.backfill(conn, known=known_names(conn), limit=args.limit or None)
+        print(f"knowledge backfill: {dict(sorted(counts.items()))}")
+    elif args.action == "merge":
+        merge_knowledge(conn, actor, args.entity_id, args.into)
+        print(f"entry {args.entity_id} now counts as entry {args.into}")
+    elif args.action == "unmerge":
+        unmerge_knowledge(conn, actor, args.entity_id)
+        print(f"entry {args.entity_id} is separate again")
+    elif args.action in ("hide", "unhide"):
+        hide_knowledge(conn, actor, args.entity_id, hidden=args.action == "hide")
+        print(f"entry {args.entity_id} {'hidden' if args.action == 'hide' else 'shown again'}")
+    elif args.action == "rename":
+        if not args.clear and not args.name:
+            raise OperatorError("give a NAME, or --clear")
+        rename_knowledge(conn, actor, args.entity_id, None if args.clear else args.name)
+        print(f"entry {args.entity_id} renamed" if not args.clear else "name cleared")
+
+
 def _run(args: argparse.Namespace, conn: Connection) -> None:
     actor = args.actor
     if args.command == "seed":
@@ -406,6 +459,9 @@ def _run(args: argparse.Namespace, conn: Connection) -> None:
             also = f"  (also: {', '.join(n['aliases'])})" if n["aliases"] else ""
             print(f"{n['kind']:<9} {n['canonical']}{also}")
         return
+    if args.command == "knowledge":
+        _knowledge(args, conn, actor)
+        return
     if args.command == "run-capture":
         hours = ops.hours_since(args.since, datetime.now(UTC)) if args.since else args.hours
         ops.request_run(conn, actor, hours)
@@ -439,6 +495,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             pipeline.stats()
         elif args.command == "mcp":
             pipeline.mcp()
+        elif args.command == "knowledge" and args.action in ("list", "show"):
+            pipeline.knowledge(args)
         else:
             with connect() as conn:
                 _run(args, conn)

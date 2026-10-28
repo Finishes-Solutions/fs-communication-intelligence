@@ -301,6 +301,8 @@ The hosted endpoint is written to the MCP standard (Streamable HTTP; OAuth prote
 | `get_thread` | The whole conversation an email belongs to, oldest first |
 | `email_stats` | Counts of emails, action items and risks by mailbox, sender, domain, label, property, entity, day, week or month |
 | `risk_overview` | Project-risk trends: change from the previous period, top categories, properties, companies and mailboxes, newest risks |
+| `find_knowledge` | Look up a property, organization, person (name or address) or term the email has taught the knowledge base (`docs/KNOWLEDGE.md`) |
+| `get_profile` | Everything the mail says about one entry: who works where, who has which role on a property, what it owns, related entries, activity and latest emails, each fact with its message and sender support |
 
 Dates: `since_date` and `until_date` (YYYY-MM-DD, both inclusive) pick an exact period on `search_email`, `list_email` and `email_stats`.
 

@@ -25,12 +25,14 @@ import time
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
+import psycopg
 
 from ci_core.db import Connection, required
+from ci_email import knowledge_store
 from ci_email.graph import GraphClient, GraphError
 from ci_processing.azure import AzureServiceError
 from ci_processing.chunking import chunk_text
@@ -51,6 +53,7 @@ from ci_processing.extraction import (
     extract,
     is_signature_image,
 )
+from ci_processing.knowledge import Knowledge, LearnedName
 from ci_processing.originals import OriginalStore, OriginalStoreError
 from ci_processing.policy import Disposition, Outcome, classification_outcome, screening_gate
 from ci_processing.prefilter import PREFILTER_VERSION, bulk_skip_reason
@@ -88,6 +91,8 @@ class Backends:
     # Skip obvious bulk and automated mail before any paid step (ci_processing.prefilter).
     prefilter: bool = False
     prefilter_allow_domains: frozenset[str] = frozenset()
+    # Names learned from earlier mail, shown to the classifier (ci_email.knowledge_store).
+    learned: knowledge_store.LearnedCache = field(default_factory=knowledge_store.LearnedCache)
 
 
 def _sha(text: str) -> str:
@@ -315,8 +320,8 @@ def _classify_raw(
 ) -> tuple[ClassificationResult, int | None]:
     model = getattr(backends.classifier, "model", type(backends.classifier).__name__)
     prior = conn.execute(
-        "SELECT id, summary, action_text, action_for, due_text, risk_text, properties, entities"
-        " FROM classification_runs"
+        "SELECT id, summary, action_text, action_for, due_text, risk_text, properties, entities,"
+        " knowledge FROM classification_runs"
         " WHERE input_sha256 = %s AND model = %s AND policy_version = %s AND reused_from IS NULL"
         " ORDER BY id LIMIT 1",
         (item.sha256(), model, POLICY_VERSION),
@@ -338,6 +343,7 @@ def _classify_raw(
             prior["risk_text"],
             tuple(prior["properties"]),
             tuple(prior["entities"]),
+            Knowledge.from_json(prior["knowledge"]),
         ), int(prior["id"])
     return backends.classifier.classify(item, known), None
 
@@ -353,8 +359,8 @@ def _store_classification(
         conn.execute(
             "INSERT INTO classification_runs (version_id, model, policy_version, input_sha256,"
             " disposition, reason_codes, summary, action_text, action_for, due_text, risk_text,"
-            " reused_from, properties, entities)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+            " reused_from, properties, entities, knowledge)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
             " ON CONFLICT (version_id, model, policy_version) DO NOTHING RETURNING id",
             (
                 version_id,
@@ -371,6 +377,7 @@ def _store_classification(
                 reused_from,
                 list(result.properties),
                 list(result.entities),
+                json.dumps(result.knowledge.to_json()) if result.knowledge else None,
             ),
         ).fetchone()
     )["id"]
@@ -452,6 +459,41 @@ def _redact(conn: Connection, job: dict[str, Any], redactor: Redactor) -> None:
         " policy_version, service_ref) VALUES (%s, 'redaction', 'allow', %s, %s, %s)",
         (job["version_id"], result.reason_code(), POLICY_VERSION, type(redactor).__name__),
     )
+
+
+def _learned(conn: Connection, backends: Backends) -> tuple[LearnedName, ...]:
+    """Learned names for the classifier; none (and a warning) if they cannot be read."""
+    try:
+        with conn.transaction():
+            return backends.learned.get(conn)
+    except psycopg.Error as exc:  # e.g. before migration 0016
+        log.warning("learned names not read: %s", type(exc).__name__)
+        return ()
+
+
+def _record_knowledge(
+    conn: Connection, job: dict[str, Any], result: ClassificationResult, item: ClassificationInput
+) -> None:
+    """Add what the email says to the knowledge base. A failure here is logged and the
+    message is still published: knowledge is an addition, never a gate."""
+    if not knowledge_store.contributes(result):
+        return
+    knowledge = knowledge_store.knowledge_of(result)
+    if knowledge.empty:
+        return
+    try:
+        with conn.transaction():
+            knowledge_store.record(
+                conn,
+                job["version_id"],
+                knowledge,
+                learned=item.learned,
+                known=known_names(conn),
+            )
+    except psycopg.Error as exc:
+        log.warning(
+            "knowledge not recorded for version %s: %s", job["version_id"], type(exc).__name__
+        )
 
 
 def _profile_version(profile: PersonProfile) -> str:
@@ -653,6 +695,7 @@ def process_version(conn: Connection, job: dict[str, Any], backends: Backends) -
                 (a["name"] or "", a["content"][:CLASSIFY_ATTACHMENT_CHARS])
                 for a in attachments[:CLASSIFY_MAX_ATTACHMENTS]
             ),
+            learned=_learned(conn, backends),
         )
         result, reused_from = _classify(conn, backends, item)
         outcome = classification_outcome(result, mask_sensitive=backends.redactor is not None)
@@ -663,6 +706,8 @@ def process_version(conn: Connection, job: dict[str, Any], backends: Backends) -
 
     if backends.router is not None and result is not None and item is not None:
         _route_people(conn, job, backends.router, result, item)
+    if result is not None and item is not None:
+        _record_knowledge(conn, job, result, item)
 
     pieces = _chunks(job, sender, body, attachments)
     vectors = backends.embedder.embed([p[4] for p in pieces]) if pieces else []
@@ -798,7 +843,14 @@ def _requeue(conn: Connection, versions: list[Any]) -> int:
         " (SELECT id FROM classification_runs WHERE version_id = ANY(%s))",
         (versions,),
     )
-    for table in ("chunks", "classification_runs", "policy_decisions", "action_routes"):
+    for table in (
+        "chunks",
+        "classification_runs",
+        "policy_decisions",
+        "action_routes",
+        "kg_mentions",
+        "kg_relations",
+    ):
         conn.execute(f"DELETE FROM {table} WHERE version_id = ANY(%s)", (versions,))  # noqa: S608
     conn.execute(
         "UPDATE communication_versions SET processing_state = 'fetched', hold_reason_code = NULL,"

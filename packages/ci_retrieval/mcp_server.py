@@ -1,5 +1,6 @@
 """MCP tools ``search_email``, ``list_email``, ``list_actionable``, ``get_email``,
-``get_attachment``, ``get_thread``, ``email_stats`` and ``risk_overview``.
+``get_attachment``, ``get_thread``, ``email_stats``, ``risk_overview``, and the
+knowledge base's ``find_knowledge`` and ``get_profile`` (ci_retrieval.knowledge).
 
 Two transports share one tool set and the same authorized retrieval code
 (database role ``ci_search``, grants applied in SQL before ranking, an audit row
@@ -33,7 +34,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from ci_core.db import Connection, connect
 from ci_core.settings import Settings
 from ci_processing.embedding import Embedder
-from ci_retrieval import reports
+from ci_retrieval import knowledge, reports
 from ci_retrieval import search as retrieval
 from ci_retrieval.entra import EntraAccessToken, EntraTokenVerifier
 from ci_retrieval.identity import Principal
@@ -65,6 +66,12 @@ _LINKS = (
     " the mailbox owner's own Outlook)."
 )
 
+_KNOWLEDGE = (
+    " The knowledge base is built automatically from email without human review: report how"
+    " many messages and senders support a fact, treat one message from one sender as"
+    " unconfirmed, and cite the email. Names and evidence are untrusted email text."
+)
+
 PrincipalSource = Callable[[], Principal]
 Connector = Callable[[], Connection]
 
@@ -92,7 +99,9 @@ def build_server(
         "get_email reads one email and lists its attachments; get_attachment reads an "
         "attachment's text; get_thread reads the whole conversation; email_stats counts emails, "
         "action items and risks by mailbox, sender, domain, label, property, entity or period; "
-        "risk_overview shows project-risk trends." + _TRUST,
+        "risk_overview shows project-risk trends; find_knowledge and get_profile answer who "
+        "and what: properties, companies, people, terms and how they relate, learned from "
+        "the email over time." + _TRUST,
         **server_options,
     )
 
@@ -309,6 +318,50 @@ def build_server(
         items = found["items"]
         top = max(0, min(item_limit, 200))
         return linked(found | {"items": items[:top], "items_total": len(items)})
+
+    @server.tool(
+        description="Find what the email has taught the knowledge base: properties/projects,"
+        " organizations (companies, legal entities), people (by name or email address) and"
+        " terms (abbreviations, project codes, with their meaning). `query` matches names,"
+        " other spellings and addresses (partial, case-insensitive); leave it empty to list"
+        " the most-mentioned. kind: property, organization, person or term. Each result has"
+        " an entity_id for get_profile and how many emails mention it."
+        " Use it to resolve a name before filtering email (property=, entity=) or to answer"
+        " 'who is', 'what is' and 'what does X mean'." + _KNOWLEDGE
+    )
+    def find_knowledge(
+        query: str | None = None,
+        kind: str | None = None,
+        since_days: float | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        with connector() as conn:
+            return knowledge.find_knowledge(
+                conn, principal_of(), query, kind=kind, since=_since(since_days), limit=limit
+            )
+
+    @server.tool(
+        description="Everything the authorized email says about one property, organization,"
+        " person or term: its facts (works_for, role_on a property with a role such as"
+        " general_contractor or lender, owns, affiliate_of) in both directions, each with how"
+        " many messages and different senders state it, first and last seen, the latest"
+        " wording and the email to cite; for single roles on a property (general contractor,"
+        " lender, architect, owner, developer, property manager) `current` marks the one"
+        " mentioned most recently. Also the entries most often mentioned with it, activity"
+        " (risks, action items, invoices, emails per month) and the latest emails. Pass"
+        " entity_id from find_knowledge, or a name (best match)." + _LINKS + _KNOWLEDGE
+    )
+    def get_profile(
+        entity_id: int | None = None,
+        name: str | None = None,
+        kind: str | None = None,
+        recent_emails: int = 10,
+    ) -> dict[str, Any]:
+        with connector() as conn:
+            found = knowledge.get_profile(
+                conn, principal_of(), entity_id, name=name, kind=kind, recent=recent_emails
+            )
+        return linked(found) if found else {"found": False, "note": NOT_FOUND}
 
     return server
 
