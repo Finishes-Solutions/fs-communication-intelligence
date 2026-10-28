@@ -67,6 +67,7 @@ Business context: Finishes Solutions is a real estate owner-developer (Waller, T
 | Executive **"risks" mean project risks** (schedule, cost, disputes, liens, inspections/permits, safety, quality, financing, non-performance), not phishing or security items | New label `project_risk` plus an AI one-line `risk_text`; `list_actionable` risks = `project_risk` only. Chuck's action items come only from **ChuckC@finishesetc.net**. |
 | **Original attachment files are kept in Blob Storage without malware scanning** (Matthew, 2026-10-28) | Container `attachments` in `stfscievidev1026`, one blob per SHA-256; the ingestion identity writes, the admin console identity reads; files are served only through the admin console after authorizing their message, as downloads with a sandboxing CSP and allow-listed preview types. Inline images are not kept. Defender for Storage scanning is still required before production. |
 | **Admin console** (Matthew, 2026-10-28): a web app for him only, showing all mail with filters | `apps/admin` + `packages/ci_admin`; scope `Communications.Console` and app role `Communications.Admin`; capture schedule moved into PostgreSQL (`ops_settings`, `ci schedule`); see `docs/DEPLOY_AZURE.md` §12. |
+| **Mask PII and credentials instead of restricting the whole email** (Matthew, 2026-10-28) | `SENSITIVE_DATA_POLICY=mask` (default; `restrict` keeps the old rule). Before classification, government IDs, bank/routing/card numbers (Azure AI Language PII, in-tenant) and credentials (passwords, codes, keys, tokens, link query strings; regex) are replaced with `[Category]`/`[credential]` in the stored subject, body and attachment text; a masking outage holds the message. `credentials`/`sensitive_pii` = yes then means indexed and flagged for review. `potential_phi` = yes is still restricted. Original attachment files in Blob are not masked (admin console only). `ci process --remask --limit 0` reprocesses earlier mail. |
 | The run uses a **certificate app registration on Matthew's Mac** with Exchange RBAC over all mailboxes | Exception to §10.2 (dev app scoped to the test mailbox). Short-lived (30-day certificate) and removed after the test (`docs/RUN_24H_TEST.md` §7). Production ingestion remains a managed identity. |
 
 ---
@@ -157,7 +158,7 @@ These are predicate questions. A probability ≤ the "no" threshold means no, �
 | cat_general_governance | .20 | .70 | Internal approvals, policies, committee decisions? |
 
 Rules:
-- If `credentials`, `potential_phi` or `sensitive_pii` = yes, mark the item **restricted**: not embedded and never returned.
+- If `potential_phi` = yes, mark the item **restricted**: not embedded and never returned. `credentials` and `sensitive_pii` = yes were restricted too until Matthew's 2026-10-28 decision: with `SENSITIVE_DATA_POLICY=mask` (default) those values are masked before classification and the item is indexed and flagged for review (§3a); `restrict` keeps the original rule.
 - If any of those is uncertain, or phishing ≠ no, mark it **review**: indexed and flagged.
 - Spam and newsletters are recorded but not indexed.
 - Thresholds must be calibrated on a labelled pilot sample before anything depends on them.

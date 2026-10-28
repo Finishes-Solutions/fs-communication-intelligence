@@ -165,6 +165,18 @@ Attachments that failed to read (for example before the 2026-10-28 fix that let 
 ci process --retry-attachments --limit 0
 ```
 
+**Masking (2026-10-28).** Bank, routing, card and government ID numbers and credentials (passwords, one-time codes, API keys, tokens, reset links) are now masked, e.g. `[USBankAccountNumber]` or `[credential]`, before an email is classified, indexed or shown. The email itself stays searchable, flagged for review. Health information is still hidden entirely. Mail processed before this change still has the old outcome (hidden, or indexed unmasked). Once the deploy with masking has finished, reprocess everything under the new rules, then turn processing back on if you paused it:
+
+```bash
+ci process --remask --limit 0
+```
+
+```bash
+ci schedule set --processing-on
+```
+
+Each message is unsearchable for a few minutes while it is reprocessed. `SENSITIVE_DATA_POLICY=restrict` on the ingestion app brings back the old rule. The original attachment files kept in Blob Storage are not masked; only the admin console can open them.
+
 If Cloud Shell can't reach the database (timeout), add its address: `az postgres flexible-server firewall-rule create -g fs-communication-intelligence --server-name psql-fs-ci-dev-1026b --name cloudshell --start-ip-address $(curl -s https://api.ipify.org) --end-ip-address $(curl -s https://api.ipify.org)`.
 
 ## 8. Test
