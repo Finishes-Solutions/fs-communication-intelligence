@@ -4,7 +4,7 @@ A token is accepted only if it is an RS256 v2.0 token signed by a current key
 of the configured tenant, issued by that tenant, addressed to the search API
 (client id or App ID URI), unexpired, and carries the delegated scope
 ``Communications.Search`` (``scp``; the admin console requires
-``Communications.Admin`` instead). App-only tokens (no ``scp``) are refused:
+``Communications.Console`` instead). App-only tokens (no ``scp``) are refused:
 every call acts for a signed-in person. Reader authority comes from the
 token's app roles (``roles``) and the person's object id (``oid``), never from
 tool arguments (CLAUDE.md L8).

@@ -21,6 +21,7 @@ The database comes from the standard ``PG*`` environment variables; locally,
 
     ci capture --hours 24                     store mail received in the last N hours
     ci process [--limit N] [--retry-failed]   extract, screen, classify, embed, publish
+    ci process --retry-attachments --limit 0  re-read failed attachments (the app reprocesses)
     ci stats                                  counts by state, outcome, label, extraction
     ci search "QUERY" [--mailbox ADDRESS]     authorized search as the signed-in person
     ci actionable [--person ADDRESS] [--hours 24] [--out FILE.md]
@@ -115,6 +116,11 @@ def _parser() -> argparse.ArgumentParser:
     process.add_argument("--limit", type=int)
     process.add_argument("--workers", type=int, default=4)
     process.add_argument("--retry-failed", action="store_true")
+    process.add_argument(
+        "--retry-attachments",
+        action="store_true",
+        help="re-read attachments that failed and reprocess their messages",
+    )
     sub.add_parser("stats")
     search = sub.add_parser("search")
     search.add_argument("query")

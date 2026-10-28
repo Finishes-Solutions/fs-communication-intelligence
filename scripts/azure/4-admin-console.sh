@@ -12,7 +12,7 @@
 #
 # What it does:
 #  1. Admin console: managed identity id-fs-ci-admin-dev, storage account and
-#     Flex Consumption Function App; scope + app role Communications.Admin on the
+#     Flex Consumption Function App; scope Communications.Console + app role Communications.Admin on the
 #     existing search API registration (keeping what is there); the role for
 #     ADMINS; a browser (SPA) sign-in app with no secret; GitHub deploy access.
 #  2. Original files: private container "attachments" in the evidence storage
@@ -74,7 +74,7 @@ fi
 az functionapp identity assign -g "$RG" -n "$ADM_APP" --identities "$ADM_ID" --only-show-errors >/dev/null
 ADM_HOST="$(app_host "$ADM_APP")"
 
-echo "== Communications.Admin scope and app role on \"$API_NAME\""
+echo "== Communications.Console scope and Communications.Admin app role on \"$API_NAME\""
 API_APP_ID="$(az ad app list --display-name "$API_NAME" --query "[0].appId" -o tsv)"
 [ -n "$API_APP_ID" ] || { echo "run scripts/azure/2-search-api-entra.sh first" >&2; exit 1; }
 API_OBJ="$(az ad app show --id "$API_APP_ID" --query id -o tsv)"
@@ -88,8 +88,8 @@ app = json.load(sys.stdin)
 scopes = app["api"]["oauth2PermissionScopes"]
 roles = app["appRoles"]
 changed = False
-if not any(s["value"] == "Communications.Admin" for s in scopes):
-    scopes.append({"id": str(uuid.uuid4()), "value": "Communications.Admin", "type": "Admin",
+if not any(s["value"] == "Communications.Console" for s in scopes):
+    scopes.append({"id": str(uuid.uuid4()), "value": "Communications.Console", "type": "Admin",
         "isEnabled": True, "adminConsentDisplayName": "Administer email intelligence",
         "adminConsentDescription": "Use the admin console: schedule, scope, run history, lab."})
     changed = True
@@ -102,7 +102,7 @@ print(json.dumps({"api": app["api"], "appRoles": roles}) if changed else "")
 ')"
 if [ -n "$BODY" ]; then graph PATCH "applications/$API_OBJ" "$BODY" >/dev/null; echo "  added"; else echo "  present"; fi
 ADMIN_SCOPE_ID="$(az ad app show --id "$API_APP_ID" \
-  --query "api.oauth2PermissionScopes[?value=='Communications.Admin'].id | [0]" -o tsv)"
+  --query "api.oauth2PermissionScopes[?value=='Communications.Console'].id | [0]" -o tsv)"
 ADMIN_ROLE_ID="$(az ad app show --id "$API_APP_ID" \
   --query "appRoles[?value=='Communications.Admin'].id | [0]" -o tsv)"
 API_SP="$(az ad sp list --filter "appId eq '$API_APP_ID'" --query "[0].id" -o tsv)"
@@ -140,7 +140,7 @@ consent() {  # consent <client sp id> <resource sp id> <space-separated scopes>
 SPA_SP="$(az ad sp list --filter "appId eq '$SPA_ID'" --query "[0].id" -o tsv)"
 GRAPH_SP="$(az ad sp show --id "$GRAPH_APP_ID" --query id -o tsv)"
 # Consent lets the app ask for the scope; only people with the Admin app role get past the API.
-consent "$SPA_SP" "$API_SP" "Communications.Admin"
+consent "$SPA_SP" "$API_SP" "Communications.Console"
 consent "$SPA_SP" "$GRAPH_SP" "openid profile"
 echo "  redirect https://$ADM_HOST/ and consent ok"
 

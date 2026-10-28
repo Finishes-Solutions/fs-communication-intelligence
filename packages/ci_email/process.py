@@ -529,6 +529,51 @@ def process_all(
     return counts
 
 
+def requeue_failed_attachments(conn: Connection) -> int:
+    """Reprocess every message with an attachment whose extraction failed or timed out.
+
+    The version's derived data (chunks, classification, screening records) is
+    removed and it goes back to ``fetched``, so the process timer extracts the
+    attachments again and re-screens, re-classifies and re-publishes with their
+    text. Until then the message is not searchable (minutes). Returns the number
+    of messages requeued; the caller commits.
+    """
+    versions = [
+        r["version_id"]
+        for r in conn.execute(
+            "SELECT DISTINCT a.version_id FROM email_attachments a"
+            " JOIN communication_versions v ON v.id = a.version_id"
+            " WHERE a.extraction_status IN ('failed', 'timeout')"
+            " AND v.processing_state IN ('published', 'held', 'rejected')"
+        ).fetchall()
+    ]
+    if not versions:
+        return 0
+    conn.execute(
+        "UPDATE classification_runs SET reused_from = NULL WHERE reused_from IN"
+        " (SELECT id FROM classification_runs WHERE version_id = ANY(%s))",
+        (versions,),
+    )
+    for table in ("chunks", "classification_runs", "policy_decisions"):
+        conn.execute(f"DELETE FROM {table} WHERE version_id = ANY(%s)", (versions,))  # noqa: S608
+    conn.execute(
+        "DELETE FROM version_texts WHERE version_id = ANY(%s) AND text_kind = 'attachment'",
+        (versions,),
+    )
+    conn.execute(
+        "UPDATE email_attachments SET extraction_status = 'not_attempted', extractor = NULL,"
+        " extracted_chars = NULL WHERE version_id = ANY(%s)"
+        " AND extraction_status IN ('failed', 'timeout')",
+        (versions,),
+    )
+    conn.execute(
+        "UPDATE communication_versions SET processing_state = 'fetched', hold_reason_code = NULL,"
+        " last_error_code = NULL WHERE id = ANY(%s)",
+        (versions,),
+    )
+    return len(versions)
+
+
 def retry_failed(conn: Connection) -> int:
     rows = conn.execute(
         "UPDATE communication_versions SET processing_state = 'fetched', last_error_code = NULL"

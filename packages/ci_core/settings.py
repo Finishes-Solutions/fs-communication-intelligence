@@ -157,7 +157,7 @@ class Settings(BaseSettings):
     search_api_app_id_uri: str | None = None  # e.g. api://<client id>
 
     # Admin console (apps/admin): the public SPA client the browser signs in
-    # with. Tokens are for the search API registration, scope Communications.Admin.
+    # with. Tokens are for the search API registration, scope Communications.Console.
     admin_spa_client_id: str | None = None
 
     # Local-only principal for the MCP server and CLI (AUTH_MODE=local_test).

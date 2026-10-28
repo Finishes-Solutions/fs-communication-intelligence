@@ -1,7 +1,7 @@
 """The admin console: a static single-page app plus a JSON API, one Starlette app.
 
 Every ``/api`` call needs an Entra delegated token for the search API
-registration carrying the scope ``Communications.Admin`` **and** the app role
+registration carrying the scope ``Communications.Console`` **and** the app role
 ``Communications.Admin`` (assigned to named people only). A missing or invalid
 token gets 401; a valid token without the role gets 403. The browser signs in
 with authorization code + PKCE (public SPA client, no secret) and sends the
@@ -65,7 +65,7 @@ from ci_retrieval.identity import Principal
 
 log = logging.getLogger("ci.admin")
 
-ADMIN_SCOPE = "Communications.Admin"
+ADMIN_SCOPE = "Communications.Console"  # Entra refuses a scope and a role with one name
 ADMIN_ROLE = "Communications.Admin"
 STATIC = Path(__file__).parent / "static"
 
@@ -182,7 +182,7 @@ def build_admin_app(
         required_scope=ADMIN_SCOPE,
     )
     if verifier.required_scope != ADMIN_SCOPE:
-        raise ValueError("the admin console needs a verifier for Communications.Admin")
+        raise ValueError("the admin console needs a verifier for Communications.Console")
     _lab_cache: list[lab.LabBackends] = []
     if originals is None:
         from ci_cli.backends import original_store

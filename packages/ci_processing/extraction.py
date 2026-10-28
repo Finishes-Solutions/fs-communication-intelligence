@@ -5,8 +5,10 @@ without malware scanning for the first real-mail run. Containment instead:
 a size cap, a separate child Python process with a timeout and, on Linux, a
 memory limit, zip-bomb checks for Office files, and no execution of anything
 inside a file. The child runs with ``-P -s`` from an empty temporary directory
-(nothing importable from the working directory or user site) but keeps
-``PYTHONPATH``, which Azure Functions uses for installed packages. Scanned
+(nothing importable from the working directory or user site). It is handed the
+folders that hold pypdf and openpyxl through ``PYTHONPATH``: Azure Functions
+adds its package folder to the parent's ``sys.path`` at startup rather than to
+the environment, so a child would not otherwise find them. Scanned
 PDFs and images yield ``no_text`` or ``unsupported`` until OCR is added.
 
 Supported: PDF (pypdf), DOCX, PPTX, XLSX (openpyxl), and plain text-like files
@@ -19,13 +21,18 @@ or less. Larger attached images (site photos) are kept as files, not read.
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import logging
+import os
 import re
 import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
+
+log = logging.getLogger(__name__)
 
 EXTRACTOR_VERSION = "extract-v1-no-ocr"
 MAX_TEXT_CHARS = 200_000
@@ -150,6 +157,24 @@ json.dump({"text": text[: max_chars + 1]}, sys.stdout)
 """
 
 
+def child_environment() -> dict[str, str]:
+    """The parent's environment plus the folders holding the parser packages."""
+    folders: list[str] = []
+    for package in ("pypdf", "openpyxl"):
+        spec = importlib.util.find_spec(package)
+        for location in (spec.submodule_search_locations or []) if spec else []:
+            folders.append(os.path.dirname(location))
+    existing = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]
+    return {**os.environ, "PYTHONPATH": os.pathsep.join(dict.fromkeys([*folders, *existing]))}
+
+
+def _error_class(stderr: bytes) -> str:
+    """The exception class from a child traceback; never its message (could quote a file)."""
+    lines = [ln for ln in stderr.decode("utf-8", "replace").splitlines() if ln.strip()]
+    head = lines[-1].split(":", 1)[0].strip() if lines else ""
+    return head if re.fullmatch(r"[A-Za-z_][\w.]{0,80}", head) else "unknown"
+
+
 def extract(
     name: str | None, content_type: str | None, data: bytes, *, max_bytes: int
 ) -> Extraction:
@@ -167,10 +192,12 @@ def extract(
                 timeout=TIMEOUT_SECONDS,
                 check=False,
                 cwd=empty,
+                env=child_environment(),
             )
     except subprocess.TimeoutExpired:
         return Extraction(ExtractionStatus.TIMEOUT, kind=kind)
     if completed.returncode != 0:
+        log.warning("extraction failed kind=%s error=%s", kind, _error_class(completed.stderr))
         return Extraction(ExtractionStatus.FAILED, kind=kind)
     text = str(json.loads(completed.stdout)["text"])
     text = re.sub(r"[ \t]+", " ", text).strip()

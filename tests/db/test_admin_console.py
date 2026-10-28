@@ -21,7 +21,12 @@ from ci_core.db import AppRole, Connection, connect
 from ci_core.settings import Settings
 from ci_email.capture import capture_window
 from ci_email.fixture import FixtureGraphClient
-from ci_email.process import Backends, process_all, store_missing_originals
+from ci_email.process import (
+    Backends,
+    process_all,
+    requeue_failed_attachments,
+    store_missing_originals,
+)
 from ci_processing.classification import FakeClassifier
 from ci_processing.embedding import FakeEmbedder
 from ci_processing.originals import DirectoryStore
@@ -369,3 +374,48 @@ def test_missing_originals_are_backfilled(database_ready: str, files: DirectoryS
     )
     assert counts["originals_backfilled"] >= 1 and not counts["original_download_failed"]
     assert all(files.get(r["sha256"]) is not None for r in cleared if r["sha256"])
+
+
+def test_failed_attachments_are_reread_and_messages_republished(
+    database_ready: str, files: DirectoryStore
+) -> None:
+    def ingest() -> Connection:
+        return connect(dbname=database_ready, role="ci_ingest")
+
+    with connect(dbname=database_ready) as conn:
+        conn.execute(
+            "UPDATE email_attachments SET extraction_status = 'failed'"
+            " WHERE name = 'Invoice-4471.pdf'"
+        )
+        conn.commit()
+    with ingest() as conn:
+        requeued = requeue_failed_attachments(conn)
+        conn.commit()
+    assert requeued >= 1
+    counts = process_all(
+        ingest,
+        Backends(
+            FakeScreener(),
+            FakeClassifier(),
+            FakeEmbedder(),
+            graph=FixtureGraphClient.from_directory(),
+            extraction_enabled=True,
+            originals=files,
+        ),
+        workers=1,
+    )
+    assert counts.get("failed", 0) == 0 and sum(counts.values()) == requeued
+    with connect(dbname=database_ready) as conn:
+        rows = conn.execute(
+            "SELECT a.extraction_status, v.processing_state,"
+            " (SELECT count(*) FROM chunks c WHERE c.version_id = v.id"
+            "   AND c.chunk_kind = 'attachment_text') AS attachment_chunks"
+            " FROM email_attachments a JOIN communication_versions v ON v.id = a.version_id"
+            " WHERE a.name = 'Invoice-4471.pdf'"
+        ).fetchall()
+    assert rows and all(
+        r["extraction_status"] == "extracted"
+        and r["processing_state"] == "published"
+        and r["attachment_chunks"] > 0
+        for r in rows
+    )

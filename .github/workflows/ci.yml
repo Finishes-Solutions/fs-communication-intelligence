@@ -90,7 +90,7 @@ jobs:
           bash scripts/build-function-app.sh admin dist
       - name: Import each app with only its packaged dependencies
         run: |
-          py="$(uv python find 3.14 || (uv python install 3.14 >/dev/null && uv python find 3.14))"
+          py="$(uv python find --no-project 3.14 || (uv python install 3.14 >/dev/null && uv python find --no-project 3.14))"
           for app in ingestion search admin; do
             mkdir -p "check/$app" && (cd "check/$app" && unzip -q "../../dist/$app.zip")
           done
@@ -109,3 +109,13 @@ jobs:
             "import function_app as f, ci_admin.api as a; assert type(f.app).__name__ == 'AsgiFunctionApp'; assert (a.STATIC / 'index.html').is_file()")
           (cd check/ingestion && env -i PATH=/usr/bin:/bin PYTHONPATH=.python_packages/lib/site-packages \
             "$py" -P -s -c "import pypdf, openpyxl")
+          # Azure Functions puts packages on sys.path, not in PYTHONPATH. The extraction
+          # child process must still find pypdf/openpyxl (a blank PDF reads as no_text).
+          (cd check/ingestion && env -i PATH=/usr/bin:/bin "$py" -P -s -c "
+          import io, sys
+          sys.path[:0] = ['.', '.python_packages/lib/site-packages']
+          import pypdf
+          w = pypdf.PdfWriter(); w.add_blank_page(72, 72); b = io.BytesIO(); w.write(b)
+          from ci_processing.extraction import extract
+          r = extract('a.pdf', 'application/pdf', b.getvalue(), max_bytes=10**6)
+          assert r.status.value == 'no_text', r")

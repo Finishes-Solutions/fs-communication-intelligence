@@ -3,14 +3,23 @@
 import base64
 import io
 import json
+import os
 import zipfile
 from pathlib import Path
 
 import openpyxl  # type: ignore[import-untyped]
+import pypdf
 import pytest
 
 from ci_processing.chunking import MAX_CHARS, TARGET_CHARS, chunk_text
-from ci_processing.extraction import ExtractionStatus, detect_kind, extract, is_signature_image
+from ci_processing.extraction import (
+    ExtractionStatus,
+    _error_class,
+    child_environment,
+    detect_kind,
+    extract,
+    is_signature_image,
+)
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "email" / "messages"
 MB = 1024 * 1024
@@ -112,3 +121,18 @@ def test_signature_images_and_logos_are_skipped(
     name: str, content_type: str | None, size: int, inline: bool, skipped: bool
 ) -> None:
     assert is_signature_image(name, content_type, size, inline) is skipped
+
+
+def test_child_process_is_given_the_parser_packages(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Azure Functions puts packages on sys.path, not PYTHONPATH; the child must still find them.
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    folders = child_environment()["PYTHONPATH"].split(os.pathsep)
+    assert Path(pypdf.__file__).parent.parent == Path(folders[0])
+    assert str(Path(openpyxl.__file__).parent.parent) in folders
+
+
+def test_child_errors_are_reported_by_class_only() -> None:
+    trace = b"Traceback...\npypdf.errors.PdfReadError: secret invoice text\n"
+    assert _error_class(trace) == "pypdf.errors.PdfReadError"
+    assert _error_class(b"Weird: <html>\n") == "Weird"
+    assert _error_class(b"a b c\n") == "unknown"

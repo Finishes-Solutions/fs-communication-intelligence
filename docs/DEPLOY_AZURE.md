@@ -159,6 +159,12 @@ Logs: portal → `func-fs-ci-ing-dev-1026` → **Monitoring → Logs** or **Log 
 ci process --retry-failed --limit 0
 ```
 
+Attachments that failed to read (for example before the 2026-10-28 fix that let the reader find its PDF and Excel libraries in Azure) can be read again. This reprocesses their messages with the attachment text included; each one is unsearchable for a few minutes while that happens:
+
+```bash
+ci process --retry-attachments --limit 0
+```
+
 If Cloud Shell can't reach the database (timeout), add its address: `az postgres flexible-server firewall-rule create -g fs-communication-intelligence --server-name psql-fs-ci-dev-1026b --name cloudshell --start-ip-address $(curl -s https://api.ipify.org) --end-ip-address $(curl -s https://api.ipify.org)`.
 
 ## 8. Test
@@ -223,7 +229,7 @@ A web page at `https://func-fs-ci-adm-dev-1026.azurewebsites.net/` for console a
 
 **Original files.** From the deploy that includes this, processing keeps each attachment's original file in the private container `attachments` of `stfscievidev1026`. Each distinct file is stored once, and inline signature images are skipped. Each processing pass also backfills up to 100 files for mail processed earlier. Files are **not malware-scanned** (your decision, 2026-10-28), so open unexpected downloads with care. The console serves a file only when you may read its message; restricted, held and bulk mail never get file access.
 
-Access takes both the delegated scope `Communications.Admin` and the app role `Communications.Admin` on the search API registration. Everyone else gets 403. Content goes through the same authorized search as the agents, so the console shows exactly what your Reader role allows. Every change and every lab run is written to `audit_events` (lab runs record the input hash only). The app has its own identity (`id-fs-ci-admin-dev`), with database roles `ci_operator` and `ci_search` and no mailbox access.
+Access takes both the delegated scope `Communications.Console` and the app role `Communications.Admin` on the search API registration. Everyone else gets 403. Content goes through the same authorized search as the agents, so the console shows exactly what your Reader role allows. Every change and every lab run is written to `audit_events` (lab runs record the input hash only). The app has its own identity (`id-fs-ci-admin-dev`), with database roles `ci_operator` and `ci_search` and no mailbox access.
 
 **One command does everything**: Azure resources, sign-in, file storage, database changes, GitHub secrets, merging the pull request, waiting for the deploy and checking the result. Run it from Cloud Shell in the repository folder (it asks you to sign in to GitHub once):
 
