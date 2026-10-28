@@ -13,6 +13,12 @@ Status: every piece is tested against the synthetic tenant, including the hosted
 
 Work in **Azure Cloud Shell → Bash** (portal.azure.com, `>_`). It already has `az`, `git`, `make`, `psql` and `python3`, and it's inside Azure, so it can reach the database once step 3 opens it to Azure services.
 
+Select the subscription that holds the `fs-communication-intelligence` resource group (every script uses the current one):
+
+```bash
+az account set --subscription "Finishes 3.0" && az group show -n fs-communication-intelligence --query name -o tsv
+```
+
 ```bash
 git clone https://github.com/Finishes-Solutions/fs-communication-intelligence.git && cd fs-communication-intelligence && git checkout matthew/nice-lovelace-4sqyit
 ```
