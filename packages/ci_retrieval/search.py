@@ -56,6 +56,10 @@ class Filters:
     since: datetime | None = None
     until: datetime | None = None
     label: str | None = None
+    # Partial, case-insensitive match against the AI-extracted names, e.g.
+    # property="willow" matches "Willow Creek Retail".
+    property: str | None = None
+    entity: str | None = None
 
 
 NO_FILTERS = Filters()
@@ -117,7 +121,15 @@ _FILTERS = """
     AND (%(until)s::timestamptz IS NULL OR {a}.occurred_at < %(until)s)
     AND (%(label)s::text IS NULL OR EXISTS (
         SELECT 1 FROM published_classifications fc
-        WHERE fc.communication_id = {a}.communication_id AND %(label)s = ANY(fc.yes_labels)))"""
+        WHERE fc.communication_id = {a}.communication_id AND %(label)s = ANY(fc.yes_labels)))
+    AND (%(property)s::text IS NULL OR EXISTS (
+        SELECT 1 FROM published_classifications fp2, unnest(fp2.properties) AS x(name)
+        WHERE fp2.communication_id = {a}.communication_id
+          AND x.name ILIKE '%%' || %(property)s || '%%'))
+    AND (%(entity)s::text IS NULL OR EXISTS (
+        SELECT 1 FROM published_classifications fe, unnest(fe.entities) AS x(name)
+        WHERE fe.communication_id = {a}.communication_id
+          AND x.name ILIKE '%%' || %(entity)s || '%%'))"""
 
 
 # published_communications with the communication_id column the fragments use.
@@ -133,7 +145,16 @@ def _params(auth: Authorization, filters: Filters) -> dict[str, Any]:
         "since": filters.since,
         "until": filters.until,
         "label": filters.label,
+        "property": _like(filters.property),
+        "entity": _like(filters.entity),
     }
+
+
+def _like(term: str | None) -> str | None:
+    """A name filter term with LIKE wildcards escaped (matched as plain text)."""
+    if term is None or not term.strip():
+        return None
+    return term.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _scope(alias: str) -> str:

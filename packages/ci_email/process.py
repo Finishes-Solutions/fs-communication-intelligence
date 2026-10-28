@@ -38,6 +38,8 @@ from ci_processing.classification import (
     ClassificationInput,
     ClassificationResult,
     Classifier,
+    KnownName,
+    with_known_names,
 )
 from ci_processing.embedding import Embedder
 from ci_processing.extraction import (
@@ -278,12 +280,32 @@ def _participants(conn: Connection, communication_id: str) -> dict[str, list[str
     return out
 
 
+def known_names(conn: Connection) -> list[KnownName]:
+    """The administrator's canonical property/entity names (``ci names``), if any."""
+    return [
+        KnownName(r["kind"], r["canonical"], tuple(r["aliases"]))
+        for r in conn.execute(
+            "SELECT kind, canonical, aliases FROM known_names ORDER BY kind, lower(canonical)"
+        ).fetchall()
+    ]
+
+
 def _classify(
     conn: Connection, backends: Backends, item: ClassificationInput
 ) -> tuple[ClassificationResult, int | None]:
+    """Classify (or reuse an identical copy's result); names are mapped to canonical."""
+    known = known_names(conn)
+    result, reused_from = _classify_raw(conn, backends, item, known)
+    return with_known_names(result, known), reused_from
+
+
+def _classify_raw(
+    conn: Connection, backends: Backends, item: ClassificationInput, known: list[KnownName]
+) -> tuple[ClassificationResult, int | None]:
     model = getattr(backends.classifier, "model", type(backends.classifier).__name__)
     prior = conn.execute(
-        "SELECT id, summary, action_text, action_for, due_text, risk_text FROM classification_runs"
+        "SELECT id, summary, action_text, action_for, due_text, risk_text, properties, entities"
+        " FROM classification_runs"
         " WHERE input_sha256 = %s AND model = %s AND policy_version = %s AND reused_from IS NULL"
         " ORDER BY id LIMIT 1",
         (item.sha256(), model, POLICY_VERSION),
@@ -303,8 +325,10 @@ def _classify(
             tuple(prior["action_for"]),
             prior["due_text"],
             prior["risk_text"],
+            tuple(prior["properties"]),
+            tuple(prior["entities"]),
         ), int(prior["id"])
-    return backends.classifier.classify(item), None
+    return backends.classifier.classify(item, known), None
 
 
 def _store_classification(
@@ -318,7 +342,8 @@ def _store_classification(
         conn.execute(
             "INSERT INTO classification_runs (version_id, model, policy_version, input_sha256,"
             " disposition, reason_codes, summary, action_text, action_for, due_text, risk_text,"
-            " reused_from) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+            " reused_from, properties, entities)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
             " ON CONFLICT (version_id, model, policy_version) DO NOTHING RETURNING id",
             (
                 version_id,
@@ -333,6 +358,8 @@ def _store_classification(
                 result.due_text,
                 result.risk_text,
                 reused_from,
+                list(result.properties),
+                list(result.entities),
             ),
         ).fetchone()
     )["id"]

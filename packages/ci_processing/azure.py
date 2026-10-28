@@ -22,9 +22,13 @@ import httpx
 
 from ci_processing.classification import (
     LABELS,
+    MAX_ENTITIES,
+    MAX_PROPERTIES,
     POLICY_VERSION,
     ClassificationInput,
     ClassificationResult,
+    KnownName,
+    clean_names,
 )
 from ci_processing.redaction import Redaction, RedactionUnavailable, mask_all
 from ci_processing.routing import REASONS, PersonProfile, Route
@@ -287,7 +291,20 @@ only in cc unless named, never the sender. Empty when the request is to a group 
 - due: the deadline exactly as stated in the email, or null.
 - risk: the risk to a project or property this email signals (max 25 words), or null. \
 Security or phishing concerns are not project risks.
+- properties: names of specific properties, projects, developments or assets the email is \
+about, exactly as written in the email or its attachments (max 5). Never infer a name that \
+is not written. Empty if none.
+- entities: full names of legal entities named in the email or its attachments, such as \
+companies, LLCs, LPs, trusts, funds and partnerships (e.g. "Capital Company LLC"), exactly \
+as written with their suffix (max 8). Not people, not email domains. Empty if none.
 """
+
+_KNOWN_NAMES = """
+Known names (administrator list, trusted): when the email refers to one of these, including \
+by an alias, return its exact canonical name instead.
+{names}
+"""
+MAX_KNOWN_IN_PROMPT = 200
 
 
 def _classifier_schema() -> dict[str, Any]:
@@ -296,7 +313,16 @@ def _classifier_schema() -> dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["labels", "summary", "action", "action_for", "due", "risk"],
+        "required": [
+            "labels",
+            "summary",
+            "action",
+            "action_for",
+            "due",
+            "risk",
+            "properties",
+            "entities",
+        ],
         "properties": {
             "labels": {
                 "type": "object",
@@ -309,8 +335,20 @@ def _classifier_schema() -> dict[str, Any]:
             "action_for": {"type": "array", "items": {"type": "string"}},
             "due": nullable,
             "risk": nullable,
+            "properties": {"type": "array", "items": {"type": "string"}},
+            "entities": {"type": "array", "items": {"type": "string"}},
         },
     }
+
+
+def _known_section(known: Sequence[KnownName]) -> str:
+    if not known:
+        return ""
+    lines = [
+        f"- {k.kind}: {k.canonical}" + (f" (also: {', '.join(k.aliases)})" if k.aliases else "")
+        for k in known[:MAX_KNOWN_IN_PROMPT]
+    ]
+    return _KNOWN_NAMES.format(names="\n".join(lines))
 
 
 class AzureOpenAIClassifier:
@@ -326,7 +364,9 @@ class AzureOpenAIClassifier:
         labels = "\n".join(f"- {lb.name}: {lb.question}" for lb in LABELS)
         self._system = _SYSTEM_PROMPT.format(labels=labels)
 
-    def classify(self, item: ClassificationInput) -> ClassificationResult:
+    def classify(
+        self, item: ClassificationInput, known: Sequence[KnownName] = ()
+    ) -> ClassificationResult:
         email = {
             "subject": item.subject,
             "from": item.sender,
@@ -340,7 +380,7 @@ class AzureOpenAIClassifier:
             self._url,
             {
                 "messages": [
-                    {"role": "system", "content": self._system},
+                    {"role": "system", "content": self._system + _known_section(known)},
                     {"role": "user", "content": json.dumps(email, ensure_ascii=False)},
                 ],
                 "response_format": {
@@ -374,6 +414,8 @@ class AzureOpenAIClassifier:
             action_for=action_for,
             due_text=content.get("due") or None,
             risk_text=content.get("risk") or None,
+            properties=clean_names(content.get("properties"), MAX_PROPERTIES),
+            entities=clean_names(content.get("entities"), MAX_ENTITIES),
         )
 
 
