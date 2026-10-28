@@ -15,12 +15,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Protocol
 
-POLICY_VERSION = "labels-2026-10-28b-uncalibrated"  # b: stricter action items
+POLICY_VERSION = "labels-2026-10-28c-uncalibrated"  # b: stricter action items; c: names
 
 
 class Decision(StrEnum):
@@ -159,6 +159,10 @@ class ClassificationResult:
     action_for: tuple[str, ...] = ()
     due_text: str | None = None
     risk_text: str | None = None
+    # Names written in the email (never inferred), canonical when a known name
+    # matches (KnownName registry, ``ci names``).
+    properties: tuple[str, ...] = ()
+    entities: tuple[str, ...] = ()
 
     def decisions(self) -> dict[str, Decision]:
         """Every label gets a decision; a label the backend did not answer is unresolved."""
@@ -168,8 +172,65 @@ class ClassificationResult:
         return {name for name, d in self.decisions().items() if d is Decision.YES}
 
 
+MAX_PROPERTIES = 5
+MAX_ENTITIES = 8
+MAX_NAME_CHARS = 120
+
+
+@dataclass(frozen=True)
+class KnownName:
+    """An administrator-maintained canonical property/project or legal-entity name."""
+
+    kind: str  # 'property' | 'entity'
+    canonical: str
+    aliases: tuple[str, ...] = ()
+
+
+def clean_names(values: Iterable[object] | None, limit: int) -> tuple[str, ...]:
+    """Strip, collapse spaces, cap length and drop case-insensitive duplicates."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values or ():
+        if not isinstance(value, str):
+            continue
+        name = re.sub(r"\s+", " ", value).strip()[:MAX_NAME_CHARS].strip()
+        if name and name.casefold() not in seen:
+            seen.add(name.casefold())
+            out.append(name)
+        if len(out) >= limit:
+            break
+    return tuple(out)
+
+
+def normalize_names(
+    names: Iterable[str], kind: str, known: Sequence[KnownName], limit: int
+) -> tuple[str, ...]:
+    """Map names to their canonical form by case-insensitive canonical/alias match.
+
+    Names with no match are kept as written."""
+    lookup: dict[str, str] = {}
+    for k in known:
+        if k.kind == kind:
+            for alias in (k.canonical, *k.aliases):
+                lookup.setdefault(alias.casefold().strip(), k.canonical)
+    return clean_names((lookup.get(n.casefold().strip(), n) for n in names), limit)
+
+
+def with_known_names(
+    result: ClassificationResult, known: Sequence[KnownName]
+) -> ClassificationResult:
+    """The result with its names cleaned and mapped to canonical names."""
+    return replace(
+        result,
+        properties=normalize_names(result.properties, "property", known, MAX_PROPERTIES),
+        entities=normalize_names(result.entities, "entity", known, MAX_ENTITIES),
+    )
+
+
 class Classifier(Protocol):
-    def classify(self, item: ClassificationInput) -> ClassificationResult: ...
+    def classify(
+        self, item: ClassificationInput, known: Sequence[KnownName] = ()
+    ) -> ClassificationResult: ...
 
 
 # Keyword rules for local development. They exist so fixtures exercise every
@@ -214,6 +275,14 @@ _FAKE_RULES: tuple[tuple[str, str, float], ...] = (
     ("cat_general_governance", r"committee|policy|board approval", 0.85),
 )
 _COMPILED = tuple((name, re.compile(p, re.IGNORECASE), prob) for name, p, prob in _FAKE_RULES)
+_FAKE_PROPERTY = re.compile(
+    r"\bExample (?:Ridge|Commons)\b(?: Lot \d+)?|\bLot \d+\b|\bBuilding [A-Z]\b|\bSuite \d+\b"
+)
+_FAKE_ENTITY = re.compile(
+    r"\b(?:[A-Z][\w&'-]* +){0,4}[A-Z][\w&'-]*,? +"
+    r"(?:L\.?L\.?C\.?|L\.?P\.?|LLP|Inc\.?|Corp\.?|Corporation|Company|Trust|Holdings|Partners|Fund)"
+    r"(?![\w])"
+)
 _FAKE_NO = 0.03
 
 
@@ -222,7 +291,9 @@ class FakeClassifier:
 
     model = "fake-keyword-rules-v1"
 
-    def classify(self, item: ClassificationInput) -> ClassificationResult:
+    def classify(
+        self, item: ClassificationInput, known: Sequence[KnownName] = ()
+    ) -> ClassificationResult:
         text = item.full_text()
         probabilities: dict[str, float | None] = {label.name: _FAKE_NO for label in LABELS}
         for name, pattern, prob in _COMPILED:
@@ -242,4 +313,6 @@ class FakeClassifier:
             risk_text=f"(fake) risk in: {item.subject}"
             if (probabilities["project_risk"] or 0) >= 0.75
             else None,
+            properties=clean_names(_FAKE_PROPERTY.findall(text), MAX_PROPERTIES),
+            entities=clean_names((m.group(0) for m in _FAKE_ENTITY.finditer(text)), MAX_ENTITIES),
         )
