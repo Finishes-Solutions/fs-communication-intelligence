@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+import psycopg
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
@@ -41,7 +42,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from ci_admin import calibration, lab, reports
+from ci_admin import billing, calibration, costs, lab, reports
 from ci_core import ops
 from ci_core.db import Connection, connect
 from ci_core.operator import (
@@ -59,7 +60,7 @@ from ci_core.operator import (
 )
 from ci_core.runtime import RuntimeConfigError, active_config, eligible_mailboxes
 from ci_core.settings import Settings
-from ci_email.process import known_names
+from ci_email.process import known_names, record_usage
 from ci_processing.classification import LABELS, LABELS_BY_NAME, POLICY_VERSION, KnownName
 from ci_processing.embedding import Embedder
 from ci_processing.originals import OriginalStore
@@ -78,6 +79,7 @@ STATIC = Path(__file__).parent / "static"
 # single-page app, which reads the path. "check" is the old name of "review".
 PAGES = (
     "overview",
+    "costs",
     "schedule",
     "mailboxes",
     "messages",
@@ -200,6 +202,7 @@ def build_admin_app(
     connector: Connector = _role_connect,
     lab_backends: Callable[[], lab.LabBackends] | None = None,
     originals: OriginalStore | None = None,
+    cost_client: billing.CostClient | None = None,
 ) -> Starlette:
     tenant = settings.entra_tenant_id or settings.graph_tenant_id or ""
     settings.require("search_api_client_id", "search_api_app_id_uri", "admin_spa_client_id")
@@ -214,6 +217,10 @@ def build_admin_app(
     if verifier.required_scope != ADMIN_SCOPE:
         raise ValueError("the admin console needs a verifier for Communications.Console")
     _lab_cache: list[lab.LabBackends] = []
+    if cost_client is None and settings.azure_subscription_id:
+        cost_client = billing.CostClient(
+            settings.azure_subscription_id, settings.azure_resource_group
+        )
     if originals is None:
         from ci_cli.backends import original_store
 
@@ -226,13 +233,16 @@ def build_admin_app(
             else:
                 from ci_cli import backends
                 from ci_processing.prefilter import allow_domains
+                from ci_processing.usage import Meter
 
+                meter = Meter()
                 _lab_cache.append(
                     lab.LabBackends(
-                        backends.screener(settings),
-                        backends.classifier(settings),
-                        backends.redactor(settings),
-                        backends.person_router(settings),
+                        backends.screener(settings, meter),
+                        backends.classifier(settings, meter),
+                        backends.redactor(settings, meter),
+                        backends.person_router(settings, meter),
+                        meter=meter,
                         prefilter=settings.bulk_prefilter_enabled,
                         prefilter_allow_domains=allow_domains(
                             settings.bulk_prefilter_allow_domains
@@ -711,6 +721,44 @@ def build_admin_app(
         with connector("ci_operator") as conn:
             audit(conn, principal.oid, action, None, None, details, actor_type="user")
             conn.commit()
+            meter = lab_ready().meter
+            if meter is not None:  # the lab's paid calls count on the cost page too
+                try:
+                    with conn.transaction():
+                        record_usage(conn, meter.drain(), source="lab")
+                except psycopg.Error as exc:  # e.g. before migration 0013
+                    log.warning("lab usage not recorded: %s", type(exc).__name__)
+
+    # ----- costs --------------------------------------------------------------
+
+    def cost_page(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        refresh = request.query_params.get("refresh") == "1"
+        billed = (
+            cost_client.costs(refresh=refresh)
+            if cost_client is not None
+            else {"available": False, "error": "not_configured"}
+        )
+        with connector("ci_operator") as conn:
+            time_zone = ops.read_schedule(conn).time_zone
+            try:
+                with conn.transaction():
+                    metered = costs.metered(conn, time_zone)
+                    price_list = costs.prices(conn)
+            except psycopg.errors.UndefinedTable:
+                metered, price_list = {"available": False, "error": "migration_0013"}, []
+        return {
+            "billed": billed,
+            "metered": metered,
+            "prices": price_list,
+            "time_zone": time_zone,
+            "resource_group": settings.azure_resource_group,
+        }
+
+    def cost_prices(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        with connector("ci_operator") as conn:
+            updated = costs.update_prices(conn, _actor(principal), body)
+            conn.commit()
+            return {"prices": updated}
 
     # ----- risk analysis, label review and reports ---------------------------
 
@@ -827,6 +875,8 @@ def build_admin_app(
         Route("/api/lab/classify", endpoint(lab_classify), methods=["POST"]),
         Route("/api/lab/reclassify", endpoint(lab_reclassify), methods=["POST"]),
         Route("/api/risks", endpoint(risks)),
+        Route("/api/costs", endpoint(cost_page)),
+        Route("/api/costs/prices", endpoint(cost_prices), methods=["PUT"]),
         Route("/api/reports/preview", endpoint(report_preview), methods=["POST"]),
         Route("/api/reports/export", endpoint(report_export), methods=["POST"]),
         *(Route(f"/{name}", page) for name in PAGES),

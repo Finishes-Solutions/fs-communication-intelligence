@@ -302,6 +302,26 @@ CHAT_DEPLOYMENT=gpt-4.1-mini ADMINS="matthews@finishessolutions.com" bash script
 
 Add the two secrets it prints (`ADMIN_FUNCTION_APP`, `ADMIN_PUBLIC_URL`) to the GitHub environment `development`, then merge the pull request (or rerun **Deploy (development)**). The migrations (`0005`, `0006`) must be applied **before** the new ingestion code deploys; otherwise the capture and processing timers fail every tick until they are. To add another admin later, rerun the script with their address in `ADMINS`.
 
+### Costs page
+
+**Costs** in the console shows two figures side by side:
+
+- **Billed:** what Azure charges for the resource group, by service and day. Azure updates it every 8–24 hours.
+- **Estimated:** counted as each AI call runs. It covers OpenAI tokens and text records for masking and the prompt-injection check, priced with unit prices you can edit on the page. It is shown per processing run and per 1,000 emails.
+
+The default prices are unverified list prices. Compare the two figures after a day of processing and correct the prices.
+
+To set it up once:
+
+1. Apply database migration 0013 (`db/migrate.py apply`, as for the other migrations).
+2. Connect Azure's billed figures. This gives the console's identity the read-only Cost Management Reader role on this resource group only, and tells the console which subscription to read:
+
+   ```bash
+   bash scripts/azure/6-cost-dashboard.sh
+   ```
+
+A new role can take up to 30 minutes to apply. Until then the page says so.
+
 ### Action items in two steps, and person profiles
 
 1. **Step 1, the classifier,** tags whether an email asks *someone* to act (`action_required`, `approval_required`). It is told to say no for FYI, newsletters, marketing, automated notifications and requests to a whole group.

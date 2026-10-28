@@ -38,6 +38,7 @@ from ci_processing.prefilter import bulk_skip_reason
 from ci_processing.redaction import Redaction, RedactionUnavailable, Redactor
 from ci_processing.routing import PersonProfile, PersonRouter, rule_out
 from ci_processing.screening import DISABLED, DisabledScreener, Screener
+from ci_processing.usage import Meter
 from ci_retrieval.search import ACTION_LABELS, AUTOMATED_SENDER, BULK_LABELS, RISK_LABELS
 
 # Same caps the processing worker uses (ci_email.process), so a re-run of a
@@ -57,6 +58,7 @@ class LabBackends:
     prefilter: bool = False  # BULK_PREFILTER_ENABLED, as in processing
     prefilter_allow_domains: frozenset[str] = frozenset()
     masking_disabled: bool = False  # switched off in the console (redactor is then None)
+    meter: Meter | None = None  # paid calls, recorded on the cost page (source 'lab')
 
 
 def with_switches(backends: LabBackends, settings: Settings, schedule: Schedule) -> LabBackends:
