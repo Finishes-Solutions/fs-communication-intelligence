@@ -35,10 +35,9 @@ def required(row: DictRow | None) -> DictRow:
 
 
 def _entra_password() -> str:
-    from azure.identity import DefaultAzureCredential
+    from ci_core.azure_auth import default_credential
 
-    credential = DefaultAzureCredential(exclude_interactive_browser_credential=True)
-    return credential.get_token(POSTGRES_ENTRA_SCOPE).token
+    return str(default_credential().get_token(POSTGRES_ENTRA_SCOPE).token)
 
 
 def connect(conninfo: str = "", *, role: AppRole | None = None, **kwargs: Any) -> Connection:

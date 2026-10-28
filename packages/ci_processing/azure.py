@@ -71,9 +71,9 @@ class AzureHttp:
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         if credential is None:
-            from azure.identity import DefaultAzureCredential
+            from ci_core.azure_auth import default_credential
 
-            credential = DefaultAzureCredential(exclude_interactive_browser_credential=True)
+            credential = default_credential()
         self._credential = credential
         self._http = client or httpx.Client(timeout=timeout)
         self._max_retries = max_retries

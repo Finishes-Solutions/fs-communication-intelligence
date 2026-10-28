@@ -38,6 +38,7 @@ erDiagram
 | Execution | `jobs`, `checkpoints`, `rate_budgets`, `webhook_receipts`, `outbox` |
 | Governance | `policy_decisions`, `audit_events` |
 | Email extension | `email_mailboxes`, `email_messages`, `email_attachments` |
+| Processing (0003) | `version_texts` (body and extracted attachment text), `classification_runs`, `classification_labels`; views `published_texts`, `published_classifications`, `published_email_attachments`, `coverage_counts` |
 | Retrieval surface | Views `published_communications`, `published_chunks`, `published_segments`, `published_participants`, `published_email_messages`, `published_email_attachment_coverage` |
 
 ## 3. Identity Rules

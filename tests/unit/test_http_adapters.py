@@ -218,3 +218,21 @@ def test_embedder_batches_and_keeps_order() -> None:
     texts = ["a" * n for n in range(1, 21)]
     vectors = AzureOpenAIEmbedder("https://aoai", "emb", "v", 4, azure(handler)).embed(texts)
     assert [v[0] for v in vectors] == [float(n) for n in range(1, 21)]
+
+
+def test_tokens_are_cached_until_near_expiry() -> None:
+    import time
+
+    from ci_core.azure_auth import CachedCredential
+
+    calls = {"n": 0}
+
+    class Inner:
+        def get_token(self, *scopes: str) -> SimpleNamespace:
+            calls["n"] += 1
+            return SimpleNamespace(token=f"t{calls['n']}", expires_on=time.time() + 3600)
+
+    cached = CachedCredential(Inner())
+    first, again, other = (cached.get_token(s).token for s in ("a", "a", "b"))
+    assert (first, again, other) == ("t1", "t1", "t2")  # cached; separate scope, separate token
+    assert calls["n"] == 2

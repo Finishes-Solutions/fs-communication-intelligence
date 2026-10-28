@@ -14,8 +14,10 @@ Counts and ids are logged; content never is.
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import logging
+import re
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -68,6 +70,19 @@ def direction(message: dict[str, Any], mailbox_address: str) -> str:
     return "out" if sender and sender[0][0] == mailbox_address else "in"
 
 
+def body_text(message: dict[str, Any]) -> str:
+    """Plain-text body. Graph should honor the text preference; strip HTML if it did not."""
+    body = message.get("body") or {}
+    content = str(body.get("content") or "")
+    if str(body.get("contentType", "text")).lower() == "html":
+        content = re.sub(r"(?is)<(script|style).*?</\1>", " ", content)
+        content = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</tr>", "\n", content)
+        content = html.unescape(re.sub(r"<[^>]+>", " ", content))
+        content = re.sub(r"[ \t]+", " ", content)
+        content = re.sub(r"\n\s*\n\s*", "\n\n", content).strip()
+    return content
+
+
 def _sha256(value: Any) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, ensure_ascii=False).encode()
@@ -87,7 +102,7 @@ def source_revision(message: dict[str, Any], attachments: list[dict[str, Any]]) 
         {
             "v": NORMALIZER_VERSION,
             "subject": message.get("subject"),
-            "body": (message.get("body") or {}).get("content"),
+            "body": body_text(message),
             "participants": participants(message),
             "sent": message.get("sentDateTime"),
             "attachments": _manifest(attachments),
@@ -104,7 +119,7 @@ def content_fingerprint(message: dict[str, Any], attachments: list[dict[str, Any
             "from": _addresses(message, "from")[:1],
             "sent": message.get("sentDateTime"),
             "subject": message.get("subject"),
-            "body": (message.get("body") or {}).get("content"),
+            "body": body_text(message),
             "attachments": _manifest(attachments),
         }
     )
@@ -230,7 +245,7 @@ def store_message(
             (comm, comm, revision, profile_json),
         ).fetchone()
     )["id"]
-    body = (message.get("body") or {}).get("content") or ""
+    body = body_text(message)
     conn.execute(
         "INSERT INTO version_texts (version_id, text_kind, ref, content, sha256)"
         " VALUES (%s, 'email_body', 'body', %s, %s)",

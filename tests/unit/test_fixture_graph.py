@@ -142,3 +142,19 @@ def test_attachment_metadata_only(graph: FixtureGraphClient) -> None:
     attachments = graph.list_attachments(PAT, invoice.id)
     assert [a["isInline"] for a in attachments] == [False, True]
     assert all("contentBytes" not in a for a in attachments)
+
+
+def test_html_body_falls_back_to_text() -> None:
+    from ci_email.capture import body_text
+
+    message = {
+        "body": {
+            "contentType": "html",
+            "content": "<html><style>p{}</style><p>Pay app 3 &amp; lien</p><br>Thanks</html>",
+        }
+    }
+    assert body_text(message) == "Pay app 3 & lien\n\nThanks"
+    assert (
+        body_text({"body": {"contentType": "text", "content": "plain <b>kept</b>"}})
+        == "plain <b>kept</b>"
+    )
