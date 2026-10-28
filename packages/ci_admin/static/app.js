@@ -944,6 +944,7 @@ function verdict(r) {
   const route = r.routing;
   if (route.disposition === "restricted") return { tone: "bad", icon: "ban", title: "Restricted", text: "Never embedded, searched or shown to anyone." };
   if (route.disposition === "held") return { tone: "warn", icon: "pause", title: "Held", text: "Not published until screening completes." };
+  if (r.prefilter) return { tone: "muted", icon: "hidden", title: "Skipped: Bulk or Automated", text: "Recorded but not indexed; no AI service was called (pre-filter)." };
   if (route.disposition === "not_indexed") return { tone: "muted", icon: "hidden", title: "Bulk Mail", text: "Recorded but not indexed (spam or newsletter)." };
   if (route.action_item && route.risk_item) return { tone: "good", icon: "check", title: "Action Item + Project Risk", text: "Shows in this person's action items and in risks." };
   if (route.action_item) return { tone: "good", icon: "check", title: "Action Item", text: "Shows in this person's action items." };
@@ -971,7 +972,8 @@ function labResult(r, person, message) {
   const v = verdict(r);
   const screenTone = r.screening.some(c => c.decision === "reject") ? "bad" : r.screening.some(c => c.decision !== "allow") ? "warn" : "good";
   const steps = [
-    ["Screening", r.screening.map(c => `${c.check}: ${c.decision}`).join(" · ") || "—", screenTone],
+    ["Pre-filter", r.prefilter ? `Skipped: ${r.prefilter}` : "Passed", r.prefilter ? "muted" : "good"],
+    ["Screening", r.screening.map(c => `${c.check}: ${c.decision}`).join(" · ") || (r.prefilter ? "Skipped" : "—"), r.prefilter ? "muted" : screenTone],
     ["Classifier", r.classified ? `${r.yes_labels.length} yes · ${r.uncertain_labels.length} uncertain` : "Skipped", r.classified ? "good" : "muted"],
     ["Policy", r.routing.disposition + (r.routing.reason_codes.length ? ` (${r.routing.reason_codes.join(", ")})` : ""),
       { index: "good", review: "warn", restricted: "bad", held: "warn", not_indexed: "muted" }[r.routing.disposition] || "muted"],
@@ -1025,7 +1027,7 @@ function labResult(r, person, message) {
       actions: h("label", { class: "check" }, onlyInteresting, "Only Yes and Uncertain") },
       h("div", { class: "legend muted small" }, h("span", { class: "zone-key z-no" }), "No", h("span", { class: "zone-key z-mid" }), "Review",
         h("span", { class: "zone-key z-yes" }), "Yes", " · marker = probability"),
-      labelsBox) : card({}, h("p", { class: "muted", style: "margin:0" }, "Not classified: screening stopped it first, as in processing.")),
+      labelsBox) : card({}, h("p", { class: "muted", style: "margin:0" }, r.prefilter ? "Not classified: the bulk pre-filter skipped it, as in processing." : "Not classified: screening stopped it first, as in processing.")),
     message ? card({ title: "Files" }, filesBlock(message.communication_id, message)) : null);
 }
 

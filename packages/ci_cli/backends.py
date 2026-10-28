@@ -19,6 +19,7 @@ from ci_email.process import Backends
 from ci_processing.classification import Classifier, FakeClassifier
 from ci_processing.embedding import Embedder, FakeEmbedder
 from ci_processing.originals import AzureBlobStore, DirectoryStore, OriginalStore
+from ci_processing.prefilter import allow_domains
 from ci_processing.redaction import FakeRedactor, Redactor
 from ci_processing.routing import FakePersonRouter, PersonRouter
 from ci_processing.screening import FakeScreener, Screener
@@ -135,4 +136,6 @@ def processing_backends(settings: Settings) -> Backends:
         originals=original_store(settings) if settings.attachment_store_originals else None,
         redactor=redactor(settings),
         router=person_router(settings),
+        prefilter=settings.bulk_prefilter_enabled,
+        prefilter_allow_domains=allow_domains(settings.bulk_prefilter_allow_domains),
     )

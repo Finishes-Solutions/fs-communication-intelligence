@@ -146,6 +146,11 @@ class Settings(BaseSettings):
     # "attachments"), without malware scanning: approved by Matthew on 2026-10-28
     # (CLAUDE.md section 3a). Locally they go to LOCAL_ORIGINALS_DIR instead.
     attachment_store_originals: bool = False
+    # Skip obvious bulk and automated mail before any paid step (approved by
+    # Matthew on 2026-10-28; ci_processing.prefilter). Mail from these sender
+    # domains (comma-separated) is always processed in full.
+    bulk_prefilter_enabled: bool = True
+    bulk_prefilter_allow_domains: str = ""
     evidence_blob_account: str | None = None
     evidence_blob_container: str = "attachments"
     local_originals_dir: str = "local/originals"

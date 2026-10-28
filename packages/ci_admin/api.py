@@ -225,6 +225,7 @@ def build_admin_app(
                 _lab_cache.append(lab_backends())
             else:
                 from ci_cli import backends
+                from ci_processing.prefilter import allow_domains
 
                 _lab_cache.append(
                     lab.LabBackends(
@@ -232,6 +233,10 @@ def build_admin_app(
                         backends.classifier(settings),
                         backends.redactor(settings),
                         backends.person_router(settings),
+                        prefilter=settings.bulk_prefilter_enabled,
+                        prefilter_allow_domains=allow_domains(
+                            settings.bulk_prefilter_allow_domains
+                        ),
                     )
                 )
         return _lab_cache[0]
@@ -655,6 +660,7 @@ def build_admin_app(
             received_by=received_by,
             profile=_lab_profile(person),
             known=_known(),
+            full_body=str(body.get("body") or ""),
         )
         _audit_lab(principal, "lab_classify", {"input_sha256": result["input_sha256"]})
         return result
@@ -677,6 +683,8 @@ def build_admin_app(
             direction="out" if sender == email["mailbox"] else "in",
             profile=_lab_profile(person),
             known=_known(),
+            full_body=next((t["text"] for t in email["text"] if t["source"] == "body"), ""),
+            has_real_attachment=bool(email["attachments"]),
         )
         result["stored"] = {
             "labels": email["labels"],

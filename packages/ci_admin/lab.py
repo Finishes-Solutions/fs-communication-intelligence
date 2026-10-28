@@ -1,5 +1,5 @@
-"""Classification lab: run screening, the classifier and the routing rules on a
-sample without storing anything.
+"""Classification lab: run the bulk pre-filter, screening, the classifier and the
+routing rules on a sample without storing anything.
 
 Two inputs: text pasted into the console (use synthetic or your own mail; it is
 sent to the in-tenant Azure AI services, never stored or logged), or a message
@@ -31,6 +31,8 @@ from ci_processing.classification import (
     with_known_names,
 )
 from ci_processing.policy import Disposition, Outcome, classification_outcome, screening_gate
+from ci_processing.prefilter import REASONS as PREFILTER_REASONS
+from ci_processing.prefilter import bulk_skip_reason
 from ci_processing.redaction import Redaction, RedactionUnavailable, Redactor
 from ci_processing.routing import PersonProfile, PersonRouter, rule_out
 from ci_processing.screening import Screener
@@ -50,6 +52,8 @@ class LabBackends:
     classifier: Classifier
     redactor: Redactor | None = None  # None: SENSITIVE_DATA_POLICY=restrict
     router: PersonRouter | None = None  # step 2 of action items, for people with a profile
+    prefilter: bool = False  # BULK_PREFILTER_ENABLED, as in processing
+    prefilter_allow_domains: frozenset[str] = frozenset()
 
 
 def addresses(value: str | Sequence[str] | None) -> list[str]:
@@ -80,6 +84,13 @@ def routing(
         "why": [],
     }
     why: list[str] = out["why"]
+    if not searchable and set(outcome.reason_codes) & set(PREFILTER_REASONS):
+        why.append(
+            "Skipped by the bulk pre-filter ("
+            + ", ".join(outcome.reason_codes)
+            + "): recorded, not indexed, and no AI service was called."
+        )
+        return out
     if not searchable:
         why.append(
             {
@@ -154,22 +165,45 @@ def run(
     direction: str = "in",
     profile: PersonProfile | None = None,
     known: Sequence[KnownName] = (),
+    full_body: str | None = None,
+    has_real_attachment: bool | None = None,
 ) -> dict[str, Any]:
-    """Screen, then classify (only if screening allows, as in processing), then route.
+    """Pre-filter, screen, then classify (only if both allow, as in processing), then route.
 
-    With a ``profile`` (step 2 of action items), the person check decides
-    whether it is that person's action item, exactly as processing would.
+    ``full_body`` is the uncut body for the pre-filter (processing checks up to
+    30,000 characters; the classifier sees 12,000). With a ``profile`` (step 2
+    of action items), the person check decides whether it is that person's
+    action item, exactly as processing would.
     """
-    screen_text = "\n\n".join(
-        [item.subject, item.body_text, *(text for _, text in item.attachments)]
+    skipped = (
+        bulk_skip_reason(
+            sender=item.sender,
+            subject=item.subject,
+            body=item.body_text if full_body is None else full_body,
+            has_real_attachment=bool(item.attachments)
+            if has_real_attachment is None
+            else has_real_attachment,
+            allowed_domains=backends.prefilter_allow_domains,
+        )
+        if backends.prefilter
+        else None
     )
-    screening = backends.screener.screen(screen_text)
-    checks = [
-        {"check": c.check_name, "decision": c.decision.value, "reason_code": c.reason_code}
-        for c in screening.checks
-    ]
-    gate = screening_gate(screening)
+    checks: list[dict[str, Any]] = []
+    gate: Outcome | None = None
     masked: dict[str, int] = {}
+    if skipped is not None:
+        gate = Outcome(Disposition.NOT_INDEXED, (skipped,))
+    else:
+        # The text the classifier reads, which is what processing screens when
+        # masking is on (ci_email.process._screen_text).
+        screening = backends.screener.screen(
+            "\n\n".join([item.subject, item.body_text, *(text for _, text in item.attachments)])
+        )
+        checks = [
+            {"check": c.check_name, "decision": c.decision.value, "reason_code": c.reason_code}
+            for c in screening.checks
+        ]
+        gate = screening_gate(screening)
     if gate is None and backends.redactor is not None:
         try:
             item, masked = _masked(backends.redactor, item)
@@ -209,6 +243,7 @@ def run(
         )
     return {
         "input_sha256": item.sha256(),
+        "prefilter": skipped,
         "screening": checks,
         "masked": masked,
         "classified": result is not None,
