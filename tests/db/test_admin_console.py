@@ -642,6 +642,13 @@ def test_report_exports_are_files_and_audited(client: TestClient, database_ready
             "/api/reports/export", headers=auth(), json={"dataset": dataset, "format": "csv"}
         )
         assert ops_file.status_code == 200, dataset
+    # The Run History "Export CSV" button on Schedule & Runs sends exactly this body.
+    runs_csv = client.post(
+        "/api/reports/export", headers=auth(), json={"dataset": "runs", "format": "csv"}
+    )
+    header = runs_csv.content.decode("utf-8-sig").splitlines()[0]
+    assert header == "Started,Finished,Kind,Trigger,Window (Hours),Status,Error Code,Counts"
+    assert runs_csv.headers["content-disposition"].startswith("attachment;")
     bad = client.post("/api/reports/export", headers=auth(), json={"format": "pdf"})
     assert bad.status_code == 400
     assert client.post("/api/reports/export", json={"format": "csv"}).status_code == 401
