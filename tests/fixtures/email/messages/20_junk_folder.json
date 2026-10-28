@@ -1,0 +1,57 @@
+{
+  "fixture": {
+    "mailbox": "pat.example@finishessolutions.example",
+    "folder": "junkemail",
+    "after": [],
+    "expect": {
+      "captured": false,
+      "screening": [],
+      "labels_yes": [],
+      "disposition": "skipped"
+    }
+  },
+  "message": {
+    "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0022",
+    "internetMessageId": "<synthetic-0022@cheap-watches.example>",
+    "conversationId": "AAQkAGsynconv0022",
+    "changeKey": "CQAAABYAAAAsyn0022",
+    "subject": "Cheap watches",
+    "from": {
+      "emailAddress": {
+        "name": "Deals",
+        "address": "deals@cheap-watches.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Deals",
+        "address": "deals@cheap-watches.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Example",
+          "address": "pat.example@finishessolutions.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-16T14:00:00Z",
+    "sentDateTime": "2026-10-16T14:00:00Z",
+    "body": {
+      "contentType": "text",
+      "content": "Limited-time offer on watches."
+    },
+    "uniqueBody": {
+      "contentType": "text",
+      "content": "Limited-time offer on watches."
+    },
+    "hasAttachments": false,
+    "webLink": "https://outlook.office365.com/owa/?ItemID=AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0022&exvsurl=1&viewmodel=ReadMessageItem",
+    "isDraft": false,
+    "parentFolderId": "fld-pat-junkemail"
+  },
+  "attachments": []
+}

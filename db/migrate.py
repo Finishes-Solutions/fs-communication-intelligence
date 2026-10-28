@@ -10,6 +10,10 @@ together with its ledger row, so a failed migration leaves nothing behind.
 Files must not contain BEGIN/COMMIT. If an applied file's checksum no longer
 matches the ledger, the runner stops: never edit an applied migration, add a
 new one instead.
+
+SQL is sent to psql on standard input, so ``CI_PSQL`` can name a psql inside a
+container (``make migrate`` uses ``docker compose exec -T db psql -U postgres``)
+and no local psql install is needed.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -72,9 +77,12 @@ def discover(directory: Path = MIGRATIONS_DIR) -> list[Migration]:
     return migrations
 
 
-def psql(database: str, *args: str) -> str:
-    cmd = ["psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-d", database, *args]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)  # noqa: S603
+def psql(database: str, *args: str, stdin: str | None = None) -> str:
+    base = shlex.split(os.environ.get("CI_PSQL", "psql"))
+    cmd = [*base, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-d", database, *args]
+    result = subprocess.run(  # noqa: S603
+        cmd, input=stdin, capture_output=True, text=True, check=False
+    )
     if result.returncode != 0:
         raise MigrationError(result.stdout + result.stderr)
     return result.stdout
@@ -115,7 +123,7 @@ def apply(database: str, migrations: list[Migration] | None = None) -> list[Migr
             "INSERT INTO ci.schema_migrations (version, filename, sha256) "  # noqa: S608
             f"VALUES ('{m.version}', '{m.path.name}', '{m.sha256}')"
         )
-        psql(database, "--single-transaction", "-f", str(m.path), "-c", record)
+        psql(database, "--single-transaction", "-f", "-", "-c", record, stdin=m.path.read_text())
     return todo
 
 

@@ -12,3 +12,10 @@ build/
 *.egg-info/
 .DS_Store
 test-results/
+# Real-mail run: settings, certificates and reports stay on the operator's machine.
+local/azure-dev.env
+local/out/
+*.pem
+*.key
+*.crt
+*.pfx

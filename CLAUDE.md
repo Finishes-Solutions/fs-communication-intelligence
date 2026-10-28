@@ -57,6 +57,16 @@ Business context: Finishes Solutions is a real estate owner-developer (Waller, T
 | D-A1 | Which agent clients are approved | Config list | All three in dev |
 | D-R1 | Retention periods for raw, extracted, chunks and audit | Config | Document as TODO; no automatic deletion yet |
 
+### 3a. Decisions made since (Matthew, 2026-10-28)
+
+| Decision | Effect |
+|---|---|
+| **All mailboxes are in scope** (user and shared), with named exceptions kept out via `CustomAttribute15 = FS-CI-Exclude` and `ci scope exclude` | Matthew answered the question raised by Chuck's 2026-10-28 email ("hold the broader rollout, settle privacy/access first") by putting all mailboxes in scope. Recorded here so it is not re-litigated; the access review Chuck asked for still applies to who may *read* the data. |
+| First real-mail run (last 24 hours) stores data in the **Azure dev PostgreSQL** (`psql-fs-ci-dev-1026b`) | Deviates from ADR-011 ("dev stack holds synthetic data"). The dev server now holds real mail: firewall it to named IPs and delete data after the test. |
+| **Attachment text extraction without malware scanning or OCR** | Exception to L11, approved for this run. Mitigated by isolated child-process extraction with size/time/zip limits (`ci_processing/extraction.py`). E2 (Defender for Storage, OCR) still required before production. |
+| Executive **"risks" mean project risks** (schedule, cost, disputes, liens, inspections/permits, safety, quality, financing, non-performance), not phishing or security items | New label `project_risk` plus an AI one-line `risk_text`; `list_actionable` risks = `project_risk` only. Chuck's action items come only from **ChuckC@finishesetc.net**. |
+| The run uses a **certificate app registration on Matthew's Mac** with Exchange RBAC over all mailboxes | Exception to §10.2 (dev app scoped to the test mailbox). Short-lived (30-day certificate) and removed after the test (`docs/RUN_24H_TEST.md` §7). Production ingestion remains a managed identity. |
+
 ---
 
 ## 4. Current repo state (as of 2026-10-14)
@@ -66,7 +76,8 @@ Business context: Finishes Solutions is a real estate owner-developer (Waller, T
 - `scripts/bootstrap-azure.sh`: creates managed identities, GitHub OIDC federation and RG-scoped deploy roles. Not confirmed as run.
 - `config/runtime.example.env`: proposed setting names.
 - A docs patch `email-first-adr-014.patch` (ADR-014 to ADR-017, README, backlogs, TEAMS_DISCOVERY.md) may already be applied. If `docs/ARCHITECTURE_DECISIONS.md` has no ADR-014, ask Matthew for the patch before PR 1, or write the equivalent ADRs yourself from §2–§3.
-- No application code, infrastructure templates or workflows exist yet.
+- PR 4 (local stack) added `local/` (docker-compose, `make dev`), the fixture Graph client and synthetic fixture tenant (`tests/fixtures/email/`), fake screener/classifier/embedder with the §7 decision rules, mailbox inventory, mode/scope checks and the `ci` CLI. A 24-hour real-mail path was added on 2026-10-28 (`docs/RUN_24H_TEST.md`): `0003_processing.sql`, real Graph client, window capture, attachment extraction, Azure screening/classification/embeddings, processing and publication, authorized search, a stdio MCP server (`ci mcp`) and `ci actionable`. All of it is tested against fixtures only; the first real run is its first test. Hosted deployment added the same day (`docs/DEPLOY_AZURE.md`, ADR-019): `apps/ingestion` (timer capture + processing, off by default), `apps/search` (MCP over Streamable HTTP with Entra token validation), `scripts/build-function-app.sh`, `.github/workflows/deploy-dev.yml`, `scripts/azure/1-3`. Not yet run in Azure. Still missing: per-folder delta + webhooks (PR 5), REST endpoints, Bicep (PR 8; the scripts are interim), monday.com feed.
+- Dev Azure resources were created by hand in `fs-communication-intelligence` (Central US) before any Bicep: managed identities `id-fs-ci-{github,ingestion,search}-dev`, PostgreSQL Flexible Server `psql-fs-ci-dev-1026b`, Key Vault `kv-fs-ci-dev-1026`, storage accounts `stfsciingdev1026`/`stfscievidev1026`/`stfscisrchdev1026`, Azure OpenAI `aoai-fs-ci-dev-1026`, Language `lang-fs-ci-dev-1026`, Content Safety `safe-fs-ci-dev-1026`, App Insights `appi-fs-ci-dev` and Log Analytics `log-fs-ci-dev`. No Function Apps yet. PR 8's Bicep must adopt these names rather than create duplicates. Keep subscription IDs out of the repo.
 - Reference only, do not import wholesale: earlier prototype `mattsinitiere/fs-outlook-email-ingestion-tool`, branch `phase3/scoped-email-intelligence`. A throwaway TypeScript/Azure SQL scaffold from a chat session also exists. **Ignore its stack**; only its ideas appear in this file.
 
 ---
@@ -82,6 +93,7 @@ packages/
   ci_email/       Graph client (real + fixture), mailbox inventory, folder delta, normalizer
   ci_processing/  screening adapters, classifier, chunker, embedder, publisher
   ci_retrieval/   token validation, grant resolution, hybrid query, MCP tools
+  ci_cli/         the `ci` operator/local command (seed, inventory, scope, mode; reconcile/worker in PR 5)
 db/migrations/    0001_foundation.sql (adapted), 0002_email.sql ...
 db/tests/         SQL behavior checks
 tests/            unit, contract, db, authorization, acceptance (synthetic only)
@@ -133,6 +145,7 @@ These are predicate questions. A probability ≤ the "no" threshold means no, �
 | action_required | .20 | .80 | Asks the mailbox owner for a concrete pending action? |
 | urgent | .15 | .85 | Credible unresolved need due today or next business day? |
 | newsletter | .20 | .85 | Newsletter, digest or informational mass mailing? |
+| project_risk | .20 | .75 | Signals a risk to a specific project or property: schedule delay, cost overrun or unbudgeted cost, dispute, claim or lien, failed inspection or permit problem, safety incident, quality defect, financing or draw problem, or a key party not performing? (added 2026-10-28) |
 | cat_development_construction | .20 | .70 | Design, permits, inspections, contractors, schedule, scope, change orders? |
 | cat_payment_billing | .20 | .70 | Invoices, pay apps, draws, payment status? |
 | cat_leasing_operations | .20 | .70 | Leasing, occupancy, tenants, property management/operations? |

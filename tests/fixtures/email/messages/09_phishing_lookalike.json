@@ -1,0 +1,60 @@
+{
+  "fixture": {
+    "mailbox": "ap@finishessolutions.example",
+    "folder": "inbox",
+    "after": [],
+    "expect": {
+      "captured": true,
+      "screening": [],
+      "labels_yes": [
+        "phishing",
+        "invoice_receipt"
+      ],
+      "disposition": "review"
+    }
+  },
+  "message": {
+    "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0009",
+    "internetMessageId": "<synthetic-0009@acme-sitework-billing.example>",
+    "conversationId": "AAQkAGsynconv0009",
+    "changeKey": "CQAAABYAAAAsyn0009",
+    "subject": "Updated banking details for future payments",
+    "from": {
+      "emailAddress": {
+        "name": "Jordan Rivera",
+        "address": "jordan.rivera@acme-sitework-billing.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Jordan Rivera",
+        "address": "jordan.rivera@acme-sitework-billing.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Accounts Payable",
+          "address": "ap@finishessolutions.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-08T09:15:00Z",
+    "sentDateTime": "2026-10-08T09:15:00Z",
+    "body": {
+      "contentType": "text",
+      "content": "Hello Accounts Payable,\n\nPlease note our updated bank details for all future payments. Send the remittance for the open invoices to the new account today.\n\nJordan Rivera\nAcme Sitework LLC"
+    },
+    "uniqueBody": {
+      "contentType": "text",
+      "content": "Hello Accounts Payable,\n\nPlease note our updated bank details for all future payments. Send the remittance for the open invoices to the new account today.\n\nJordan Rivera\nAcme Sitework LLC"
+    },
+    "hasAttachments": false,
+    "webLink": "https://outlook.office365.com/owa/?ItemID=AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0009&exvsurl=1&viewmodel=ReadMessageItem",
+    "isDraft": false,
+    "parentFolderId": "fld-ap-inbox"
+  },
+  "attachments": []
+}

@@ -38,6 +38,7 @@ erDiagram
 | Execution | `jobs`, `checkpoints`, `rate_budgets`, `webhook_receipts`, `outbox` |
 | Governance | `policy_decisions`, `audit_events` |
 | Email extension | `email_mailboxes`, `email_messages`, `email_attachments` |
+| Processing (0003) | `version_texts` (body and extracted attachment text), `classification_runs`, `classification_labels`; views `published_texts`, `published_classifications`, `published_email_attachments`, `coverage_counts` |
 | Retrieval surface | Views `published_communications`, `published_chunks`, `published_segments`, `published_participants`, `published_email_messages`, `published_email_attachment_coverage` |
 
 ## 3. Identity Rules
@@ -66,7 +67,7 @@ any → failed (retryable via job) · published → withdrawn
 - at least one linked scope is `enrolled`, approved for that dataset, and has no active `scope` exclusion;
 - no active `item` exclusion, no participant matching an active `participant_address` or `participant_domain` exclusion, and no tombstone.
 
-**Scopes and exclusions.** `source_scopes.scope_state` records what inventory observed (`enrolled`, `excluded_by_rule`, `not_approved`, `no_exchange_access`, `no_mailbox`, `paused`); ingestion can write it but cannot change the `test_approved`/`production_approved` flags, which are operator decisions. `exclusions` has four kinds: `item`, `scope` (for example a whole mailbox), `participant_address` and `participant_domain` (stored lowercase, without `@`). Exclusions are revocable (`revoked_at`), are checked at capture before content is staged, and are enforced again by the views, so an exclusion added later hides evidence already indexed. Excluding a mailbox does not hide that person's mail in other mailboxes; a participant exclusion does.
+**Scopes and exclusions.** `source_scopes.scope_state` records what inventory observed (`packages/ci_email/inventory.py`: reachable user/shared mailbox → `enrolled`, active scope exclusion or room/equipment mailbox → `excluded_by_rule`, Graph 403 → `no_exchange_access`, 404 → `no_mailbox`; `not_approved` is only the default before the first probe) (`enrolled`, `excluded_by_rule`, `not_approved`, `no_exchange_access`, `no_mailbox`, `paused`); ingestion can write it but cannot change the `test_approved`/`production_approved` flags, which are operator decisions. `exclusions` has four kinds: `item`, `scope` (for example a whole mailbox), `participant_address` and `participant_domain` (stored lowercase, without `@`). Exclusions are revocable (`revoked_at`), are checked at capture before content is staged, and are enforced again by the views, so an exclusion added later hides evidence already indexed. Excluding a mailbox does not hide that person's mail in other mailboxes; a participant exclusion does.
 
 Partially written chunks for an unpublished version are therefore never visible. Withdrawal works by inserting a tombstone or exclusion first, which hides the item at once, then purging.
 
@@ -150,4 +151,4 @@ Maintenance purges `superseded` and `withdrawn` versions' chunks, segments and B
 
 ## 11. Migrations
 
-Run `python db/migrate.py status` or `apply` with the standard `PG*` environment variables. Each `NNNN_name.sql` file runs in one transaction together with its `ci.schema_migrations` row, so files must not contain `BEGIN`/`COMMIT`. The runner refuses to continue if an applied file's checksum has changed: never edit an applied migration, add a new one. `python db/run_checks.py` applies everything to a throwaway database for each check file and also tests the ledger.
+Run `python db/migrate.py status` or `apply` with the standard `PG*` environment variables. Each `NNNN_name.sql` file runs in one transaction together with its `ci.schema_migrations` row, so files must not contain `BEGIN`/`COMMIT`. The runner refuses to continue if an applied file's checksum has changed: never edit an applied migration, add a new one. `python db/run_checks.py` applies everything to a throwaway database for each check file and also tests the ledger; it drops cluster-wide roles, so give it a server of its own. SQL goes to psql on standard input, and `CI_PSQL` can name a psql inside a container (`make migrate` uses the local stack's), so no local psql install is needed. Python database tests (`tests/db`) create and migrate their own `ci_pytest` database.

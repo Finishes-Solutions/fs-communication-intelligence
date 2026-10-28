@@ -1,0 +1,36 @@
+# Local stack: PostgreSQL 18 + pgvector 0.8.2 (the same image CI uses; keep it
+# matched to the Azure server) and Azurite (Functions host storage, used once
+# the Function Apps land in PR 5). Ports bind to 127.0.0.1 only.
+# Start with `make dev` from the repo root; see local/README.md.
+name: fs-ci-local
+
+services:
+  db:
+    image: pgvector/pgvector:0.8.2-pg18
+    environment:
+      POSTGRES_PASSWORD: ci-local-only   # throwaway container password, synthetic data only
+      POSTGRES_DB: ci_local
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - db-data:/var/lib/postgresql      # PG18 images keep data under this path
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ci_local"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.34.0
+    command: ["azurite", "--blobHost", "0.0.0.0", "--queueHost", "0.0.0.0",
+              "--tableHost", "0.0.0.0", "--location", "/data", "--skipApiVersionCheck"]
+    ports:
+      - "127.0.0.1:10000:10000"
+      - "127.0.0.1:10001:10001"
+      - "127.0.0.1:10002:10002"
+    volumes:
+      - azurite-data:/data
+
+volumes:
+  db-data:
+  azurite-data:

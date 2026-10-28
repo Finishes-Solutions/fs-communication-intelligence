@@ -1,0 +1,60 @@
+{
+  "fixture": {
+    "mailbox": "morgan.lee@finishessolutions.example",
+    "folder": "inbox",
+    "after": [],
+    "expect": {
+      "captured": true,
+      "screening": [],
+      "labels_yes": [
+        "cat_leasing_operations",
+        "project_related"
+      ],
+      "disposition": "index"
+    }
+  },
+  "message": {
+    "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0003",
+    "internetMessageId": "<synthetic-0003@example-leasing.example>",
+    "conversationId": "AAQkAGsynconv0003",
+    "changeKey": "CQAAABYAAAAsyn0003",
+    "subject": "Suite 210 lease renewal terms",
+    "from": {
+      "emailAddress": {
+        "name": "Alex Kim",
+        "address": "alex.kim@example-leasing.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Alex Kim",
+        "address": "alex.kim@example-leasing.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Morgan Lee",
+          "address": "morgan.lee@finishessolutions.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-03T13:00:00Z",
+    "sentDateTime": "2026-10-03T13:00:00Z",
+    "body": {
+      "contentType": "text",
+      "content": "Morgan,\n\nThe tenant in Suite 210 at Example Commons would like to renew for three years at the current rate with a 3% annual escalation. Occupancy has been steady. Can you confirm whether property management should prepare the renewal?\n\nBest,\nAlex Kim\nExample Leasing Partners"
+    },
+    "uniqueBody": {
+      "contentType": "text",
+      "content": "Morgan,\n\nThe tenant in Suite 210 at Example Commons would like to renew for three years at the current rate with a 3% annual escalation. Occupancy has been steady. Can you confirm whether property management should prepare the renewal?\n\nBest,\nAlex Kim\nExample Leasing Partners"
+    },
+    "hasAttachments": false,
+    "webLink": "https://outlook.office365.com/owa/?ItemID=AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0003&exvsurl=1&viewmodel=ReadMessageItem",
+    "isDraft": false,
+    "parentFolderId": "fld-morgan-inbox"
+  },
+  "attachments": []
+}

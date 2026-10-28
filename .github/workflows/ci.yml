@@ -16,6 +16,26 @@ jobs:
   python:
     name: Lint, type check, tests
     runs-on: ubuntu-24.04
+    # Database tests (tests/db) run against this throwaway server. CI_REQUIRE_DB
+    # makes an unreachable server a failure instead of a skip.
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.2-pg18
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      CI_REQUIRE_DB: "1"
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v6
@@ -56,3 +76,30 @@ jobs:
       - uses: actions/checkout@v5
       - name: Apply migrations and run checks
         run: python3 db/run_checks.py
+
+  package:
+    name: Build Function App packages and import them
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - name: Build
+        run: |
+          bash scripts/build-function-app.sh ingestion dist
+          bash scripts/build-function-app.sh search dist
+      - name: Import each app with only its packaged dependencies
+        run: |
+          py="$(uv python find 3.14 || (uv python install 3.14 >/dev/null && uv python find 3.14))"
+          for app in ingestion search; do
+            mkdir -p "check/$app" && (cd "check/$app" && unzip -q "../../dist/$app.zip")
+          done
+          (cd check/ingestion && env -i PATH=/usr/bin:/bin PYTHONPATH=.python_packages/lib/site-packages \
+            DEPLOYMENT_ENVIRONMENT=development "$py" -c \
+            "import function_app as f; assert {x.get_function_name() for x in f.app.get_functions()} == {'capture', 'process'}")
+          (cd check/search && env -i PATH=/usr/bin:/bin PYTHONPATH=.python_packages/lib/site-packages \
+            DEPLOYMENT_ENVIRONMENT=development ENTRA_TENANT_ID=00000000-0000-0000-0000-000000000001 \
+            SEARCH_PUBLIC_URL=https://example.azurewebsites.net SEARCH_API_CLIENT_ID=x \
+            SEARCH_API_APP_ID_URI=api://x AZURE_OPENAI_ENDPOINT=https://aoai.example "$py" -c \
+            "import function_app as f; assert type(f.app).__name__ == 'AsgiFunctionApp'")
+          (cd check/ingestion && env -i PATH=/usr/bin:/bin PYTHONPATH=.python_packages/lib/site-packages \
+            "$py" -P -s -c "import pypdf, openpyxl")

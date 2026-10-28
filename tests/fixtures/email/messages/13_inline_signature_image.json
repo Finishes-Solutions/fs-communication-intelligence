@@ -1,0 +1,67 @@
+{
+  "fixture": {
+    "mailbox": "morgan.lee@finishessolutions.example",
+    "folder": "inbox",
+    "after": [],
+    "expect": {
+      "captured": true,
+      "screening": [],
+      "labels_yes": [],
+      "disposition": "index"
+    }
+  },
+  "message": {
+    "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0013",
+    "internetMessageId": "<synthetic-0013@example-architects.example>",
+    "conversationId": "AAQkAGsynconv0013",
+    "changeKey": "CQAAABYAAAAsyn0013",
+    "subject": "Site photos follow-up",
+    "from": {
+      "emailAddress": {
+        "name": "Riley Chen",
+        "address": "riley.chen@example-architects.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Riley Chen",
+        "address": "riley.chen@example-architects.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Morgan Lee",
+          "address": "morgan.lee@finishessolutions.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-11T17:00:00Z",
+    "sentDateTime": "2026-10-11T17:00:00Z",
+    "body": {
+      "contentType": "text",
+      "content": "Morgan,\n\nThanks for the walk today. I will send the site photos tomorrow.\n\nRiley Chen\nExample Architects\n[logo]"
+    },
+    "uniqueBody": {
+      "contentType": "text",
+      "content": "Morgan,\n\nThanks for the walk today. I will send the site photos tomorrow.\n\nRiley Chen\nExample Architects\n[logo]"
+    },
+    "hasAttachments": false,
+    "webLink": "https://outlook.office365.com/owa/?ItemID=AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0013&exvsurl=1&viewmodel=ReadMessageItem",
+    "isDraft": false,
+    "parentFolderId": "fld-morgan-inbox"
+  },
+  "attachments": [
+    {
+      "@odata.type": "#microsoft.graph.fileAttachment",
+      "id": "att-logo",
+      "name": "image001.png",
+      "contentType": "image/png",
+      "size": 5120,
+      "isInline": true,
+      "contentId": "image001.png@01DB0000.00000000"
+    }
+  ]
+}

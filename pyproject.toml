@@ -4,12 +4,22 @@ version = "0.1.0"
 description = "Finishes Solutions communication intelligence platform (email first)"
 requires-python = ">=3.14,<3.15"
 dependencies = [
+    "azure-identity==1.27.0",
+    "httpx==0.28.1",
+    "mcp==2.3.0",
+    "openpyxl==3.1.5",
+    "psycopg[binary]==3.3.2",
     "pydantic==2.14.1",
     "pydantic-settings==2.16.0",
+    "pypdf==6.21.3",
 ]
+
+[project.scripts]
+ci = "ci_cli.main:main"
 
 [dependency-groups]
 dev = [
+    "azure-functions>=2.3.0",
     "mypy==2.4.0",
     "pytest==9.1.1",
     "ruff==0.17.0",
@@ -25,6 +35,7 @@ packages = [
     "packages/ci_email",
     "packages/ci_processing",
     "packages/ci_retrieval",
+    "packages/ci_cli",
 ]
 
 [tool.ruff]
@@ -42,7 +53,7 @@ select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
 python_version = "3.14"
 strict = true
 mypy_path = "packages"
-packages = ["ci_core", "ci_email", "ci_processing", "ci_retrieval"]
+packages = ["ci_core", "ci_email", "ci_processing", "ci_retrieval", "ci_cli"]
 plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]

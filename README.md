@@ -4,11 +4,12 @@ Internal Finishes Solutions project. Status: early development.
 
 ## Development
 
-Requires [uv](https://docs.astral.sh/uv/) and, for the database checks, Docker.
+Requires [uv](https://docs.astral.sh/uv/) and Docker. `make dev` starts a local stack with synthetic data only; see [`local/README.md`](local/README.md).
 
 ```bash
 uv sync
-uv run pytest
+make dev     # local PostgreSQL + pgvector, migrations, synthetic fixture tenant
+make test    # includes database tests against the local stack
 uv run ruff check . && uv run ruff format --check .
 uv run mypy && uv run mypy tests db/run_checks.py db/migrate.py
 ```

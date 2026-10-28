@@ -1,4 +1,4 @@
-"""Email source adapter: Graph client (real and fixture), inventory, folder delta, normalizer.
+"""Email source adapter: Graph client interface and fixture client, mailbox inventory.
 
-Empty until PR 4/5 (see CLAUDE.md section 12).
+Folder delta capture, the real Graph client and the normalizer arrive in PR 5.
 """

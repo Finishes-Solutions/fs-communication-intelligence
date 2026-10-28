@@ -1,0 +1,61 @@
+{
+  "fixture": {
+    "mailbox": "pat.example@finishessolutions.example",
+    "folder": "inbox",
+    "after": [],
+    "expect": {
+      "captured": true,
+      "screening": [],
+      "labels_yes": [
+        "cat_capital_finance",
+        "action_required",
+        "project_related"
+      ],
+      "disposition": "index"
+    }
+  },
+  "message": {
+    "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0005",
+    "internetMessageId": "<synthetic-0005@example-bank.example>",
+    "conversationId": "AAQkAGsynconv0005",
+    "changeKey": "CQAAABYAAAAsyn0005",
+    "subject": "Draw request 9 documentation - Example Commons loan",
+    "from": {
+      "emailAddress": {
+        "name": "Dana Whitfield",
+        "address": "dwhitfield@example-bank.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Dana Whitfield",
+        "address": "dwhitfield@example-bank.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Example",
+          "address": "pat.example@finishessolutions.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-05T14:10:00Z",
+    "sentDateTime": "2026-10-05T14:10:00Z",
+    "body": {
+      "contentType": "text",
+      "content": "Pat,\n\nFor draw request 9 on the Example Commons construction loan, the lender needs the updated pay application, lien waivers and the inspector's report. Please send them by Thursday so funding is not delayed.\n\nDana Whitfield\nExample Community Bank (synthetic)"
+    },
+    "uniqueBody": {
+      "contentType": "text",
+      "content": "Pat,\n\nFor draw request 9 on the Example Commons construction loan, the lender needs the updated pay application, lien waivers and the inspector's report. Please send them by Thursday so funding is not delayed.\n\nDana Whitfield\nExample Community Bank (synthetic)"
+    },
+    "hasAttachments": false,
+    "webLink": "https://outlook.office365.com/owa/?ItemID=AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0005&exvsurl=1&viewmodel=ReadMessageItem",
+    "isDraft": false,
+    "parentFolderId": "fld-pat-inbox"
+  },
+  "attachments": []
+}

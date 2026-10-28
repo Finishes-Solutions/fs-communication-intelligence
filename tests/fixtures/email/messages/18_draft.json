@@ -1,0 +1,57 @@
+{
+  "fixture": {
+    "mailbox": "pat.example@finishessolutions.example",
+    "folder": "drafts",
+    "after": [],
+    "expect": {
+      "captured": false,
+      "screening": [],
+      "labels_yes": [],
+      "disposition": "skipped"
+    }
+  },
+  "message": {
+    "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0020",
+    "internetMessageId": "<synthetic-0020@finishessolutions.example>",
+    "conversationId": "AAQkAGsynconv0020",
+    "changeKey": "CQAAABYAAAAsyn0020",
+    "subject": "Draft reply",
+    "from": {
+      "emailAddress": {
+        "name": "Pat Example",
+        "address": "pat.example@finishessolutions.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Pat Example",
+        "address": "pat.example@finishessolutions.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Sam Ortiz",
+          "address": "sam.ortiz@northfield-framing.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-15T10:00:00Z",
+    "sentDateTime": "2026-10-15T10:00:00Z",
+    "body": {
+      "contentType": "text",
+      "content": "Unsent draft text."
+    },
+    "uniqueBody": {
+      "contentType": "text",
+      "content": "Unsent draft text."
+    },
+    "hasAttachments": false,
+    "webLink": "https://outlook.office365.com/owa/?ItemID=AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0020&exvsurl=1&viewmodel=ReadMessageItem",
+    "isDraft": true,
+    "parentFolderId": "fld-pat-drafts"
+  },
+  "attachments": []
+}

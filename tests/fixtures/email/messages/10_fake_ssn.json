@@ -1,0 +1,59 @@
+{
+  "fixture": {
+    "mailbox": "pat.example@finishessolutions.example",
+    "folder": "inbox",
+    "after": [],
+    "expect": {
+      "captured": true,
+      "screening": [
+        "sensitive_pii"
+      ],
+      "labels_yes": [],
+      "disposition": "restricted"
+    }
+  },
+  "message": {
+    "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0010",
+    "internetMessageId": "<synthetic-0010@finishessolutions.example>",
+    "conversationId": "AAQkAGsynconv0010",
+    "changeKey": "CQAAABYAAAAsyn0010",
+    "subject": "New hire paperwork",
+    "from": {
+      "emailAddress": {
+        "name": "HR Desk",
+        "address": "hr@finishessolutions.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "HR Desk",
+        "address": "hr@finishessolutions.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Example",
+          "address": "pat.example@finishessolutions.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-09T10:00:00Z",
+    "sentDateTime": "2026-10-09T10:00:00Z",
+    "body": {
+      "contentType": "text",
+      "content": "Pat,\n\nFor the payroll setup, the new hire's SSN is 900-00-0000 (synthetic test value). Please forward to payroll.\n\nHR Desk"
+    },
+    "uniqueBody": {
+      "contentType": "text",
+      "content": "Pat,\n\nFor the payroll setup, the new hire's SSN is 900-00-0000 (synthetic test value). Please forward to payroll.\n\nHR Desk"
+    },
+    "hasAttachments": false,
+    "webLink": "https://outlook.office365.com/owa/?ItemID=AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0010&exvsurl=1&viewmodel=ReadMessageItem",
+    "isDraft": false,
+    "parentFolderId": "fld-pat-inbox"
+  },
+  "attachments": []
+}

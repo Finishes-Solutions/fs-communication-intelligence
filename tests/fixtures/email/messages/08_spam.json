@@ -1,0 +1,59 @@
+{
+  "fixture": {
+    "mailbox": "pat.example@finishessolutions.example",
+    "folder": "inbox",
+    "after": [],
+    "expect": {
+      "captured": true,
+      "screening": [],
+      "labels_yes": [
+        "spam"
+      ],
+      "disposition": "not_indexed"
+    }
+  },
+  "message": {
+    "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0008",
+    "internetMessageId": "<synthetic-0008@prize-center.example>",
+    "conversationId": "AAQkAGsynconv0008",
+    "changeKey": "CQAAABYAAAAsyn0008",
+    "subject": "You have been selected - claim your prize",
+    "from": {
+      "emailAddress": {
+        "name": "Prize Center",
+        "address": "winner@prize-center.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Prize Center",
+        "address": "winner@prize-center.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Example",
+          "address": "pat.example@finishessolutions.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-07T12:00:00Z",
+    "sentDateTime": "2026-10-07T12:00:00Z",
+    "body": {
+      "contentType": "text",
+      "content": "Congratulations! You have been selected for an exclusive limited-time offer. Act now to claim your prize."
+    },
+    "uniqueBody": {
+      "contentType": "text",
+      "content": "Congratulations! You have been selected for an exclusive limited-time offer. Act now to claim your prize."
+    },
+    "hasAttachments": false,
+    "webLink": "https://outlook.office365.com/owa/?ItemID=AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0008&exvsurl=1&viewmodel=ReadMessageItem",
+    "isDraft": false,
+    "parentFolderId": "fld-pat-inbox"
+  },
+  "attachments": []
+}

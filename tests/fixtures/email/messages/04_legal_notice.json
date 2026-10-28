@@ -1,0 +1,60 @@
+{
+  "fixture": {
+    "mailbox": "pat.example@finishessolutions.example",
+    "folder": "inbox",
+    "after": [],
+    "expect": {
+      "captured": true,
+      "screening": [],
+      "labels_yes": [
+        "cat_compliance_legal",
+        "project_related"
+      ],
+      "disposition": "index"
+    }
+  },
+  "message": {
+    "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0004",
+    "internetMessageId": "<synthetic-0004@brooks-hale-law.example>",
+    "conversationId": "AAQkAGsynconv0004",
+    "changeKey": "CQAAABYAAAAsyn0004",
+    "subject": "Notice of mechanic's lien - Example Ridge Phase 2",
+    "from": {
+      "emailAddress": {
+        "name": "Taylor Brooks",
+        "address": "tbrooks@brooks-hale-law.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Taylor Brooks",
+        "address": "tbrooks@brooks-hale-law.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Example",
+          "address": "pat.example@finishessolutions.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-04T16:45:00Z",
+    "sentDateTime": "2026-10-04T16:45:00Z",
+    "body": {
+      "contentType": "text",
+      "content": "To the owner,\n\nThis is formal notice that a mechanic's lien claim will be filed against Example Ridge Phase 2 unless the outstanding balance is resolved within 10 days. Please direct questions to our attorney.\n\nTaylor Brooks\nBrooks & Hale (synthetic)"
+    },
+    "uniqueBody": {
+      "contentType": "text",
+      "content": "To the owner,\n\nThis is formal notice that a mechanic's lien claim will be filed against Example Ridge Phase 2 unless the outstanding balance is resolved within 10 days. Please direct questions to our attorney.\n\nTaylor Brooks\nBrooks & Hale (synthetic)"
+    },
+    "hasAttachments": false,
+    "webLink": "https://outlook.office365.com/owa/?ItemID=AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0004&exvsurl=1&viewmodel=ReadMessageItem",
+    "isDraft": false,
+    "parentFolderId": "fld-pat-inbox"
+  },
+  "attachments": []
+}

@@ -1,0 +1,77 @@
+{
+  "fixture": {
+    "mailbox": "morgan.lee@finishessolutions.example",
+    "folder": "inbox",
+    "after": [],
+    "expect": {
+      "captured": true,
+      "screening": [],
+      "labels_yes": [
+        "cat_development_construction",
+        "approval_required"
+      ],
+      "disposition": "index"
+    }
+  },
+  "message": {
+    "id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0015",
+    "internetMessageId": "<synthetic-co8@northfield-framing.example>",
+    "conversationId": "AAQkAGsynconvco8",
+    "changeKey": "CQAAABYAAAAsyn0015",
+    "subject": "Change Order 8 - Building D plumbing reroute",
+    "from": {
+      "emailAddress": {
+        "name": "Sam Ortiz",
+        "address": "sam.ortiz@northfield-framing.example"
+      }
+    },
+    "sender": {
+      "emailAddress": {
+        "name": "Sam Ortiz",
+        "address": "sam.ortiz@northfield-framing.example"
+      }
+    },
+    "toRecipients": [
+      {
+        "emailAddress": {
+          "name": "Pat Example",
+          "address": "pat.example@finishessolutions.example"
+        }
+      },
+      {
+        "emailAddress": {
+          "name": "Morgan Lee",
+          "address": "morgan.lee@finishessolutions.example"
+        }
+      }
+    ],
+    "ccRecipients": [],
+    "bccRecipients": [],
+    "receivedDateTime": "2026-10-12T14:00:00Z",
+    "sentDateTime": "2026-10-12T14:00:00Z",
+    "body": {
+      "contentType": "text",
+      "content": "Team,\n\nChange order 8 reroutes the Building D plumbing stack around the new beam. Added cost $3,150. Please review the attached and approve by Friday.\n\nSam Ortiz\nNorthfield Framing Co."
+    },
+    "uniqueBody": {
+      "contentType": "text",
+      "content": "Team,\n\nChange order 8 reroutes the Building D plumbing stack around the new beam. Added cost $3,150. Please review the attached and approve by Friday.\n\nSam Ortiz\nNorthfield Framing Co."
+    },
+    "hasAttachments": true,
+    "webLink": "https://outlook.office365.com/owa/?ItemID=AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A-syn-0015&exvsurl=1&viewmodel=ReadMessageItem",
+    "isDraft": false,
+    "parentFolderId": "fld-morgan-inbox"
+  },
+  "attachments": [
+    {
+      "@odata.type": "#microsoft.graph.fileAttachment",
+      "id": "att-co8",
+      "name": "CO-008-BuildingD.pdf",
+      "contentType": "application/pdf",
+      "size": 754,
+      "isInline": false,
+      "contentId": null,
+      "contentBase64": "JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggMjA5ID4+CnN0cmVhbQpCVCAvRjEgMTEgVGYgNzIgNzIwIFRkIDE0IFRMCihDaGFuZ2UgT3JkZXIgOCAtIE5vcnRoZmllbGQgRnJhbWluZyBDby4pIFRqIFQqCihCdWlsZGluZyBEIHBsdW1iaW5nIHN0YWNrIHJlcm91dGUpIFRqIFQqCihSZXJvdXRlIGFyb3VuZCBuZXcgYmVhbSBhdCBncmlkIEMtNCkgVGogVCoKKENvc3Q6ICQzLDE1MC4gU2NoZWR1bGUgaW1wYWN0OiBub25lKSBUaiBUKgpFVAplbmRzdHJlYW0KZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMTUgMDAwMDAgbiAKMDAwMDAwMDI0MSAwMDAwMCBuIAowMDAwMDAwMzExIDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNiAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKNTcxCiUlRU9GCg=="
+    }
+  ]
+}
