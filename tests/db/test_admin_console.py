@@ -334,6 +334,27 @@ def test_paid_check_switches_apply_to_the_lab(client: TestClient) -> None:
         )
 
 
+def test_cost_page_without_billing_connected(client: TestClient, database_ready: str) -> None:
+    page = client.get("/api/costs", headers=auth())
+    assert page.status_code == 200, page.text
+    data = page.json()
+    assert data["billed"] == {"available": False, "error": "not_configured"}
+    assert data["metered"]["available"] is True
+    assert {p["key"] for p in data["prices"]} >= {"openai_chat_input", "language_pii"}
+    bad = client.put("/api/costs/prices", headers=auth(), json={"language_pii": {"usd": -2}})
+    assert bad.status_code == 400
+    ok = client.put(
+        "/api/costs/prices",
+        headers=auth(),
+        json={"prompt_shields": {"usd": 0.38, "verified": True}},
+    )
+    assert ok.status_code == 200, ok.text
+    shields = next(p for p in ok.json()["prices"] if p["key"] == "prompt_shields")
+    assert shields["verified"] is True
+    assert shields["updated_by"] == "matthew@finishessolutions.example"
+    assert client.get("/api/costs").status_code == 401
+
+
 def test_lab_reruns_a_stored_message(client: TestClient) -> None:
     target = client.get(f"/api/actionable?person={PAT}&hours=1440", headers=auth()).json()
     communication_id = target["actions"][0]["communication_id"]

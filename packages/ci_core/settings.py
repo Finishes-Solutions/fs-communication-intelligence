@@ -170,6 +170,11 @@ class Settings(BaseSettings):
     search_api_client_id: str | None = None  # the search API app registration
     search_api_app_id_uri: str | None = None  # e.g. api://<client id>
 
+    # Cost page: Azure Cost Management for this resource group (the admin
+    # console's identity needs Cost Management Reader there).
+    azure_subscription_id: str | None = None
+    azure_resource_group: str = "fs-communication-intelligence"
+
     # Admin console (apps/admin): the public SPA client the browser signs in
     # with. Tokens are for the search API registration, scope Communications.Console.
     admin_spa_client_id: str | None = None

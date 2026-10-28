@@ -14,6 +14,8 @@ import logging
 from collections import Counter
 from datetime import UTC, datetime
 
+import psycopg
+
 from ci_cli import backends
 from ci_cli.pipeline import capture_profile, connection_and_corpus
 from ci_core import ops
@@ -22,7 +24,7 @@ from ci_core.runtime import EmptyScopeError, RuntimeConfigError
 from ci_core.settings import Settings
 from ci_email.capture import capture_window
 from ci_email.inventory import sync_inventory
-from ci_email.process import process_all, store_missing_originals
+from ci_email.process import process_all, record_usage, store_missing_originals
 
 log = logging.getLogger("ci.scheduled")
 
@@ -110,6 +112,7 @@ def run_processing(settings: Settings) -> dict[str, int] | None:
         run_id = ops.start_run(conn, "process", "schedule")
         conn.commit()
     status, error = "succeeded", None
+    configured = None
     try:
         configured = backends.with_switches(
             backends.processing_backends(settings), settings, schedule
@@ -127,6 +130,14 @@ def run_processing(settings: Settings) -> dict[str, int] | None:
         counts, status, error = {}, "failed", type(exc).__name__[:60]
         log.exception("processing failed")
     with connect(role="ci_ingest") as conn:
+        if configured is not None and configured.meter is not None:
+            # What the run's paid calls used, kept even when the run failed part-way.
+            # A savepoint: a database without migration 0013 must not lose the run record.
+            try:
+                with conn.transaction():
+                    record_usage(conn, configured.meter.drain(), source="processing", run_id=run_id)
+            except psycopg.Error as exc:
+                log.warning("usage not recorded: %s", type(exc).__name__)
         if counts or error:
             if counts.get("failed"):
                 status = "partial"

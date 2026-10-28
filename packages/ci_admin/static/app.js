@@ -66,6 +66,7 @@ const ICONS = {
   text: ["M17 6H3", "M21 12H3", "M15 18H3"],
   plus: ["M12 5v14", "M5 12h14"],
   chart: ["M3 3v18h18", "M7 16v-5", "M12 16V8", "M17 16v-9"],
+  dollar: ["M12 1v22", "M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"],
   report: ["M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z", "M14 2v6h6", "M8 13h8", "M8 17h8", "M8 9h2"],
   review: ["M18 6 7 17l-5-5", "m22 10-7.5 7.5L13 16"],
   save: ["M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z", "M17 21v-8H7v8", "M7 3v5h8"],
@@ -1507,10 +1508,136 @@ async function reviewResults(tabs) {
     note(`A threshold suggestion appears once a label has ${c.min_sample} checked emails with at least 5 of each answer. Suggestions are never applied automatically. Lists like Project Risks or One Label over-represent their label; Recent Mail is the fairest sample.`));
 }
 
+// ---------- costs ------------------------------------------------------------
+
+function usd(n) {
+  const v = Number(n || 0);
+  if (v > 0 && v < 0.01) return "<$0.01";
+  return "$" + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+const METERS = {
+  openai_chat: "AI classification (Azure OpenAI)",
+  openai_embedding: "Embeddings (Azure OpenAI)",
+  language_pii: "Masking (AI Language)",
+  prompt_shields: "Prompt-injection check",
+};
+const METER_SHORT = { openai_chat: "Classification", openai_embedding: "Embeddings", language_pii: "Masking", prompt_shields: "Prompt check" };
+const BILLED_ERRORS = {
+  not_configured: "Azure's billed costs are not connected yet: run scripts/azure/6-cost-dashboard.sh once.",
+  "HTTP 401": "Azure refused the console's sign-in to Cost Management.",
+  "HTTP 403": "The console's identity can't read costs yet. Run scripts/azure/6-cost-dashboard.sh; a new role can take up to 30 minutes to apply.",
+  "HTTP 429": "Azure Cost Management is rate-limiting; try Refresh in a few minutes.",
+};
+function billedError(code) {
+  const key = Object.keys(BILLED_ERRORS).find(k => String(code || "").startsWith(k));
+  return key ? BILLED_ERRORS[key] : `Azure's billed costs could not be read (${code}).`;
+}
+
+async function costsPage(refresh) {
+  const d = await api("/api/costs" + (refresh === true ? "?refresh=1" : ""));
+  const billed = d.billed, m = d.metered;
+  const now = new Date();
+  const ym = (dt) => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`;
+  const thisMonth = ym(now), lastMonth = ym(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+  const rows = billed.available ? billed.rows : [];
+  const sum = list => list.reduce((n, r) => n + r.cost, 0);
+  const monthRows = rows.filter(r => r.date.startsWith(thisMonth));
+  const lastRows = rows.filter(r => r.date.startsWith(lastMonth));
+  const latestDay = rows.reduce((a, r) => (r.date > a ? r.date : a), "");
+  const services = [...new Set(rows.map(r => r.service))].map(name => ({
+    name, month: sum(monthRows.filter(r => r.service === name)), last: sum(lastRows.filter(r => r.service === name)),
+  })).filter(x => x.month || x.last).sort((a, b) => b.month - a.month || b.last - a.last);
+  const days = [...new Set(rows.map(r => r.date))].sort().reverse().slice(0, 14).map(day => {
+    const of = rows.filter(r => r.date === day);
+    return { day, total: sum(of), top: of.filter(r => r.cost >= 0.01).sort((a, b) => b.cost - a.cost).slice(0, 2) };
+  });
+  const maxService = Math.max(0.01, ...services.map(x => x.month));
+  const meterRows = m.available ? Object.keys(METERS).map(key => {
+    const of = m.by_day.filter(r => r.meter === key && r.date.startsWith(thisMonth));
+    return { key, calls: of.reduce((n, r) => n + r.calls, 0), tokens: of.reduce((n, r) => n + r.input_tokens + r.output_tokens, 0),
+      records: of.reduce((n, r) => n + r.records, 0), usd: of.reduce((n, r) => n + r.usd, 0) };
+  }) : [];
+  const inputs = {};
+  const save = guard(async () => {
+    const body = {};
+    for (const [key, f] of Object.entries(inputs)) body[key] = { usd: Number(f.usd.value), verified: f.verified.checked };
+    await post("/api/costs/prices", body, "PUT");
+    toast("Prices saved; estimates use them from now on."); costsPage();
+  });
+  show(
+    pageHead("Costs", "What Azure billed, and what the AI calls used.",
+      h("button", { class: "btn", onclick: guard(() => costsPage(true)) }, icon("refresh"), "Refresh")),
+    h("div", { class: "grid" },
+      stat("Billed This Month", "dollar", billed.available ? usd(sum(monthRows)) : "—",
+        billed.available ? `Azure, resource group ${d.resource_group}` : "Not connected"),
+      stat("Billed Last Month", "dollar", billed.available ? usd(sum(lastRows)) : "—", "Azure Cost Management"),
+      stat("Latest Billed Day", "clock", billed.available && latestDay ? usd(sum(rows.filter(r => r.date === latestDay))) : "—",
+        latestDay ? new Date(latestDay + "T12:00:00").toLocaleDateString() : "Azure lags 8–24 hours"),
+      stat("Estimated AI This Month", "zap", m.available ? usd(m.month_usd) : "—", m.available ? `Today so far ${usd(m.today_usd)}` : "Not set up"),
+      stat("AI per 1,000 Emails", "mail", m.available && m.per_1000_messages_usd != null ? usd(m.per_1000_messages_usd) : "—",
+        m.available ? `${num(m.month_messages)} emails processed this month` : ""),
+    ),
+    billed.available ? null : note(billedError(billed.error), "warn"),
+    billed.stale_error ? note(`Showing the last figures read; the latest refresh failed (${billed.stale_error}).`, "warn") : null,
+    m.available ? null : note("Metered usage needs database migration 0013 (db/migrate.py apply).", "warn"),
+    note("Billed is what Azure charges, updated every 8–24 hours, so today's processing appears tomorrow. Estimated is counted as each AI call runs, priced with the unit prices below; compare the two to check the prices."),
+    h("div", { class: "cols" },
+      card({ title: "Billed by Service", sub: "This month, with last month for comparison", flush: true },
+        table([
+          ["Service", x => x.name],
+          ["This Month", x => h("div", { class: "bar-cell" }, h("span", {}, usd(x.month)),
+            h("div", { class: "bar" }, h("span", { style: `width:${Math.max(2, (x.month / maxService) * 100)}%` }))), "num"],
+          ["Last Month", x => usd(x.last), "num"],
+        ], services, null, emptyState("No Billed Costs Yet", billed.available ? "Azure has not reported costs for this period." : "Connect Azure's billed costs first.", "dollar"))),
+      card({ title: "Billed by Day", sub: "Last 14 days with billed costs", flush: true },
+        table([
+          ["Day", x => new Date(x.day + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })],
+          ["Total", x => usd(x.total), "num"],
+          ["Largest", x => x.top.map(t => `${t.service} ${usd(t.cost)}`).join(" · ") || "—"],
+        ], days, null, emptyState("No Days Yet", null, "clock")))),
+    card({ title: "Estimated AI Usage This Month", sub: "Counted from each call: tokens for Azure OpenAI, 1,000-character text records for Language and Content Safety", flush: true, class: "spaced" },
+      table([
+        ["Service", x => METERS[x.key]],
+        ["Calls", x => num(x.calls), "num"],
+        ["Tokens", x => x.tokens ? num(x.tokens) : "—", "num"],
+        ["Text Records", x => x.records ? num(x.records) : "—", "num"],
+        ["Estimated", x => usd(x.usd), "num"],
+      ], meterRows)),
+    card({ title: "Processing Runs", sub: "Estimated AI cost of each run (the last 50)", flush: true, class: "spaced" },
+      table([
+        ["Started", r => short(r.started_at)],
+        ["Status", r => stateBadge("run", r.status)],
+        ["Emails", r => num(r.messages), "num"],
+        ["Estimated", r => usd(r.usd), "num"],
+        ["Per 1,000", r => r.messages ? usd((r.usd / r.messages) * 1000) : "—", "num"],
+        ["Largest Part", r => {
+          const top = Object.entries(r.by_meter).sort((a, b) => b[1] - a[1])[0];
+          return top ? `${METER_SHORT[top[0]] || nice(top[0])} ${usd(top[1])}` : "—";
+        }],
+      ], m.available ? m.runs : [], null, emptyState("No Runs Yet", "Runs appear once processing has run with metering.", "zap"))),
+    card({ title: "Unit Prices", sub: "Used for the estimates. Defaults are unverified list prices: check them against the Azure pricing page or the billed figures.",
+      actions: d.prices.length ? h("button", { class: "btn primary", onclick: save }, icon("save"), "Save Prices") : null, flush: true, class: "spaced" },
+      table([
+        ["What", p => p.label],
+        ["Price (USD)", p => {
+          inputs[p.key] = inputs[p.key] || {
+            usd: h("input", { type: "number", min: "0", step: "0.0001", value: p.usd, style: "width:110px" }),
+            verified: h("input", { type: "checkbox", checked: p.verified }),
+          };
+          return inputs[p.key].usd;
+        }],
+        ["Per", p => `${num(p.per_units)} ${p.unit}`],
+        ["Checked", p => switchEl(inputs[p.key].verified)],
+        ["Updated", p => `${short(p.updated_at)} · ${p.updated_by}`],
+      ], d.prices)),
+  );
+}
+
 // ---------- router -----------------------------------------------------------
 
 const NAV = [
-  ["overview", "Overview", "overview"], ["schedule", "Schedule & Runs", "clock"], ["mailboxes", "Mailboxes", "inbox"],
+  ["overview", "Overview", "overview"], ["schedule", "Schedule & Runs", "clock"], ["costs", "Costs", "dollar"],
+  ["mailboxes", "Mailboxes", "inbox"],
   null,
   ["messages", "Messages", "mail"], ["actionable", "Action Items", "check"], ["unpublished", "Not Published", "hidden"],
   null,
@@ -1519,7 +1646,7 @@ const NAV = [
   ["lab", "Lab", "lab"],
 ];
 const NAV_GROUPS = ["Operations", "Mail", "Insights", "Tools"];
-const PAGES = { overview, schedule: schedulePage, mailboxes: mailboxesPage, messages: messagesPage,
+const PAGES = { overview, schedule: schedulePage, costs: costsPage, mailboxes: mailboxesPage, messages: messagesPage,
   actionable: actionablePage, unpublished: unpublishedPage, lab: labPage,
   risks: risksPage, reports: reportsPage, review: reviewPage, check: reviewPage };
 

@@ -33,6 +33,13 @@ from ci_processing.classification import (
 from ci_processing.redaction import Redaction, RedactionUnavailable, mask_all
 from ci_processing.routing import REASONS, PersonProfile, Route
 from ci_processing.screening import CheckDecision, CheckResult, ScreeningResult
+from ci_processing.usage import (
+    LANGUAGE_PII,
+    OPENAI_CHAT,
+    OPENAI_EMBEDDING,
+    PROMPT_SHIELDS,
+    Meter,
+)
 
 COGNITIVE_SCOPE = "https://cognitiveservices.azure.com/.default"
 LANGUAGE_API = "2023-04-01"
@@ -40,6 +47,9 @@ CONTENT_SAFETY_API = "2024-09-01"
 PII_DOC_CHARS = 5000
 PII_DOCS_PER_CALL = 5
 SHIELD_DOC_CHARS = 9_000  # the prompt plus documents must stay under the service limit
+SHIELD_PROMPT = "Summarize and classify this email."
+PII_MODEL = "azure-language-pii"
+SHIELD_MODEL = "content-safety-prompt-shields"
 
 # PII categories that make a message restricted (CLAUDE.md section 7:
 # SSNs, government IDs, bank/card numbers). Routine contact details are not.
@@ -134,11 +144,13 @@ class AzureScreener:
         http: AzureHttp | None = None,
         *,
         check_pii: bool = True,
+        meter: Meter | None = None,
     ) -> None:
         self._language = language_endpoint.rstrip("/")
         self._safety = content_safety_endpoint.rstrip("/")
         self._http = http or AzureHttp()
         self._check_pii = check_pii
+        self._meter = meter
 
     def screen(self, text: str) -> ScreeningResult:
         if not self._check_pii:
@@ -164,6 +176,8 @@ class AzureScreener:
                 result = self._http.post(
                     f"{self._language}/language/:analyze-text?api-version={LANGUAGE_API}", body
                 )["results"]
+                if self._meter:
+                    self._meter.add_texts(LANGUAGE_PII, PII_MODEL, batch)
                 if result.get("errors"):
                     return CheckResult("pii", CheckDecision.PENDING, "screening_unavailable", ref)
                 for document in result["documents"]:
@@ -184,8 +198,10 @@ class AzureScreener:
                 result = self._http.post(
                     f"{self._safety}/contentsafety/text:shieldPrompt"
                     f"?api-version={CONTENT_SAFETY_API}",
-                    {"userPrompt": "Summarize and classify this email.", "documents": [piece]},
+                    {"userPrompt": SHIELD_PROMPT, "documents": [piece]},
                 )
+                if self._meter:
+                    self._meter.add_texts(PROMPT_SHIELDS, SHIELD_MODEL, [SHIELD_PROMPT + piece])
                 if any(d.get("attackDetected") for d in result.get("documentsAnalysis", [])):
                     return CheckResult("prompt_shield", CheckDecision.HOLD, "prompt_attack", ref)
         except AzureServiceError, httpx.HTTPError, KeyError:
@@ -225,11 +241,14 @@ def _mask_entities(text: str, entities: list[dict[str, Any]]) -> tuple[str, Coun
 class AzureRedactor:
     """Azure AI Language PII detection (in-tenant) plus credential masking."""
 
-    def __init__(self, language_endpoint: str, http: AzureHttp | None = None) -> None:
+    def __init__(
+        self, language_endpoint: str, http: AzureHttp | None = None, *, meter: Meter | None = None
+    ) -> None:
         self._url = (
             f"{language_endpoint.rstrip('/')}/language/:analyze-text?api-version={LANGUAGE_API}"
         )
         self._http = http or AzureHttp()
+        self._meter = meter
 
     def redact(self, texts: Sequence[str]) -> Redaction:
         counts: Counter[str] = Counter()
@@ -252,6 +271,8 @@ class AzureRedactor:
                     },
                 }
                 result = self._http.post(self._url, body)["results"]
+                if self._meter:
+                    self._meter.add_texts(LANGUAGE_PII, PII_MODEL, [out[k] for k in batch])
                 if result.get("errors"):
                     raise RedactionUnavailable("language document errors")
                 for document in result["documents"]:
@@ -353,9 +374,16 @@ def _known_section(known: Sequence[KnownName]) -> str:
 
 class AzureOpenAIClassifier:
     def __init__(
-        self, endpoint: str, deployment: str, api_version: str, http: AzureHttp | None = None
+        self,
+        endpoint: str,
+        deployment: str,
+        api_version: str,
+        http: AzureHttp | None = None,
+        *,
+        meter: Meter | None = None,
     ) -> None:
         self.model = f"azure-openai:{deployment}"
+        self._meter = meter
         self._url = (
             f"{endpoint.rstrip('/')}/openai/deployments/{deployment}/chat/completions"
             f"?api-version={api_version}"
@@ -393,6 +421,8 @@ class AzureOpenAIClassifier:
                 },
             },
         )
+        if self._meter:
+            self._meter.add_openai(OPENAI_CHAT, self.model, response)
         content = json.loads(response["choices"][0]["message"]["content"])
         probabilities: dict[str, float | None] = {}
         for label in LABELS:
@@ -427,8 +457,11 @@ class AzureOpenAIEmbedder:
         api_version: str,
         dimensions: int,
         http: AzureHttp | None = None,
+        *,
+        meter: Meter | None = None,
     ) -> None:
         self.model = f"azure-openai:{deployment}"
+        self._meter = meter
         self.dimensions = dimensions
         self._url = (
             f"{endpoint.rstrip('/')}/openai/deployments/{deployment}/embeddings"
@@ -441,6 +474,8 @@ class AzureOpenAIEmbedder:
         for start in range(0, len(texts), 16):
             batch = list(texts[start : start + 16])
             result = self._http.post(self._url, {"input": batch, "dimensions": self.dimensions})
+            if self._meter:
+                self._meter.add_openai(OPENAI_EMBEDDING, self.model, result)
             ordered = sorted(result["data"], key=lambda d: d["index"])
             vectors.extend([float(x) for x in d["embedding"]] for d in ordered)
         return vectors
@@ -486,9 +521,16 @@ class AzureOpenAIPersonRouter:
     """Step 2 of action items (ci_processing.routing) on an Azure OpenAI chat deployment."""
 
     def __init__(
-        self, endpoint: str, deployment: str, api_version: str, http: AzureHttp | None = None
+        self,
+        endpoint: str,
+        deployment: str,
+        api_version: str,
+        http: AzureHttp | None = None,
+        *,
+        meter: Meter | None = None,
     ) -> None:
         self.model = f"azure-openai:{deployment}"
+        self._meter = meter
         self._url = (
             f"{endpoint.rstrip('/')}/openai/deployments/{deployment}/chat/completions"
             f"?api-version={api_version}"
@@ -528,6 +570,8 @@ class AzureOpenAIPersonRouter:
                 },
             },
         )
+        if self._meter:
+            self._meter.add_openai(OPENAI_CHAT, self.model, response)
         content = json.loads(response["choices"][0]["message"]["content"])
         value = content.get("probability")
         probability = min(max(float(value), 0.0), 1.0) if isinstance(value, int | float) else None

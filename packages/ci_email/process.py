@@ -57,6 +57,7 @@ from ci_processing.prefilter import PREFILTER_VERSION, bulk_skip_reason
 from ci_processing.redaction import RedactionUnavailable, Redactor
 from ci_processing.routing import ROUTING_VERSION, PersonProfile, PersonRouter, rule_out
 from ci_processing.screening import DISABLED, Screener
+from ci_processing.usage import Meter, UsageRow
 
 log = logging.getLogger(__name__)
 
@@ -80,6 +81,7 @@ class Backends:
     # Set: mask sensitive numbers and credentials (SENSITIVE_DATA_POLICY=mask).
     # None: restrict messages that contain them instead.
     redactor: Redactor | None = None
+    meter: Meter | None = None  # paid calls by the adapters above (ci_processing.usage)
     # Masking turned off in the admin console (testing only; redactor is then None):
     # sensitive mail is restricted on the classifier's labels instead of masked.
     masking_disabled: bool = False
@@ -855,6 +857,32 @@ def requeue_skipped(conn: Connection, domain: str | None = None) -> int:
             [(v, PREFILTER_VERSION) for v in versions],
         )
     return len(versions)
+
+
+def record_usage(
+    conn: Connection, rows: list[UsageRow], *, source: str, run_id: int | None = None
+) -> None:
+    """Store drained meter totals (counts only) for the cost page."""
+    with conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO ai_usage (run_id, source, meter, model, calls, input_tokens,"
+            " output_tokens, characters, records) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            [
+                (
+                    run_id,
+                    source,
+                    r.meter,
+                    r.model,
+                    r.calls,
+                    r.input_tokens,
+                    r.output_tokens,
+                    r.characters,
+                    r.records,
+                )
+                for r in rows
+                if r.calls
+            ],
+        )
 
 
 def requeue_unscreened(conn: Connection) -> int:

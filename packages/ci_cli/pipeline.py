@@ -23,6 +23,7 @@ from ci_email.fixture import FixtureGraphClient
 from ci_email.inventory import sync_inventory
 from ci_email.process import (
     process_all,
+    record_usage,
     requeue_failed_attachments,
     requeue_for_remask,
     requeue_skipped,
@@ -210,12 +211,19 @@ def process(args: argparse.Namespace) -> None:
         return
     with connect(role="ci_ingest") as conn:
         schedule = ops.read_schedule(conn)
-    counts = process_all(
-        lambda: connect(role="ci_ingest"),
-        backends.with_switches(backends.processing_backends(settings), settings, schedule),
-        limit=args.limit,
-        workers=args.workers,
-    )
+    configured = backends.with_switches(backends.processing_backends(settings), settings, schedule)
+    try:
+        counts = process_all(
+            lambda: connect(role="ci_ingest"),
+            configured,
+            limit=args.limit,
+            workers=args.workers,
+        )
+    finally:
+        if configured.meter is not None:
+            with connect(role="ci_ingest") as conn:
+                record_usage(conn, configured.meter.drain(), source="cli")
+                conn.commit()
     print(f"processed: {dict(sorted(counts.items()))}")
 
 

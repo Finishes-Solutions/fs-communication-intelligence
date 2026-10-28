@@ -26,6 +26,7 @@ from ci_processing.prefilter import allow_domains
 from ci_processing.redaction import FakeRedactor, Redactor
 from ci_processing.routing import FakePersonRouter, PersonRouter
 from ci_processing.screening import DisabledScreener, FakeScreener, Screener
+from ci_processing.usage import Meter
 
 
 def graph_client(settings: Settings) -> GraphClient:
@@ -49,7 +50,7 @@ def graph_client(settings: Settings) -> GraphClient:
     )
 
 
-def embedder(settings: Settings) -> Embedder:
+def embedder(settings: Settings, meter: Meter | None = None) -> Embedder:
     if settings.embedder is EmbedderBackend.FAKE:
         return FakeEmbedder(settings.embedding_dimensions)
     settings.require("azure_openai_endpoint")
@@ -60,10 +61,11 @@ def embedder(settings: Settings) -> Embedder:
         settings.azure_openai_embedding_deployment,
         settings.azure_openai_api_version,
         settings.embedding_dimensions,
+        meter=meter,
     )
 
 
-def screener(settings: Settings) -> Screener:
+def screener(settings: Settings, meter: Meter | None = None) -> Screener:
     # With masking, sensitive numbers are masked by the redactor, not rejected here.
     check_pii = settings.sensitive_data_policy is SensitiveDataPolicy.RESTRICT
     if settings.screener is ScreenerBackend.FAKE:
@@ -75,10 +77,11 @@ def screener(settings: Settings) -> Screener:
         settings.azure_language_endpoint or "",
         settings.azure_content_safety_endpoint or "",
         check_pii=check_pii,
+        meter=meter,
     )
 
 
-def redactor(settings: Settings) -> Redactor | None:
+def redactor(settings: Settings, meter: Meter | None = None) -> Redactor | None:
     """None when SENSITIVE_DATA_POLICY=restrict (messages are restricted instead)."""
     if settings.sensitive_data_policy is SensitiveDataPolicy.RESTRICT:
         return None
@@ -87,10 +90,10 @@ def redactor(settings: Settings) -> Redactor | None:
     settings.require("azure_language_endpoint")
     from ci_processing.azure import AzureRedactor
 
-    return AzureRedactor(settings.azure_language_endpoint or "")
+    return AzureRedactor(settings.azure_language_endpoint or "", meter=meter)
 
 
-def classifier(settings: Settings) -> Classifier:
+def classifier(settings: Settings, meter: Meter | None = None) -> Classifier:
     if settings.classifier_backend is ClassifierBackend.FAKE:
         return FakeClassifier()
     if settings.classifier_backend is ClassifierBackend.DECISIONS_API:
@@ -102,6 +105,7 @@ def classifier(settings: Settings) -> Classifier:
         settings.azure_openai_endpoint or "",
         settings.azure_openai_chat_deployment or "",
         settings.azure_openai_api_version,
+        meter=meter,
     )
 
 
@@ -114,7 +118,7 @@ def original_store(settings: Settings) -> OriginalStore | None:
     return None
 
 
-def person_router(settings: Settings) -> PersonRouter:
+def person_router(settings: Settings, meter: Meter | None = None) -> PersonRouter:
     """Step 2 of action items. It only runs for people with a profile in action_people."""
     if settings.classifier_backend is ClassifierBackend.FAKE:
         return FakePersonRouter()
@@ -125,20 +129,24 @@ def person_router(settings: Settings) -> PersonRouter:
         settings.azure_openai_endpoint or "",
         settings.azure_openai_chat_deployment or "",
         settings.azure_openai_api_version,
+        meter=meter,
     )
 
 
 def processing_backends(settings: Settings) -> Backends:
+    """Backends for one processing run; their paid calls add up in ``meter``."""
+    meter = Meter()
     return Backends(
-        screener=screener(settings),
-        classifier=classifier(settings),
-        embedder=embedder(settings),
+        screener=screener(settings, meter),
+        classifier=classifier(settings, meter),
+        embedder=embedder(settings, meter),
         graph=graph_client(settings) if settings.attachment_extraction_enabled else None,
         extraction_enabled=settings.attachment_extraction_enabled,
         attachment_max_bytes=settings.attachment_max_bytes,
         originals=original_store(settings) if settings.attachment_store_originals else None,
-        redactor=redactor(settings),
-        router=person_router(settings),
+        redactor=redactor(settings, meter),
+        router=person_router(settings, meter),
+        meter=meter,
         prefilter=settings.bulk_prefilter_enabled,
         prefilter_allow_domains=allow_domains(settings.bulk_prefilter_allow_domains),
     )

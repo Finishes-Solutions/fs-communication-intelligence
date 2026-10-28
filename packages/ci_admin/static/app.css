@@ -235,6 +235,8 @@ tbody tr:hover td { background: var(--subtle); }
 .bar > span { display: block; height: 100%; background: var(--primary); border-radius: 999px; }
 .bar.good > span { background: var(--good); } .bar.warn > span { background: var(--warn); }
 .bar.bad > span { background: var(--bad); } .bar.info > span { background: var(--info); }
+.bar-cell { display: grid; gap: 4px; justify-items: end; min-width: 120px; }
+.bar-cell .bar { width: 100%; }
 
 /* ---------- messages (inbox) ---------- */
 .inbox { display: grid; grid-template-columns: minmax(340px, 440px) minmax(0, 1fr); gap: 20px; align-items: start; margin-top: 20px; }
