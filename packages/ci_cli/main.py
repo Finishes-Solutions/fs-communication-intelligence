@@ -34,6 +34,11 @@ The database comes from the standard ``PG*`` environment variables; locally,
                     [--processing-on|--processing-off]
     ci run-capture [--hours 24]               capture at the next 5-minute tick
 
+    ci names list                             canonical property and legal-entity names
+    ci names add property "Willow Creek Retail" --alias "WC Retail" --alias "Willow Creek"
+    ci names add entity "Capital Company LLC"
+    ci names remove property|entity NAME
+
     ci people list                            whose action items get a per-person check
     ci people set chuck_sr --name "Chuck Sr." --address chuckc@finishesetc.net
                   [--role TEXT] [--not-to-confuse TEXT] [--disable]
@@ -59,12 +64,15 @@ from ci_core import ops
 from ci_core.db import Connection, connect
 from ci_core.operator import (
     OperatorError,
+    add_name,
     approve_mailbox,
     exclude_mailbox,
     exclude_participant,
     list_mailboxes,
+    list_names,
     list_participant_exclusions,
     list_people,
+    remove_name,
     set_mode,
     set_person,
 )
@@ -186,6 +194,16 @@ def _parser() -> argparse.ArgumentParser:
     pset.add_argument("--role", default="")
     pset.add_argument("--not-to-confuse", default="", help="who they are not, e.g. Chuck Jr.")
     pset.add_argument("--disable", action="store_true")
+    names = sub.add_parser("names", help="canonical property and legal-entity names")
+    names_action = names.add_subparsers(dest="action", required=True)
+    names_action.add_parser("list")
+    nadd = names_action.add_parser("add", help="add a name, or replace its aliases")
+    nadd.add_argument("kind", choices=["property", "entity"])
+    nadd.add_argument("name")
+    nadd.add_argument("--alias", action="append", default=[], help="repeat for each")
+    nremove = names_action.add_parser("remove")
+    nremove.add_argument("kind", choices=["property", "entity"])
+    nremove.add_argument("name")
     run_now = sub.add_parser("run-capture", help="ask the ingestion app to capture now")
     run_now.add_argument("--hours", type=float, help="look-back (default: the schedule's window)")
     return parser
@@ -340,6 +358,15 @@ def _run(args: argparse.Namespace, conn: Connection) -> None:
             )
             if person["not_to_confuse"]:
                 print(f"{'':19}not to confuse with: {person['not_to_confuse']}")
+        return
+    if args.command == "names":
+        if args.action == "add":
+            add_name(conn, actor, args.kind, args.name, args.alias)
+        elif args.action == "remove":
+            remove_name(conn, actor, args.kind, args.name)
+        for n in list_names(conn):
+            also = f"  (also: {', '.join(n['aliases'])})" if n["aliases"] else ""
+            print(f"{n['kind']:<9} {n['canonical']}{also}")
         return
     if args.command == "run-capture":
         ops.request_run(conn, actor, args.hours)

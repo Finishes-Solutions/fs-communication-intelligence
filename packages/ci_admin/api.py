@@ -59,7 +59,8 @@ from ci_core.operator import (
 )
 from ci_core.runtime import RuntimeConfigError, active_config, eligible_mailboxes
 from ci_core.settings import Settings
-from ci_processing.classification import LABELS, LABELS_BY_NAME, POLICY_VERSION
+from ci_email.process import known_names
+from ci_processing.classification import LABELS, LABELS_BY_NAME, POLICY_VERSION, KnownName
 from ci_processing.embedding import Embedder
 from ci_processing.originals import OriginalStore
 from ci_processing.routing import PersonProfile
@@ -400,6 +401,8 @@ def build_admin_app(
             sender=q.get("sender") or None,
             since=datetime.now(UTC) - timedelta(days=days) if days else None,
             label=q.get("label") or None,
+            property=q.get("property") or None,
+            entity=q.get("entity") or None,
         )
 
     def messages(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
@@ -585,6 +588,10 @@ def build_admin_app(
 
     # ----- lab ---------------------------------------------------------------
 
+    def _known() -> list[KnownName]:
+        with connector("ci_operator") as conn:
+            return known_names(conn)
+
     def _lab_profile(person: list[str]) -> PersonProfile | None:
         if not person:
             return None
@@ -626,7 +633,12 @@ def build_admin_app(
         person = lab.addresses(body.get("person"))
         received_by = lab.addresses(body.get("received_by")) or person
         result = lab.run(
-            lab_ready(), item, person, received_by=received_by, profile=_lab_profile(person)
+            lab_ready(),
+            item,
+            person,
+            received_by=received_by,
+            profile=_lab_profile(person),
+            known=_known(),
         )
         _audit_lab(principal, "lab_classify", {"input_sha256": result["input_sha256"]})
         return result
@@ -648,6 +660,7 @@ def build_admin_app(
             received_by=[email["mailbox"]],
             direction="out" if sender == email["mailbox"] else "in",
             profile=_lab_profile(person),
+            known=_known(),
         )
         result["stored"] = {
             "labels": email["labels"],
@@ -656,6 +669,8 @@ def build_admin_app(
             "action_ai": email["action_ai"],
             "action_for_ai": email["action_for_ai"],
             "risk_ai": email["risk_ai"],
+            "properties_ai": email["properties_ai"],
+            "entities_ai": email["entities_ai"],
         }
         result["changed_labels"] = sorted(set(email["labels"]) ^ set(result["yes_labels"]))
         _audit_lab(principal, "lab_reclassify", {"result_ids": [communication_id]})

@@ -302,6 +302,8 @@ async function messagesPage() {
     q: h("input", { placeholder: "search words or a question", value: p.get("q") || "", style: "min-width:260px" }),
     mailbox: h("input", { placeholder: "mailbox address", value: p.get("mailbox") || "" }),
     sender: h("input", { placeholder: "sender address", value: p.get("sender") || "" }),
+    property: h("input", { placeholder: "property / project", value: p.get("property") || "" }),
+    entity: h("input", { placeholder: "legal entity", value: p.get("entity") || "" }),
     label: labelSelect(p.get("label") || ""),
     since_days: h("select", {}, [["1", "last day"], ["3", "3 days"], ["7", "week"], ["30", "30 days"], ["0", "any time"]]
       .map(([v, t]) => h("option", { value: v, selected: v === (p.get("since_days") ?? "7") }, t))),
@@ -315,7 +317,7 @@ async function messagesPage() {
   }
   show(h("h2", {}, "Messages"),
     h("form", { class: "row", onsubmit: e => { e.preventDefault(); go(); } },
-      f.q, f.mailbox, f.sender, f.label, f.since_days, h("button", { class: "primary", type: "submit" }, "Search")),
+      f.q, f.mailbox, f.sender, f.property, f.entity, f.label, f.since_days, h("button", { class: "primary", type: "submit" }, "Search")),
     h("p", { class: "note" }, "Only published mail you are authorized to read is shown. Restricted, held and bulk mail never appears here; see Not published for counts. Summaries and labels are AI proposals."),
     h("div", { class: "split" }, results, detail));
   const q = new URLSearchParams();
@@ -327,7 +329,7 @@ async function messagesPage() {
       ["Message", r => h("div", {}, h("strong", {}, r.subject || "(no subject)"),
         r.review_flag ? h("span", { class: "chip warn" }, "review") : null,
         h("div", { class: "muted" }, `${r.sender || "?"} → ${r.mailbox}`),
-        r.summary_ai ? h("div", {}, r.summary_ai) : null, h("div", {}, chips(r.labels)))]],
+        r.summary_ai ? h("div", {}, r.summary_ai) : null, nameChips(r), h("div", {}, chips(r.labels)))]],
     d.results, r => showMessage(r.communication_id, detail)));
 }
 
@@ -353,9 +355,17 @@ async function showMessage(id, holder) {
     h("p", { class: "note" }, m.note)));
 }
 
+function nameChips(m) {
+  const props = m.properties_ai || [], ents = m.entities_ai || [];
+  if (!props.length && !ents.length) return null;
+  return h("div", { class: "names" }, props.map(n => h("span", { class: "chip name-prop", title: "Property / project" }, "🏢 " + n)),
+    ents.map(n => h("span", { class: "chip name-ent", title: "Legal entity" }, "§ " + n)));
+}
+
 function aiBlock(m) {
   const rows = [["Summary", m.summary_ai], ["Action", m.action_ai], ["Action for", (m.action_for_ai || []).join(", ")],
-    ["Due", m.due_ai], ["Project risk", m.risk_ai]].filter(([, v]) => v);
+    ["Due", m.due_ai], ["Project risk", m.risk_ai], ["Properties", (m.properties_ai || []).join(" · ")],
+    ["Entities", (m.entities_ai || []).join(" · ")]].filter(([, v]) => v);
   if (!rows.length) return null;
   return h("table", {}, h("tbody", {}, rows.map(([k, v]) => h("tr", {}, h("th", {}, k), h("td", {}, v)))));
 }
@@ -710,7 +720,8 @@ function labResult(r, person, message) {
   onlyInteresting.addEventListener("change", drawLabels);
   if (r.classified) drawLabels();
   const ai = [["Summary", r.summary_ai], ["Action", r.action_ai], ["Action for", (r.action_for_ai || []).join(", ")],
-    ["Due", r.due_ai], ["Project risk", r.risk_ai]].filter(([, x]) => x);
+    ["Due", r.due_ai], ["Project risk", r.risk_ai], ["Properties", (r.properties_ai || []).join(" · ")],
+    ["Entities", (r.entities_ai || []).join(" · ")]].filter(([, x]) => x);
   return h("div", {},
     h("div", { class: `verdict v-${v.tone}` },
       h("div", {}, h("div", { class: "v-title" }, v.title), h("div", {}, v.text)),

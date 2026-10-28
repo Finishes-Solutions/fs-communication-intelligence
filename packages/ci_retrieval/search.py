@@ -87,6 +87,8 @@ class Result:
     labels: list[str]
     review_flag: bool
     summary_ai: str | None
+    properties_ai: list[str] = field(default_factory=list)
+    entities_ai: list[str] = field(default_factory=list)
     excerpts: list[dict[str, str | None]] = field(default_factory=list)
     other_authorized_copies: int = 0
 
@@ -197,7 +199,7 @@ def _metadata(conn: Connection, ids: Sequence[str]) -> dict[str, dict[str, Any]]
                (SELECT p.email_normalized FROM published_participants p
                  WHERE p.communication_id = pc.id AND p.role = 'from' LIMIT 1) AS sender,
                cl.yes_labels, cl.uncertain_labels, cl.disposition, cl.summary, cl.action_text,
-               cl.action_for, cl.due_text, cl.risk_text
+               cl.action_for, cl.due_text, cl.risk_text, cl.properties, cl.entities
         FROM published_communications pc
         JOIN published_email_messages e ON e.communication_id = pc.id
         LEFT JOIN published_classifications cl ON cl.communication_id = pc.id
@@ -285,6 +287,8 @@ def search(
                     labels=list(m["yes_labels"] or []),
                     review_flag=m["disposition"] == "review",
                     summary_ai=m["summary"],
+                    properties_ai=list(m["properties"] or []),
+                    entities_ai=list(m["entities"] or []),
                 )
                 results.append(result)
             if len(result.excerpts) < MAX_CHUNKS_PER_MESSAGE:
@@ -386,6 +390,8 @@ def get_email(
         "action_for_ai": list(m["action_for"] or []),
         "due_ai": m["due_text"],
         "risk_ai": m["risk_text"],
+        "properties_ai": list(m["properties"] or []),
+        "entities_ai": list(m["entities"] or []),
         "attachments": [dict(a) for a in attachments],
         "text": excerpts,
     }
@@ -409,7 +415,7 @@ def _listing(
                (SELECT p.email_normalized FROM published_participants p
                  WHERE p.communication_id = pc.id AND p.role = 'from' LIMIT 1) AS sender,
                cl.yes_labels, cl.disposition, cl.summary, cl.action_text, cl.action_for,
-               cl.due_text, cl.risk_text
+               cl.due_text, cl.risk_text, cl.properties, cl.entities
         FROM {_PUBLISHED} pc
         JOIN published_email_messages e ON e.communication_id = pc.id
         LEFT JOIN published_classifications cl ON cl.communication_id = pc.id
@@ -441,6 +447,8 @@ def _listing(
                 "action_for_ai": list(r["action_for"] or []),
                 "due_ai": r["due_text"],
                 "risk_ai": r["risk_text"],
+                "properties_ai": list(r["properties"] or []),
+                "entities_ai": list(r["entities"] or []),
             }
         )
         if len(out) >= limit:

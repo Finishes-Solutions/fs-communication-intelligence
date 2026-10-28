@@ -279,3 +279,48 @@ def set_person(
         key,
         {"addresses": len(cleaned), "enabled": enabled},
     )
+
+
+NAME_KINDS = ("property", "entity")
+
+
+def list_names(conn: Connection) -> list[dict[str, Any]]:
+    """Canonical property/project and legal-entity names (shown to the classifier)."""
+    return conn.execute(
+        "SELECT kind, canonical, aliases, created_by, created_at FROM known_names"
+        " ORDER BY kind, lower(canonical)"
+    ).fetchall()
+
+
+def add_name(
+    conn: Connection, actor: str, kind: str, canonical: str, aliases: list[str] | None = None
+) -> None:
+    """Add a canonical name, or replace the aliases of an existing one (same kind and name)."""
+    if kind not in NAME_KINDS:
+        raise OperatorError("kind must be property or entity")
+    name = " ".join(canonical.split())
+    if not 0 < len(name) <= 120:
+        raise OperatorError("give a name of 1 to 120 characters")
+    cleaned = sorted(
+        {" ".join(a.split()) for a in aliases or [] if a.strip()} - {name}, key=str.casefold
+    )
+    if any(len(a) > 120 for a in cleaned):
+        raise OperatorError("keep each alias under 120 characters")
+    conn.execute(
+        "INSERT INTO known_names (kind, canonical, aliases, created_by) VALUES (%s, %s, %s, %s)"
+        " ON CONFLICT (kind, lower(canonical)) DO UPDATE SET aliases = EXCLUDED.aliases",
+        (kind, name, cleaned, actor),
+    )
+    audit(
+        conn, actor, "known_name_set", "known_names", None, {"kind": kind, "aliases": len(cleaned)}
+    )
+
+
+def remove_name(conn: Connection, actor: str, kind: str, canonical: str) -> None:
+    removed = conn.execute(
+        "DELETE FROM known_names WHERE kind = %s AND lower(canonical) = lower(%s) RETURNING id",
+        (kind, " ".join(canonical.split())),
+    ).fetchall()
+    if not removed:
+        raise OperatorError(f"no {kind} named {canonical!r}")
+    audit(conn, actor, "known_name_removed", "known_names", str(removed[0]["id"]), {"kind": kind})

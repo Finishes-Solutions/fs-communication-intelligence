@@ -174,3 +174,9 @@ dl.kv dd { margin: 0; }
 .reasons { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; width: 100%; }
 .sample.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, var(--panel)); }
 h4 { margin: 12px 0 6px; font-size: 13px; }
+
+/* ---------- property and entity names ---------- */
+.names { margin: 2px 0; }
+.chip.name-prop { color: var(--accent); }
+.chip.name-ent { color: var(--text); border: 1px solid var(--line); }
+.chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }

@@ -40,6 +40,13 @@ _TRUST = (
     " indexed mail."
 )
 
+_NAMES = (
+    " Results include properties_ai and entities_ai: property/project and legal-entity names"
+    " the AI found written in each email."
+    " `property` and `entity` keep only emails whose names contain that text"
+    ' (case-insensitive, e.g. property="willow", entity="capital company").'
+)
+
 PrincipalSource = Callable[[], Principal]
 Connector = Callable[[], Connection]
 
@@ -66,7 +73,9 @@ def build_server(
         return datetime.now(UTC) - timedelta(days=days) if days else None
 
     @server.tool(
-        description="Search authorized, indexed company email by meaning and keywords." + _TRUST
+        description="Search authorized, indexed company email by meaning and keywords."
+        + _NAMES
+        + _TRUST
     )
     def search_email(
         query: str,
@@ -74,6 +83,8 @@ def build_server(
         sender: str | None = None,
         since_days: float | None = None,
         label: str | None = None,
+        property: str | None = None,
+        entity: str | None = None,
         limit: int = 10,
     ) -> dict[str, Any]:
         with connector() as conn:
@@ -83,7 +94,12 @@ def build_server(
                 query,
                 embedder,
                 retrieval.Filters(
-                    mailbox=mailbox, sender=sender, since=_since(since_days), label=label
+                    mailbox=mailbox,
+                    sender=sender,
+                    since=_since(since_days),
+                    label=label,
+                    property=property,
+                    entity=entity,
                 ),
                 limit,
             )
@@ -96,13 +112,15 @@ def build_server(
 
     @server.tool(
         description="List recent authorized emails, newest first, optionally by mailbox, "
-        "sender or label (e.g. cat_payment_billing)." + _TRUST
+        "sender or label (e.g. cat_payment_billing)." + _NAMES + _TRUST
     )
     def list_email(
         mailbox: str | None = None,
         sender: str | None = None,
         since_days: float | None = 1,
         label: str | None = None,
+        property: str | None = None,
+        entity: str | None = None,
         limit: int = 25,
     ) -> dict[str, Any]:
         with connector() as conn:
@@ -110,7 +128,12 @@ def build_server(
                 conn,
                 principal_of(),
                 retrieval.Filters(
-                    mailbox=mailbox, sender=sender, since=_since(since_days), label=label
+                    mailbox=mailbox,
+                    sender=sender,
+                    since=_since(since_days),
+                    label=label,
+                    property=property,
+                    entity=entity,
                 ),
                 limit,
             )

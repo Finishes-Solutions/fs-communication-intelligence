@@ -27,6 +27,8 @@ from ci_processing.classification import (
     ClassificationResult,
     Classifier,
     Decision,
+    KnownName,
+    with_known_names,
 )
 from ci_processing.policy import Disposition, Outcome, classification_outcome, screening_gate
 from ci_processing.redaction import Redaction, RedactionUnavailable, Redactor
@@ -151,6 +153,7 @@ def run(
     received_by: Sequence[str] = (),
     direction: str = "in",
     profile: PersonProfile | None = None,
+    known: Sequence[KnownName] = (),
 ) -> dict[str, Any]:
     """Screen, then classify (only if screening allows, as in processing), then route.
 
@@ -172,7 +175,11 @@ def run(
             item, masked = _masked(backends.redactor, item)
         except RedactionUnavailable:
             gate = Outcome(Disposition.HELD, ("redaction_pending",))
-    result = None if gate is not None else backends.classifier.classify(item)
+    result = (
+        None
+        if gate is not None
+        else with_known_names(backends.classifier.classify(item, known), known)
+    )
     if gate is not None:
         outcome = gate
     else:
@@ -219,6 +226,8 @@ def run(
         "action_for_ai": list(result.action_for) if result else [],
         "due_ai": result.due_text if result else None,
         "risk_ai": result.risk_text if result else None,
+        "properties_ai": list(result.properties) if result else [],
+        "entities_ai": list(result.entities) if result else [],
         "routing": route,
         "person_check": person_check,
     }
