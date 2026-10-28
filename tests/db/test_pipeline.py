@@ -112,6 +112,39 @@ def test_search_finds_attachment_text_and_collapses_copies(pipeline: dict[str, A
     assert len(co8) == 1 and co8[0]["other_authorized_copies"] == 2
 
 
+def test_attachment_text_is_read_in_pages_for_authorized_readers(
+    pipeline: dict[str, Any],
+) -> None:
+    top = search(pipeline, "compaction grading invoice")["results"][0]
+    with pipeline["connect"]("ci_search") as conn:
+        email = retrieval.get_email(conn, READER, top["communication_id"])
+        assert email is not None
+        (pdf,) = [a for a in email["attachments"] if a["name"] == "Invoice-4471.pdf"]
+        whole = retrieval.get_attachment(
+            conn, READER, top["communication_id"], pdf["attachment_id"]
+        )
+        first = retrieval.get_attachment(
+            conn, READER, top["communication_id"], pdf["attachment_id"], max_chars=500
+        )
+        assert whole is not None and first is not None
+        assert whole["total_chars"] > 0 and whole["next_offset"] is None
+        assert whole["name"] == "Invoice-4471.pdf" and "untrusted" in whole["note"]
+        if whole["total_chars"] > 500:
+            assert first["next_offset"] == 500 and first["text"] == whole["text"][:500]
+        # No grant, an unknown id or another message's id: nothing.
+        assert (
+            retrieval.get_attachment(conn, NOBODY, top["communication_id"], pdf["attachment_id"])
+            is None
+        )
+        assert retrieval.get_attachment(conn, READER, top["communication_id"], "0" * 16) is None
+        assert retrieval.get_attachment(conn, READER, top["communication_id"], "drop table") is None
+    with pipeline["connect"]() as conn:
+        audited = conn.execute(
+            "SELECT count(*) AS n FROM audit_events WHERE action = 'get_attachment_text'"
+        ).fetchone()
+    assert audited is not None and audited["n"] >= 5
+
+
 def test_restricted_and_held_are_never_returned(pipeline: dict[str, Any]) -> None:
     found = subjects(
         search(

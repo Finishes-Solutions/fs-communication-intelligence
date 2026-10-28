@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from collections.abc import Sequence
@@ -36,6 +37,9 @@ from ci_retrieval.identity import Principal
 log = logging.getLogger(__name__)
 
 RRF_K = 60
+# A short, stable id for an attachment within its message (the Graph attachment
+# id is long); get_email lists it and get_attachment takes it.
+_ATTACHMENT_ID = "left(encode(sha256(convert_to(native_attachment_id, 'UTF8')), 'hex'), 16)"
 CANDIDATES = 50
 # Nearest chunks taken from the vector index before grants and filters apply
 # (at most 400, the function's cap).
@@ -496,8 +500,8 @@ def get_email(
         (communication_id,),
     ).fetchall()
     attachments = conn.execute(
-        "SELECT name, content_type, size_bytes, is_inline, extraction_status,"
-        " CASE WHEN original_stored THEN sha256 END AS file_id"
+        f"SELECT {_ATTACHMENT_ID} AS attachment_id, name, content_type, size_bytes, is_inline,"  # noqa: S608
+        " extraction_status, CASE WHEN original_stored THEN sha256 END AS file_id"
         " FROM published_email_attachments WHERE communication_id = %s"
         " AND extraction_status <> 'skipped' ORDER BY name",  # signature images and logos
         (communication_id,),
@@ -539,6 +543,72 @@ def get_email(
         "entities_ai": list(m["entities"] or []),
         "attachments": [dict(a) for a in attachments],
         "text": excerpts,
+    }
+
+
+def _authorized(conn: Connection, auth: Authorization, communication_id: str) -> bool:
+    if auth.empty:
+        return False
+    row = conn.execute(
+        f"SELECT 1 FROM {_PUBLISHED} pc"  # noqa: S608
+        f" WHERE pc.id = %(id)s::uuid AND {_AUTH.format(a='pc')}",
+        _params(auth, Filters()) | {"id": communication_id},
+    ).fetchone()
+    return row is not None
+
+
+def get_attachment(
+    conn: Connection,
+    principal: Principal,
+    communication_id: str,
+    attachment_id: str,
+    offset: int = 0,
+    max_chars: int = 20_000,
+) -> dict[str, Any] | None:
+    """One attachment's extracted text, a page at a time, if the caller may read its
+    message. ``attachment_id`` is the id ``get_email`` lists for it."""
+    found = None
+    if re.fullmatch(r"[0-9a-f]{16}", attachment_id or "") and _authorized(
+        conn, authorize(conn, principal), communication_id
+    ):
+        found = conn.execute(
+            f"SELECT a.name, a.content_type, a.size_bytes, a.extraction_status,"  # noqa: S608
+            " CASE WHEN a.original_stored THEN a.sha256 END AS file_id,"
+            " t.content, t.truncated"
+            " FROM published_email_attachments a"
+            " LEFT JOIN published_texts t ON t.communication_id = a.communication_id"
+            "  AND t.text_kind = 'attachment' AND t.ref = a.native_attachment_id"
+            f" WHERE a.communication_id = %s::uuid AND {_ATTACHMENT_ID} = %s LIMIT 1",
+            (communication_id, attachment_id),
+        ).fetchone()
+    _audit(
+        conn,
+        principal,
+        "get_attachment_text",
+        {"found": found is not None, "result_ids": [communication_id]},
+    )
+    conn.commit()
+    if found is None:
+        return None
+    text = found["content"] or ""
+    start = max(0, offset)
+    size = max(500, min(max_chars, 30_000))
+    page = text[start : start + size]
+    return {
+        "note": UNTRUSTED_NOTE,
+        "communication_id": communication_id,
+        "attachment_id": attachment_id,
+        "name": found["name"],
+        "content_type": found["content_type"],
+        "size_bytes": found["size_bytes"],
+        "extraction_status": found["extraction_status"],
+        "file_id": found["file_id"],
+        "offset": start,
+        "total_chars": len(text),
+        "next_offset": start + len(page) if start + len(page) < len(text) else None,
+        # The extractor keeps at most 200,000 characters of a file.
+        "cut_at_extraction": bool(found["truncated"]),
+        "text": page,
     }
 
 
