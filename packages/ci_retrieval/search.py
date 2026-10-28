@@ -671,6 +671,37 @@ def _listing(
     return out
 
 
+def get_thread(
+    conn: Connection, principal: Principal, communication_id: str, limit: int = 50
+) -> dict[str, Any] | None:
+    """The conversation an email belongs to (Graph conversationId), oldest first:
+    only the messages the caller may read, copies collapsed."""
+    if not _authorized(conn, authorize(conn, principal), communication_id):
+        _audit(conn, principal, "get_thread", {"found": False})
+        conn.commit()
+        return None
+    row = conn.execute(
+        "SELECT conversation_id FROM published_email_messages WHERE communication_id = %s::uuid",
+        (communication_id,),
+    ).fetchone()
+    limit = max(1, min(limit, 100))
+    if row and row["conversation_id"]:
+        where, extra = "AND e.conversation_id = %(conv)s", {"conv": row["conversation_id"]}
+    else:  # no conversation id recorded: the email on its own
+        where, extra = "AND pc.id = %(one)s::uuid", {"one": communication_id}
+    items = _listing(conn, principal, NO_FILTERS, where, extra, limit)
+    items.reverse()
+    _audit(conn, principal, "get_thread", {"result_ids": [i["communication_id"] for i in items]})
+    conn.commit()
+    return {
+        "note": UNTRUSTED_NOTE,
+        "communication_id": communication_id,
+        "messages": items,
+        "count": len(items),
+        "truncated": len(items) >= limit,
+    }
+
+
 def list_email(
     conn: Connection, principal: Principal, filters: Filters = NO_FILTERS, limit: int = 25
 ) -> dict[str, Any]:
