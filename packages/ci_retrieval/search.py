@@ -909,3 +909,65 @@ def attachment_file(
     )
     conn.commit()
     return dict(row) if row else None
+
+
+_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+MAX_LINK_EMAILS = 25
+
+
+def file_links(
+    conn: Connection, principal: Principal, communication_ids: Sequence[str]
+) -> dict[str, Any]:
+    """Each authorized email's files with what is needed to link to them (name, type,
+    size, and ``file_id`` when the original file is kept), for putting links on a
+    board. Text is not returned; emails the caller may not read are only counted."""
+    wanted = list(dict.fromkeys(i.strip().lower() for i in communication_ids if i))
+    ids = [i for i in wanted if _UUID.match(i)][:MAX_LINK_EMAILS]
+    auth = authorize(conn, principal)
+    found: list[dict[str, Any]] = []
+    if ids and not auth.empty:
+        emails = conn.execute(
+            f"SELECT pc.id::text AS communication_id, pc.title, pc.occurred_at,"  # noqa: S608
+            " (SELECT p.email_normalized FROM published_participants p"
+            "   WHERE p.communication_id = pc.id AND p.role = 'from' LIMIT 1) AS sender"
+            f" FROM {_PUBLISHED} pc WHERE pc.id = ANY(%(ids)s::uuid[]) AND {_AUTH.format(a='pc')}",
+            _params(auth, Filters()) | {"ids": ids},
+        ).fetchall()
+        files: dict[str, list[dict[str, Any]]] = {}
+        for a in conn.execute(
+            f"SELECT communication_id::text, {_ATTACHMENT_ID} AS attachment_id, name,"  # noqa: S608
+            " content_type, size_bytes, CASE WHEN original_stored THEN sha256 END AS file_id"
+            " FROM published_email_attachments WHERE communication_id = ANY(%s::uuid[])"
+            " AND extraction_status <> 'skipped' ORDER BY name",  # signature images and logos
+            ([e["communication_id"] for e in emails],),
+        ).fetchall():
+            entry = {k: a[k] for k in ("attachment_id", "name", "content_type", "size_bytes")}
+            if a["file_id"]:
+                entry["file_id"] = a["file_id"]
+            else:
+                entry["no_link"] = "the original file was not kept, so there is nothing to link"
+            files.setdefault(a["communication_id"], []).append(entry)
+        order = {cid: n for n, cid in enumerate(ids)}
+        for e in sorted(emails, key=lambda r: order[r["communication_id"]]):
+            found.append(
+                {
+                    "communication_id": e["communication_id"],
+                    "subject": e["title"],
+                    "sender": e["sender"],
+                    "received_at": e["occurred_at"].isoformat(),
+                    "files": files.get(e["communication_id"], []),
+                }
+            )
+    _audit(
+        conn,
+        principal,
+        "get_file_links",
+        {"result_ids": [f["communication_id"] for f in found], "asked": len(wanted)},
+    )
+    conn.commit()
+    return {
+        "emails": found,
+        "not_found": len(wanted) - len(found),
+        "note": "Links open only for console admins after Microsoft sign-in. Use them as links;"
+        " never download a file to upload it elsewhere.",
+    }

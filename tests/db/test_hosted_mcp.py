@@ -27,6 +27,7 @@ from ci_email.fixture import FixtureGraphClient
 from ci_email.process import Backends, process_all
 from ci_processing.classification import FakeClassifier
 from ci_processing.embedding import FakeEmbedder
+from ci_processing.originals import DirectoryStore
 from ci_processing.screening import FakeScreener
 from ci_retrieval.entra import EntraTokenVerifier
 from ci_retrieval.identity import READER_ALL
@@ -119,7 +120,7 @@ def test_unreadable_tokens_are_logged_without_content(caplog: pytest.LogCaptureF
 
 
 @pytest.fixture(scope="module")
-def database_ready(database: str) -> Iterator[str]:
+def database_ready(database: str, tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
     def connector(role: AppRole | None = None) -> Connection:
         return connect(dbname=database, role=role)
 
@@ -138,7 +139,12 @@ def database_ready(database: str) -> Iterator[str]:
     process_all(
         lambda: connector("ci_ingest"),
         Backends(
-            FakeScreener(), FakeClassifier(), FakeEmbedder(), graph=graph, extraction_enabled=True
+            FakeScreener(),
+            FakeClassifier(),
+            FakeEmbedder(),
+            graph=graph,
+            extraction_enabled=True,
+            originals=DirectoryStore(tmp_path_factory.mktemp("originals")),
         ),
         workers=1,
     )
@@ -235,6 +241,9 @@ def test_tools_use_the_callers_identity(app: Any) -> None:
             "list_actionable",
             "email_stats",
             "risk_overview",
+            "find_knowledge",
+            "get_profile",
+            "get_file_links",
         }
         report = call_tool(
             client,
@@ -288,7 +297,7 @@ def test_served_through_the_azure_functions_adapter(app: Any) -> None:
 
     anonymous, signed, tools = asyncio.run(scenario())
     assert (anonymous, signed) == (401, 200)
-    assert len(tools["result"]["tools"]) == 8
+    assert len(tools["result"]["tools"]) == 11
 
 
 def test_threads_stats_risks_and_date_filters(app: Any, database_ready: str) -> None:
@@ -341,6 +350,45 @@ def test_threads_stats_risks_and_date_filters(app: Any, database_ready: str) -> 
         risks = call_tool(client, token(), "risk_overview", {"days": 365, "item_limit": 2})
         assert risks["total"] >= 1 and len(risks["items"]) <= 2
         assert risks["items"][0]["view_url"].startswith("https://admin.example/read/")
+
+        found = call_tool(client, token(), "find_knowledge", {"query": "northfield"})
+        org = next(r for r in found["results"] if r["kind"] == "organization")
+        assert org["name"] == "Northfield Framing Co." and "without human review" in found["note"]
+        profile = call_tool(client, token(), "get_profile", {"entity_id": org["entity_id"]})
+        assert profile["entity"]["entity_id"] == org["entity_id"]
+        assert any(f["relation"] == "works_for" for f in profile["facts"])
+        assert all(
+            e["view_url"].startswith("https://admin.example/read/")
+            for e in profile["recent_emails"]
+        )
+        assert profile["facts"][0]["view_url"].startswith("https://admin.example/read/")
+        invoice = next(
+            r
+            for r in call_tool(client, token(), "search_email", {"query": "grading invoice"})[
+                "results"
+            ]
+            if r["subject"].startswith("Invoice 4471")
+        )
+        links = call_tool(
+            client,
+            token(),
+            "get_file_links",
+            {
+                "communication_ids": [
+                    invoice["communication_id"],
+                    "00000000-0000-0000-0000-000000000000",  # nobody's email
+                    "not-a-uuid",
+                ]
+            },
+        )
+        assert links["not_found"] == 2 and len(links["emails"]) == 1
+        email = links["emails"][0]
+        assert email["view_url"] == f"https://admin.example/read/{invoice['communication_id']}"
+        pdf = next(f for f in email["files"] if f["name"].endswith(".pdf"))
+        assert pdf["download_url"].startswith(email["view_url"] + "?file=")
+        assert "text" not in email and "admins" in links["note"]
+        missing = call_tool(client, token(), "get_profile", {"entity_id": 999_999})
+        assert missing == {"found": False, "note": "Not found in authorized, indexed mail."}
 
         # Exact dates: the fixture mail is from September and October 2026.
         october = call_tool(

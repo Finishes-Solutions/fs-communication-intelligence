@@ -130,6 +130,7 @@ In Azure, each managed identity is created as a database principal with `pgaadau
 | Raw Graph message JSON | Private Blob, `raw/email/<dataset>/<mailbox>/<id>/<revision>.json` | Rebuild and audit source; not queried |
 | Message metadata | `email_messages`, `email_attachments` (metadata only in E1) | Citations, dedup, coverage |
 | Chunk text and embeddings | `chunks.display_text`, `chunks.embedding vector(1536)`, `chunks.tsv` | Search |
+| Knowledge base | `kg_entities` (one row per property, organization, person or term), `kg_mentions` and `kg_relations` (per published version), read through `published_kg_mentions` / `published_kg_relations` (`0016_knowledge.sql`, `docs/KNOWLEDGE.md`) | Profiles and facts learned from email, computed per caller from authorized mail |
 | Logs, audit, jobs | Identifiers, counts and reason codes only | Content-free by rule |
 
 **Sizing:** company-wide email will reach hundreds of thousands to millions of chunks, at about 6 KB per 1536-dimension embedding. The HNSW index and `hnsw.iterative_scan = relaxed_order` (pgvector 0.8) are what keep permission-filtered queries returning full pages; the search app sets it per session, and an acceptance test lands with the search PR. Size the server from measured pilot volume.

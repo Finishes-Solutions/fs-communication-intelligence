@@ -52,11 +52,17 @@ from ci_core.operator import (
     audit,
     exclude_mailbox,
     exclude_participant,
+    hidden_knowledge,
+    hide_knowledge,
+    knowledge_entry,
     list_mailboxes,
     list_participant_exclusions,
     list_people,
+    merge_knowledge,
+    rename_knowledge,
     set_mode,
     set_person,
+    unmerge_knowledge,
 )
 from ci_core.runtime import RuntimeConfigError, active_config, eligible_mailboxes
 from ci_core.settings import Settings
@@ -71,6 +77,7 @@ from ci_processing.classification import (
 from ci_processing.embedding import Embedder
 from ci_processing.originals import OriginalStore
 from ci_processing.routing import PersonProfile
+from ci_retrieval import knowledge as kb
 from ci_retrieval import reports as report_queries
 from ci_retrieval import search as retrieval
 from ci_retrieval.entra import EntraTokenVerifier
@@ -95,6 +102,7 @@ PAGES = (
     "reports",
     "review",
     "check",
+    "knowledge",
     "lab",
 )
 
@@ -189,6 +197,13 @@ def _int(request: Request, name: str, default: int, low: int, high: int) -> int:
     except ValueError as exc:
         raise HTTPException(400, f"{name} must be a number") from exc
     return max(low, min(value, high))
+
+
+def _int_path(request: Request, name: str) -> int:
+    try:
+        return int(request.path_params[name])
+    except ValueError as exc:
+        raise HTTPException(404, "no such entry") from exc
 
 
 def _float(value: Any, name: str) -> float | None:
@@ -532,6 +547,50 @@ def build_admin_app(
                 include_risks=True,
                 limit=_int(request, "limit", 100, 1, 200),
             )
+
+    # ----- knowledge base (content via ci_search; corrections as ci_operator) --
+
+    def knowledge_list(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        q = request.query_params
+        with connector("ci_search") as conn:
+            found = kb.find_knowledge(
+                conn,
+                principal,
+                q.get("q") or None,
+                kind=q.get("kind") or None,
+                limit=_int(request, "limit", 50, 1, 100),
+            )
+        with connector("ci_operator") as conn:
+            found["hidden"] = hidden_knowledge(conn)
+        return found
+
+    def knowledge_entry_page(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        entity_id = _int_path(request, "id")
+        with connector("ci_search") as conn:
+            profile = kb.get_profile(conn, principal, entity_id)
+        if profile is None:
+            raise HTTPException(404, "not found in mail you are authorized to see")
+        with connector("ci_operator") as conn:
+            profile["correction"] = knowledge_entry(conn, entity_id)
+        return profile
+
+    def knowledge_action(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        entity_id = _int_path(request, "id")
+        action = request.path_params["action"]
+        actor = _actor(principal)
+        with connector("ci_operator") as conn:
+            if action == "merge":
+                merge_knowledge(conn, actor, entity_id, int(body.get("into") or 0))
+            elif action == "unmerge":
+                unmerge_knowledge(conn, actor, entity_id)
+            elif action in ("hide", "unhide"):
+                hide_knowledge(conn, actor, entity_id, hidden=action == "hide")
+            elif action == "rename":
+                rename_knowledge(conn, actor, entity_id, str(body.get("name") or "") or None)
+            else:
+                raise HTTPException(404, "unknown action")
+            conn.commit()
+            return knowledge_entry(conn, entity_id)
 
     # ----- label check (reviewer ground truth) ------------------------------
 
@@ -965,6 +1024,9 @@ def build_admin_app(
         Route("/api/messages/{id}/files/{file_id}", endpoint(attachment)),
         Route("/api/actionable", endpoint(actionable)),
         Route("/api/feedback/{id}", endpoint(feedback), methods=["GET", "PUT"]),
+        Route("/api/knowledge", endpoint(knowledge_list)),
+        Route("/api/knowledge/{id}", endpoint(knowledge_entry_page)),
+        Route("/api/knowledge/{id}/{action}", endpoint(knowledge_action), methods=["POST"]),
         Route("/api/review/next", endpoint(review_next)),
         Route("/api/people", endpoint(people), methods=["GET", "PUT"]),
         Route("/api/calibration", endpoint(calibration_report)),

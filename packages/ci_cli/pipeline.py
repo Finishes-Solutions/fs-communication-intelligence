@@ -32,6 +32,7 @@ from ci_email.process import (
 )
 from ci_processing.chunking import CHUNKER_VERSION
 from ci_processing.classification import POLICY_VERSION
+from ci_retrieval import knowledge as kb
 from ci_retrieval import search as retrieval
 from ci_retrieval.identity import Principal, resolve_principal
 
@@ -361,3 +362,43 @@ def mcp() -> None:
     from ci_retrieval.mcp_server import run_stdio
 
     run_stdio(principal, backends.embedder(settings, interactive=True), settings.admin_public_url)
+
+
+def knowledge(args: argparse.Namespace) -> None:
+    """``ci knowledge list|show``: what the signed-in person's mail taught the base."""
+    _, principal = _principal()
+    with connect(role="ci_search") as conn:
+        if args.action == "list":
+            result = kb.find_knowledge(
+                conn, principal, args.query, kind=args.kind, limit=args.limit
+            )
+            if not result["authorized"]:
+                print("You have no read grant. Run: ci grant add --me")
+            for e in result["results"]:
+                extra = e.get("email") or e.get("meaning") or ""
+                print(
+                    f"{e['entity_id']:>6}  {e['kind']:<12} {e['name']:<40} "
+                    f"{e['messages']:>4} msgs  last {e['last_seen'][:10]}  {extra}"
+                )
+            return
+        profile = kb.get_profile(conn, principal, args.entity_id)
+    if profile is None:
+        print("Not found in mail you are authorized to read.")
+        return
+    e = profile["entity"]
+    print(f"{e['name']} ({e['kind']}, id {e['entity_id']}): {e['messages']} messages,")
+    print(f"  first {e['first_seen'][:10]}, last {e['last_seen'][:10]}")
+    if e["also_written"]:
+        print(f"  also written: {', '.join(e['also_written'])}")
+    for f in profile["facts"]:
+        arrow = "->" if f["direction"] == "out" else "<-"
+        role = f" ({f['role']})" if f["role"] else ""
+        now = {True: " [current]", False: " [earlier]"}.get(f.get("current"), "")
+        print(
+            f"  {arrow} {f['relation']}{role} {f['other']['name']}{now}: "
+            f"{f['messages']} msgs, {f['senders']} senders, last {f['last_seen'][:10]}"
+        )
+    if profile["related"]:
+        print("  often with: " + ", ".join(r["name"] for r in profile["related"][:8]))
+    for m in profile["recent_emails"][:5]:
+        print(f"  {m['received_at'][:10]}  {m['sender']}  {m['subject']}")

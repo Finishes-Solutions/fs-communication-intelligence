@@ -23,6 +23,7 @@ from typing import Any
 
 from ci_core.ops import Schedule
 from ci_core.settings import SensitiveDataPolicy, Settings
+from ci_email.knowledge_store import contributes
 from ci_processing.classification import (
     LABELS,
     ClassificationInput,
@@ -289,6 +290,11 @@ def run(
         "risk_ai": result.risk_text if result else None,
         "properties_ai": list(result.properties) if result else [],
         "entities_ai": list(result.entities) if result else [],
+        # What processing would add to the knowledge base (none for mail with
+        # phishing indicators, or mail that is not indexed).
+        "knowledge_ai": result.knowledge.to_json()
+        if result and result.knowledge and route["searchable"] and contributes(result)
+        else None,
         "routing": route,
         "person_check": person_check,
     }

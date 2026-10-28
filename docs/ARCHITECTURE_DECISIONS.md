@@ -184,3 +184,17 @@ Decided 2026-10-28 (hosting spike from CLAUDE.md §8, recorded with tests rather
 - **Capture.** Until per-folder delta and notifications exist (PR 5), the ingestion Function App runs a timer capture over a rolling window (`CAPTURE_HOURS`, default 2, overlapping runs dedupe) and a processing timer with a time budget. Both are off until switched on by app settings, and both obey `runtime_config` mode.
 - **Identities.** Mail is read by the ingestion managed identity through Exchange RBAC; the database logins of the two managed identities belong only to `ci_ingest` and `ci_search` respectively.
 
+
+## ADR-020: A Knowledge Base Learned From Email, Without Approval
+
+Decided 2026-10-28 by Matthew: "I want the ai to get smarter, start understanding relationships, projects, properties, terms etc over time". He also decided on "no seeded list, no knowledge approval". Details are in `docs/KNOWLEDGE.md`.
+
+- **What learns.** A database learns, not the model. The classifier call returns a `knowledge` block (names, people, facts and terms), stored per published version (`kg_mentions`, `kg_relations`, migration 0016). No fine-tuning: it would bake mail into a model where it can't be inspected, corrected or deleted.
+- **Feedback.** Names seen in two or more messages are sent with each new email as untrusted `learned_names`. The model may link an email's spelling only to a listed name, exactly as listed.
+- **Instead of approval.**
+  - Extraction is checked against the email: names written in it, addresses from it, facts only between its own names, fixed fact types and roles.
+  - Phishing-flagged, restricted and unindexed mail contributes nothing, and there are no payment fields.
+  - Every fact shows its message and sender support.
+  - Operators can merge, rename and hide entries. Every change is audited and reversible.
+- **Authorization.** Entries, spellings, counts and facts are computed per caller from authorized messages only, the evidence-gated option. A Reader.Own user sees only what their own mailbox says. Participant exclusions hide people.
+- **Accepted risk.** Repeated consistent emails from an outside sender can plant a false fact. Support counts make this visible but don't prevent it.
