@@ -48,7 +48,7 @@ def test_fixture_reaches_expected_disposition(fixture) -> None:  # type: ignore[
 
 
 def test_label_table_matches_claude_md() -> None:
-    assert len(LABELS) == 20
+    assert len(LABELS) == 21
     assert LABELS_BY_NAME["phishing"].no_at_or_below == 0.10
     assert LABELS_BY_NAME["phishing"].yes_at_or_above == 0.80
     assert all(lb.no_at_or_below < lb.yes_at_or_above for lb in LABELS)

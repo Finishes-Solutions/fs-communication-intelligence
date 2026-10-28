@@ -162,8 +162,11 @@ def test_actionable_for_a_person(pipeline: dict[str, Any]) -> None:
         "Change Order 8 - Building D plumbing reroute",
     } <= actions
     assert "Suite 210 lease renewal terms" not in actions  # Morgan's mailbox, not Pat's
-    risks = {r["subject"] for r in report["risks"]}
-    assert "Updated banking details for future payments" in risks
+    risks = {r["subject"]: r for r in report["risks"]}
+    assert "Repeated delays and defects on punch list" in risks
+    assert "Notice of mechanic's lien - Example Ridge Phase 2" in risks
+    assert risks["Repeated delays and defects on punch list"]["risk_ai"]
+    assert "Updated banking details for future payments" not in risks  # security, not project
 
 
 def test_audit_records_ids_not_query_text(pipeline: dict[str, Any]) -> None:

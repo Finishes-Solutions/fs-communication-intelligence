@@ -178,7 +178,7 @@ def _classify(
 ) -> tuple[ClassificationResult, int | None]:
     model = getattr(backends.classifier, "model", type(backends.classifier).__name__)
     prior = conn.execute(
-        "SELECT id, summary, action_text, action_for, due_text FROM classification_runs"
+        "SELECT id, summary, action_text, action_for, due_text, risk_text FROM classification_runs"
         " WHERE input_sha256 = %s AND model = %s AND policy_version = %s AND reused_from IS NULL"
         " ORDER BY id LIMIT 1",
         (item.sha256(), model, POLICY_VERSION),
@@ -197,6 +197,7 @@ def _classify(
             prior["action_text"],
             tuple(prior["action_for"]),
             prior["due_text"],
+            prior["risk_text"],
         ), int(prior["id"])
     return backends.classifier.classify(item), None
 
@@ -211,8 +212,8 @@ def _store_classification(
     run_id = required(
         conn.execute(
             "INSERT INTO classification_runs (version_id, model, policy_version, input_sha256,"
-            " disposition, reason_codes, summary, action_text, action_for, due_text, reused_from)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+            " disposition, reason_codes, summary, action_text, action_for, due_text, risk_text,"
+            " reused_from) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
             " ON CONFLICT (version_id, model, policy_version) DO NOTHING RETURNING id",
             (
                 version_id,
@@ -225,6 +226,7 @@ def _store_classification(
                 result.action_text,
                 list(result.action_for),
                 result.due_text,
+                result.risk_text,
                 reused_from,
             ),
         ).fetchone()

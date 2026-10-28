@@ -175,6 +175,8 @@ Also return:
 - action_for: lowercase email addresses, taken only from the given recipients, of the \
 people asked to do it. Empty if unclear or nobody is asked.
 - due: the deadline exactly as stated in the email, or null.
+- risk: the risk to a project or property this email signals (max 25 words), or null. \
+Security or phishing concerns are not project risks.
 """
 
 
@@ -184,7 +186,7 @@ def _classifier_schema() -> dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["labels", "summary", "action", "action_for", "due"],
+        "required": ["labels", "summary", "action", "action_for", "due", "risk"],
         "properties": {
             "labels": {
                 "type": "object",
@@ -196,6 +198,7 @@ def _classifier_schema() -> dict[str, Any]:
             "action": nullable,
             "action_for": {"type": "array", "items": {"type": "string"}},
             "due": nullable,
+            "risk": nullable,
         },
     }
 
@@ -260,6 +263,7 @@ class AzureOpenAIClassifier:
             action_text=content.get("action") or None,
             action_for=action_for,
             due_text=content.get("due") or None,
+            risk_text=content.get("risk") or None,
         )
 
 

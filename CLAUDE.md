@@ -64,6 +64,7 @@ Business context: Finishes Solutions is a real estate owner-developer (Waller, T
 | **All mailboxes are in scope** (user and shared), with named exceptions kept out via `CustomAttribute15 = FS-CI-Exclude` and `ci scope exclude` | Matthew answered the question raised by Chuck's 2026-10-28 email ("hold the broader rollout, settle privacy/access first") by putting all mailboxes in scope. Recorded here so it is not re-litigated; the access review Chuck asked for still applies to who may *read* the data. |
 | First real-mail run (last 24 hours) stores data in the **Azure dev PostgreSQL** (`psql-fs-ci-dev-1026b`) | Deviates from ADR-011 ("dev stack holds synthetic data"). The dev server now holds real mail: firewall it to named IPs and delete data after the test. |
 | **Attachment text extraction without malware scanning or OCR** | Exception to L11, approved for this run. Mitigated by isolated child-process extraction with size/time/zip limits (`ci_processing/extraction.py`). E2 (Defender for Storage, OCR) still required before production. |
+| Executive **"risks" mean project risks** (schedule, cost, disputes, liens, inspections/permits, safety, quality, financing, non-performance), not phishing or security items | New label `project_risk` plus an AI one-line `risk_text`; `list_actionable` risks = `project_risk` only. Chuck's action items come only from **ChuckC@finishesetc.net**. |
 | The run uses a **certificate app registration on Matthew's Mac** with Exchange RBAC over all mailboxes | Exception to §10.2 (dev app scoped to the test mailbox). Short-lived (30-day certificate) and removed after the test (`docs/RUN_24H_TEST.md` §7). Production ingestion remains a managed identity. |
 
 ---
@@ -144,6 +145,7 @@ These are predicate questions. A probability ≤ the "no" threshold means no, �
 | action_required | .20 | .80 | Asks the mailbox owner for a concrete pending action? |
 | urgent | .15 | .85 | Credible unresolved need due today or next business day? |
 | newsletter | .20 | .85 | Newsletter, digest or informational mass mailing? |
+| project_risk | .20 | .75 | Signals a risk to a specific project or property: schedule delay, cost overrun or unbudgeted cost, dispute, claim or lien, failed inspection or permit problem, safety incident, quality defect, financing or draw problem, or a key party not performing? (added 2026-10-28) |
 | cat_development_construction | .20 | .70 | Design, permits, inspections, contractors, schedule, scope, change orders? |
 | cat_payment_billing | .20 | .70 | Invoices, pay apps, draws, payment status? |
 | cat_leasing_operations | .20 | .70 | Leasing, occupancy, tenants, property management/operations? |

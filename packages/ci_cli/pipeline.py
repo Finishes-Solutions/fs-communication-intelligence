@@ -286,6 +286,8 @@ def render_actionable(report: dict[str, Any]) -> str:
         if i["action_ai"]:
             due = f" (due: {i['due_ai']})" if i["due_ai"] else ""
             out.append(f"  - Ask: {i['action_ai']}{due}")
+        if i.get("risk_ai"):
+            out.append(f"  - Risk: {i['risk_ai']}")
         if i["summary_ai"]:
             out.append(f"  - Summary: {i['summary_ai']}")
         flags = ", ".join(i["labels"]) + ("; flagged for review" if i["review_flag"] else "")
@@ -297,7 +299,7 @@ def render_actionable(report: dict[str, Any]) -> str:
     lines.append(f"## Needs action ({len(report['actions'])})")
     for i in report["actions"]:
         lines.extend(item(i))
-    lines += ["", f"## Risks to know about ({len(report['risks'])})"]
+    lines += ["", f"## Project risks ({len(report['risks'])})"]
     for i in report["risks"]:
         lines.extend(item(i))
     lines += ["", f"Coverage (messages by state): {json.dumps(report['coverage'])}", ""]

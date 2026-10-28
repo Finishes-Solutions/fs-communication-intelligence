@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
-POLICY_VERSION = "labels-2026-10-14-uncalibrated"
+POLICY_VERSION = "labels-2026-10-28-uncalibrated"
 
 
 class Decision(StrEnum):
@@ -71,6 +71,14 @@ LABELS: tuple[Label, ...] = (
     Label("action_required", 0.20, 0.80, "Asks the mailbox owner for a concrete pending action?"),
     Label("urgent", 0.15, 0.85, "Credible unresolved need due today or next business day?"),
     Label("newsletter", 0.20, 0.85, "Newsletter, digest or informational mass mailing?"),
+    Label(
+        "project_risk",
+        0.20,
+        0.75,
+        "Signals a risk to a specific project or property: schedule delay, cost overrun or "
+        "unbudgeted cost, dispute, claim or lien, failed inspection or permit problem, safety "
+        "incident, quality defect, financing or draw problem, or a key party not performing?",
+    ),
     Label(
         "cat_development_construction",
         0.20,
@@ -150,6 +158,7 @@ class ClassificationResult:
     action_text: str | None = None
     action_for: tuple[str, ...] = ()
     due_text: str | None = None
+    risk_text: str | None = None
 
     def decisions(self) -> dict[str, Decision]:
         """Every label gets a decision; a label the backend did not answer is unresolved."""
@@ -201,6 +210,7 @@ _FAKE_RULES: tuple[tuple[str, str, float], ...] = (
     ("cat_compliance_legal", r"lien|attorney|legal|insurance|dispute|compliance", 0.85),
     ("cat_capital_finance", r"lender|\bloan\b|draw request|investor|refinanc", 0.85),
     ("cat_vendor_performance", r"defects?|delays?|missed|complaint", 0.85),
+    ("project_risk", r"defects?|delay|\blien\b|failed inspection|over budget|dispute|claim", 0.9),
     ("cat_general_governance", r"committee|policy|board approval", 0.85),
 )
 _COMPILED = tuple((name, re.compile(p, re.IGNORECASE), prob) for name, p, prob in _FAKE_RULES)
@@ -229,4 +239,7 @@ class FakeClassifier:
             summary=f"(fake) {item.subject}",
             action_text=f"(fake) respond to: {item.subject}" if asks else None,
             action_for=item.to if asks else (),
+            risk_text=f"(fake) risk in: {item.subject}"
+            if (probabilities["project_risk"] or 0) >= 0.75
+            else None,
         )
