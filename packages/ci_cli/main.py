@@ -32,7 +32,8 @@ The database comes from the standard ``PG*`` environment variables; locally,
     ci schedule set [--on|--off] [--every 60] [--window 2] [--hours 6-20]
                     [--weekdays-only|--every-day] [--time-zone America/Chicago]
                     [--processing-on|--processing-off]
-    ci run-capture [--hours 24]               capture at the next 5-minute tick
+    ci run-capture [--hours 24 | --since 2026-09-01]
+                                              capture at the next 5-minute tick (up to 93 days)
 
     ci names list                             canonical property and legal-entity names
     ci names add property "Willow Creek Retail" --alias "WC Retail" --alias "Willow Creek"
@@ -205,7 +206,11 @@ def _parser() -> argparse.ArgumentParser:
     nremove.add_argument("kind", choices=["property", "entity"])
     nremove.add_argument("name")
     run_now = sub.add_parser("run-capture", help="ask the ingestion app to capture now")
-    run_now.add_argument("--hours", type=float, help="look-back (default: the schedule's window)")
+    run_when = run_now.add_mutually_exclusive_group()
+    run_when.add_argument("--hours", type=float, help="look-back (default: the schedule's window)")
+    run_when.add_argument(
+        "--since", help="capture from this date, midnight Central time (YYYY-MM-DD, max 93 days)"
+    )
     return parser
 
 
@@ -369,8 +374,10 @@ def _run(args: argparse.Namespace, conn: Connection) -> None:
             print(f"{n['kind']:<9} {n['canonical']}{also}")
         return
     if args.command == "run-capture":
-        ops.request_run(conn, actor, args.hours)
-        print("capture requested; the ingestion app starts it within about 5 minutes")
+        hours = ops.hours_since(args.since, datetime.now(UTC)) if args.since else args.hours
+        ops.request_run(conn, actor, hours)
+        looking = f" ({hours:g} hours back)" if hours else ""
+        print(f"capture requested{looking}; the ingestion app starts it within about 5 minutes")
         return
 
     if args.action == "show":

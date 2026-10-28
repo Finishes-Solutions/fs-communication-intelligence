@@ -140,7 +140,7 @@ async function overview() {
   const published = (d.versions || []).filter(v => v.processing_state === "published")
     .reduce((n, v) => n + v.versions, 0);
   const s = d.schedule;
-  const hours = h("input", { type: "number", min: "0.25", max: "744", step: "0.25", value: s.capture_window_hours, style: "width:90px" });
+  const hours = h("input", { type: "number", min: "0.25", max: "2232", step: "0.25", value: s.capture_window_hours, style: "width:90px" });
   show(
     h("h2", {}, "Overview"),
     h("div", { class: "grid" },

@@ -49,6 +49,9 @@ class MailboxResult:
     error: str | None = None
 
 
+MAX_CAPTURE_HOURS = 24 * 93  # a backfill may reach back 93 days
+
+
 def _addresses(message: dict[str, Any], key: str) -> list[tuple[str, str | None]]:
     value = message.get(key)
     entries = value if isinstance(value, list) else [value] if value else []
@@ -338,8 +341,8 @@ def capture_window(
     now: datetime | None = None,
 ) -> list[MailboxResult]:
     """Capture every eligible mailbox. Fails closed on paused mode or empty scope."""
-    if not 0 < hours <= 24 * 31:
-        raise ValueError("--hours must be greater than 0 and at most 744")
+    if not 0 < hours <= MAX_CAPTURE_HOURS:
+        raise ValueError(f"--hours must be greater than 0 and at most {MAX_CAPTURE_HOURS} (93 days)")
     since = (now or datetime.now(UTC)) - timedelta(hours=hours)
     with connect("ci_ingest") as conn:
         config = active_config(conn)
