@@ -36,7 +36,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 from starlette.middleware import Middleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -74,6 +74,21 @@ log = logging.getLogger("ci.admin")
 ADMIN_SCOPE = "Communications.Console"  # Entra refuses a scope and a role with one name
 ADMIN_ROLE = "Communications.Admin"
 STATIC = Path(__file__).parent / "static"
+# Console pages are plain paths (/reports, /messages?q=...); each returns the same
+# single-page app, which reads the path. "check" is the old name of "review".
+PAGES = (
+    "overview",
+    "schedule",
+    "mailboxes",
+    "messages",
+    "actionable",
+    "unpublished",
+    "risks",
+    "reports",
+    "review",
+    "check",
+    "lab",
+)
 
 Connector = Callable[[str], Connection]
 # Types the browser may preview; everything else is served as an opaque download.
@@ -767,6 +782,9 @@ def build_admin_app(
             "policy_version": POLICY_VERSION,
         }
 
+    async def page(request: Request) -> Response:
+        return FileResponse(STATIC / "index.html", media_type="text/html")
+
     async def health(request: Request) -> Response:
         return _json({"ok": True})
 
@@ -796,6 +814,7 @@ def build_admin_app(
         Route("/api/risks", endpoint(risks)),
         Route("/api/reports/preview", endpoint(report_preview), methods=["POST"]),
         Route("/api/reports/export", endpoint(report_export), methods=["POST"]),
+        *(Route(f"/{name}", page) for name in PAGES),
         Mount("/", StaticFiles(directory=STATIC, html=True)),
     ]
     return Starlette(routes=routes, middleware=[Middleware(SecurityHeaders)])

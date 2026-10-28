@@ -90,6 +90,12 @@ function icon(name) {
 }
 
 const main = () => document.getElementById("main");
+const pageParams = () => new URLSearchParams(location.search);
+function navigate(path) {
+  if (path !== location.pathname + location.search) history.pushState(null, "", path);
+  window.scrollTo(0, 0);
+  route();
+}
 function show(...nodes) { main().replaceChildren(h("div", { class: "page" }, ...nodes)); }
 function toast(msg) {
   const t = document.getElementById("toast");
@@ -254,7 +260,7 @@ async function signIn() {
   const challenge = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
   store.set("pkce_verifier", verifier);
   store.set("pkce_state", state);
-  store.set("return_hash", location.hash || "#overview");
+  store.set("return_path", location.pathname === "/" ? "/overview" : location.pathname + location.search);
   const q = new URLSearchParams({
     client_id: CFG.client_id, response_type: "code", redirect_uri: redirectUri(),
     response_mode: "query", scope: `${CFG.scope} openid profile`, state,
@@ -267,7 +273,7 @@ async function finishSignIn(params) {
   const state = store.get("pkce_state");
   const verifier = store.get("pkce_verifier");
   store.del("pkce_state"); store.del("pkce_verifier");
-  history.replaceState(null, "", "/" + (store.get("return_hash") || "#overview"));
+  history.replaceState(null, "", store.get("return_path") || "/overview");
   if (params.get("error")) throw new Error(params.get("error_description") || params.get("error"));
   if (!state || params.get("state") !== state) throw new Error("Sign-in state did not match; try again.");
   const res = await fetch(`${authority()}/token`, {
@@ -294,7 +300,7 @@ function token() {
   const t = store.get("token");
   return t && Number(store.get("token_exp") || 0) > Date.now() ? t : null;
 }
-function signOut() { ["token", "token_exp", "who"].forEach(store.del); location.hash = ""; render(); }
+function signOut() { ["token", "token_exp", "who"].forEach(store.del); history.replaceState(null, "", "/"); render(); }
 
 async function api(path, options = {}) {
   const t = token();
@@ -340,7 +346,7 @@ async function overview() {
           await post("/api/runs/capture", { hours: Number(hours.value) });
           toast("Capture requested; it starts within about 5 minutes."); route(); }) }, icon("play"), "Run Capture Now")] },
       s.run_requested_at ? note(`A capture was requested at ${when(s.run_requested_at)} and has not started yet.`, "warn") : null),
-    card({ title: "Recent Runs", flush: true, actions: h("a", { class: "btn sm ghost", href: "#schedule" }, "View All") }, runsTable(d.runs)),
+    card({ title: "Recent Runs", flush: true, actions: h("a", { class: "btn sm ghost", href: "/schedule" }, "View All") }, runsTable(d.runs)),
     h("div", { class: "cols" },
       card({ title: "Message States", sub: "Every stored version, by processing state" },
         bars((d.versions || []).map(r => [h("span", {}, nice(r.processing_state), r.reason ? h("span", { class: "muted" }, ` · ${nice(r.reason)}`) : null),
@@ -361,7 +367,7 @@ async function overview() {
         bars((d.failures || []).map(r => [h("span", { class: "mono" }, r.error_code), r.versions, "bad"]),
           emptyState("No Failures", "Every processed message succeeded.", "ok")))),
     card({ title: "Mailboxes", sub: "Scope state and dataset approvals", flush: true,
-      actions: h("a", { class: "btn sm ghost", href: "#mailboxes" }, "Manage") },
+      actions: h("a", { class: "btn sm ghost", href: "/mailboxes" }, "Manage") },
       table([["State", r => stateBadge("scope", r.scope_state)],
         ["Test Approved", r => r.test_approved ? badge("Yes", "good") : h("span", { class: "muted" }, "—")],
         ["Production Approved", r => r.production_approved ? badge("Yes", "good") : h("span", { class: "muted" }, "—")],
@@ -541,7 +547,7 @@ function msgRow(r, onPick, extra) {
 }
 
 async function messagesPage() {
-  const p = new URLSearchParams(location.hash.split("?")[1] || "");
+  const p = pageParams();
   const f = {
     q: h("input", { placeholder: "Search words or ask a question", value: p.get("q") || "" }),
     mailbox: h("input", { placeholder: "Mailbox", value: p.get("mailbox") || "", style: "width:150px" }),
@@ -559,7 +565,7 @@ async function messagesPage() {
   function go() {
     const q = new URLSearchParams();
     for (const [k, el] of Object.entries(f)) if (el.value.trim()) q.set(k, el.value.trim());
-    location.hash = "#messages?" + q;
+    navigate("/messages?" + q);
   }
   show(pageHead("Messages", "Published mail you are authorized to read. Summaries and labels are AI proposals."),
     card({},
@@ -600,8 +606,8 @@ function messageView(id, m) {
         h("div", { style: "min-width:200px;flex:1" }, h("div", { class: "who-name" }, sender),
           h("div", { class: "muted small" }, `To ${m.mailbox} · ${when(m.received_at)}`)),
         h("div", { class: "actions" }, safeLink(m.web_link, "Open in Outlook"),
-          h("button", { class: "btn sm", onclick: () => { location.hash = `#review?id=${encodeURIComponent(id)}`; } }, icon("review"), "Review Labels"),
-          h("button", { class: "btn sm", onclick: () => { location.hash = `#lab?id=${encodeURIComponent(id)}`; } }, icon("lab"), "Re-Run in Lab")))),
+          h("button", { class: "btn sm", onclick: () => { navigate(`/review?id=${encodeURIComponent(id)}`); } }, icon("review"), "Review Labels"),
+          h("button", { class: "btn sm", onclick: () => { navigate(`/lab?id=${encodeURIComponent(id)}`); } }, icon("lab"), "Re-Run in Lab")))),
     aiBlock(m) ? h("div", { class: "reader-section" }, aiBlock(m)) : null,
     nameChips(m) ? h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "Properties and Entities"), nameChips(m)) : null,
     hasLabels ? h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "Labels"),
@@ -627,15 +633,15 @@ function aiBlock(m) {
 }
 
 async function actionablePage() {
-  const p = new URLSearchParams(location.hash.split("?")[1] || "");
+  const p = pageParams();
   const person = h("input", { value: p.get("person") ?? DEFAULT_PERSON, placeholder: "Empty = everyone" });
   const hours = h("select", {}, [["24", "Last 24 hours"], ["72", "Last 3 days"], ["168", "Last week"], ["720", "Last 30 days"]]
     .map(([v, t]) => h("option", { value: v, selected: v === (p.get("hours") || "24") }, t)));
   const out = h("div", {}, h("div", { class: "card" }, h("div", { class: "empty" }, h("div", { class: "spinner" }), "Loading…")));
   show(pageHead("Action Items & Project Risks", "The same list Chuck's agents get from list_actionable. AI proposals, not approvals.",
-    h("a", { class: "btn", href: `#review?${new URLSearchParams({ source: "actionable", person: person.value })}` }, icon("review"), "Review These One by One")),
+    h("a", { class: "btn", href: `/review?${new URLSearchParams({ source: "actionable", person: person.value })}` }, icon("review"), "Review These One by One")),
   card({},
-    h("form", { class: "toolbar", onsubmit: e => { e.preventDefault(); location.hash = `#actionable?${new URLSearchParams({ person: person.value, hours: hours.value })}`; } },
+    h("form", { class: "toolbar", onsubmit: e => { e.preventDefault(); navigate(`/actionable?${new URLSearchParams({ person: person.value, hours: hours.value })}`); } },
       h("div", { class: "search", style: "flex:1 1 320px" }, icon("users"), person), hours,
       h("button", { class: "btn primary", type: "submit" }, "Show")),
     h("div", { class: "muted small", style: "margin-top:8px" }, "A profile key or the person's addresses, comma-separated. Leave empty for everyone.")),
@@ -708,10 +714,10 @@ async function peoplePanel() {
 }
 
 async function unpublishedPage() {
-  const p = new URLSearchParams(location.hash.split("?")[1] || "");
+  const p = pageParams();
   const current = p.get("state") || "";
   const seg = h("div", { class: "seg" }, ["", "held", "rejected", "failed", "fetched"].map(s =>
-    h("button", { class: s === current ? "on" : "", onclick: () => { location.hash = `#unpublished?state=${s}`; } }, s ? nice(s) : "All")));
+    h("button", { class: s === current ? "on" : "", onclick: () => { navigate(`/unpublished?state=${s}`); } }, s ? nice(s) : "All")));
   const d = await api("/api/unpublished?" + new URLSearchParams(current ? { state: current } : {}));
   show(pageHead("Not Published", "Mail that is stored but not searchable. Metadata only: subjects and bodies are never shown here.",
     h("button", { class: "btn", onclick: guard(async () => { const r = await post("/api/requeue-failed"); toast(`${r.requeued} requeued`); route(); }) },
@@ -824,7 +830,7 @@ function personInput(value) {
 }
 
 async function labPage() {
-  const p = new URLSearchParams(location.hash.split("?")[1] || "");
+  const p = pageParams();
   const mode = { value: p.get("id") ? "stored" : "write" };
   const person = personInput(store.get("lab_person") || DEFAULT_PERSON);
   const f = {
@@ -1025,7 +1031,6 @@ function labResult(r, person, message) {
 
 // ---------- shared: downloads, dates, small charts ----------------------------
 
-const hashParams = () => new URLSearchParams(location.hash.split("?")[1] || "");
 const localDate = daysAgo => new Date(Date.now() - daysAgo * 864e5).toLocaleDateString("en-CA");
 const pct = x => x === null || x === undefined ? "—" : `${Math.round(x * 100)}%`;
 
@@ -1071,14 +1076,14 @@ function periodLabel(iso) {
 // ---------- risk analysis ------------------------------------------------------
 
 async function risksPage() {
-  const p = hashParams();
+  const p = pageParams();
   const days = p.get("days") || "30";
   const mailbox = p.get("mailbox") || "";
   const category = p.get("category") || "";
   const go = changes => {
     const q = new URLSearchParams({ days, mailbox, category, ...changes });
     for (const [k, v] of [...q]) if (!v) q.delete(k);
-    location.hash = "#risks?" + q;
+    navigate("/risks?" + q);
   };
   const seg = h("div", { class: "seg" }, [["7", "7 Days"], ["30", "30 Days"], ["90", "90 Days"], ["365", "1 Year"]].map(([v, t]) =>
     h("button", { class: v === days ? "on" : "", onclick: () => go({ days: v }) }, t)));
@@ -1146,7 +1151,7 @@ async function risksPage() {
             h("div", {}, h("div", { class: "stat-value" }, pct(quality.recall)), h("div", { class: "muted small" }, `Recall: of ${num(quality.applies)} real risks checked`))),
           enough ? null : note(`Only ${num(quality.judged)} checked so far; these numbers settle after about ${m.min_sample}.`, "warn"))
           : h("div", {}, h("p", { class: "muted", style: "margin:0 0 12px" }, "Not measured yet. Until you review some emails, treat these counts as the classifier's guess."),
-            h("a", { class: "btn sm", href: "#review?source=risks" }, icon("review"), "Review Project Risks")))),
+            h("a", { class: "btn sm", href: "/review?source=risks" }, icon("review"), "Review Project Risks")))),
     card({ title: "By Property / Project", sub: "Names as written in the email, or the registry's canonical name. Top 15." },
       bars(d.by_property.map(r => [r.property, r.risks, "warn"]), emptyState("No Property Names", "The AI found no property or project names in these risks.", "building"))),
     h("div", { class: "inbox", style: "margin-top:20px" },
@@ -1316,17 +1321,17 @@ const REASON_TEXT = { not_for_person: "Someone Else's", fyi_only: "FYI Only", au
 const REVIEW_SOURCES = [["actionable", "Action Items for a Person"], ["recent", "Recent Mail"], ["risks", "Project Risks"], ["label", "One Label"]];
 
 async function reviewPage() {
-  const p = hashParams();
+  const p = pageParams();
   const tab = p.get("tab") || "review";
   const tabs = h("div", { class: "seg" }, [["review", "Review"], ["results", "Results"]].map(([v, t]) =>
-    h("button", { class: v === tab ? "on" : "", onclick: () => { location.hash = v === "review" ? "#review" : "#review?tab=results"; } }, t)));
+    h("button", { class: v === tab ? "on" : "", onclick: () => { navigate(v === "review" ? "/review" : "/review?tab=results"); } }, t)));
   if (tab === "results") return reviewResults(tabs);
 
   const browseId = p.get("id");
   const source = p.get("source") || "actionable";
   const label = p.get("label") || "action_required";
   const personVal = p.get("person") ?? store.get("check_person") ?? DEFAULT_PERSON;
-  const go = changes => { location.hash = "#review?" + new URLSearchParams({ source, label, person: personInput.value, ...changes }); };
+  const go = changes => { navigate("/review?" + new URLSearchParams({ source, label, person: personInput.value, ...changes })); };
   const personInput = h("input", { value: personVal, placeholder: "Whose action items?" });
   const sourceSeg = h("div", { class: "seg" }, REVIEW_SOURCES.map(([v, t]) =>
     h("button", { class: v === source ? "on" : "", onclick: () => go({ source: v }) }, t)));
@@ -1343,7 +1348,7 @@ async function reviewPage() {
   }[source];
   show(pageHead("Label Review", "Say whether each label is right. Your answers measure how accurate the AI is and suggest better thresholds.", tabs),
     card({}, browseId
-      ? h("div", { class: "toolbar" }, badge("Single Message", "info"), h("a", { class: "btn sm", href: "#review" }, "Back to Review"))
+      ? h("div", { class: "toolbar" }, badge("Single Message", "info"), h("a", { class: "btn sm", href: "/review" }, "Back to Review"))
       : h("form", { class: "toolbar", onsubmit: e => { e.preventDefault(); store.set("check_person", personInput.value); go({}); } },
         sourceSeg, source === "label" ? labelPick : null,
         h("div", { class: "search", style: "flex:1 1 240px" }, icon("users"), personInput),
@@ -1366,7 +1371,7 @@ async function reviewPage() {
       reader.replaceChildren(h("div", { class: "placeholder" }, h("div", { class: "empty" }, h("div", { class: "i-wrap" }, icon("ok")),
         h("div", { class: "empty-title" }, browseId ? "Done" : "All Reviewed"),
         h("div", { class: "small" }, browseId ? "Your answers are saved." : `Nothing left in this list. You reviewed ${reviewed} this session; pick another list above.`),
-        h("a", { class: "btn sm", style: "margin-top:12px", href: "#review?tab=results" }, "See Results"))));
+        h("a", { class: "btn sm", style: "margin-top:12px", href: "/review?tab=results" }, "See Results"))));
       panel.hidden = true;
       return;
     }
@@ -1511,15 +1516,15 @@ function drawNav() {
   const items = [h("div", { class: "nav-label" }, NAV_GROUPS[0])];
   for (const n of NAV) {
     if (!n) { items.push(h("div", { class: "nav-label" }, NAV_GROUPS[++group])); continue; }
-    items.push(h("a", { href: "#" + n[0] }, icon(n[2]), n[1]));
+    items.push(h("a", { href: "/" + n[0] }, icon(n[2]), n[1]));
   }
   nav.replaceChildren(...items);
 }
 
 async function route() {
-  const name = (location.hash.slice(1).split("?")[0]) || "overview";
+  const name = location.pathname.split("/")[1] || "overview";
   const navName = name === "check" ? "review" : name; // "Label check" became Label Review
-  document.querySelectorAll(".nav a").forEach(a => a.classList.toggle("active", a.getAttribute("href") === "#" + navName));
+  document.querySelectorAll(".nav a").forEach(a => a.classList.toggle("active", a.getAttribute("href") === "/" + navName));
   try { await (PAGES[name] || overview)(); }
   catch (e) {
     if (e.message !== "signing in") {
@@ -1564,12 +1569,24 @@ async function render() {
   await route();
 }
 
-window.addEventListener("hashchange", () => { if (token()) route(); });
+// Pages are real paths (/reports, /messages?q=…); the server returns this page for each.
+window.addEventListener("popstate", () => { if (token()) route(); });
+document.addEventListener("click", e => {
+  const a = e.target.closest && e.target.closest("a[href]");
+  if (!a || a.target || a.hasAttribute("download") || e.defaultPrevented || e.button !== 0
+    || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  const url = new URL(a.href, location.href);
+  if (url.origin !== location.origin || url.pathname.startsWith("/api/")) return;
+  e.preventDefault();
+  navigate(url.pathname + url.search);
+});
 window.addEventListener("DOMContentLoaded", async () => {
   try {
     CFG = await (await fetch("/config.json")).json();
     const params = new URLSearchParams(location.search);
-    if (params.has("code") || params.has("error")) await finishSignIn(params);
+    // Entra returns to "/" (the registered redirect URI); pages live at other paths.
+    if (location.pathname === "/" && (params.has("code") || params.has("error"))) await finishSignIn(params);
+    else if (location.hash.length > 1) history.replaceState(null, "", "/" + location.hash.slice(1)); // old #page links
   } catch (e) {
     show(h("p", { class: "status-failed" }, e.message)); return;
   }
