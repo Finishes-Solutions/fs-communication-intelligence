@@ -13,6 +13,7 @@ tool arguments (CLAUDE.md L8).
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Protocol
 
 import jwt
@@ -22,6 +23,38 @@ from pydantic import Field
 from ci_retrieval.identity import Principal
 
 SEARCH_SCOPE = "Communications.Search"
+log = logging.getLogger(__name__)
+
+# jwt errors, most specific first, to the reason code logged on a rejection.
+_REASONS: tuple[tuple[type[Exception], str], ...] = (
+    (jwt.ExpiredSignatureError, "expired"),
+    (jwt.ImmatureSignatureError, "not_yet_valid"),
+    (jwt.InvalidAudienceError, "audience"),
+    (jwt.InvalidIssuerError, "issuer"),
+    (jwt.MissingRequiredClaimError, "missing_claim"),
+    (jwt.InvalidSignatureError, "signature"),
+    (jwt.PyJWKClientError, "signing_key"),
+    (jwt.InvalidAlgorithmError, "algorithm"),
+    (jwt.DecodeError, "malformed"),
+)
+
+
+def _reason(exc: Exception) -> str:
+    return next((code for kind, code in _REASONS if isinstance(exc, kind)), type(exc).__name__)
+
+
+def _describe(token: str) -> dict[str, Any]:
+    """Non-secret claims of a rejected token, for the log: who it was issued for and
+    by, its version, scopes, roles and client app. Never the token or the person."""
+    try:
+        claims = jwt.decode(token, options={"verify_signature": False})
+    except jwt.PyJWTError:
+        return {}
+    return {
+        k: claims.get(k)
+        for k in ("aud", "iss", "ver", "scp", "roles", "azp", "appid")
+        if claims.get(k) is not None
+    }
 
 
 class SigningKeySource(Protocol):
@@ -72,12 +105,15 @@ class EntraTokenVerifier:
                 options={"require": ["exp", "iat", "iss", "aud", "oid", "tid"]},
                 leeway=60,
             )
-        except jwt.PyJWTError, ValueError:
+        except (jwt.PyJWTError, ValueError) as exc:
+            self._reject(_reason(exc), token)
             return None
         scopes = str(claims.get("scp", "")).split()
         if str(claims.get("tid", "")).lower() != self.tenant_id:
+            self._reject("tenant", token)
             return None
         if self.required_scope not in scopes:
+            self._reject("scope", token)
             return None
         upn = claims.get("preferred_username") or claims.get("upn")
         return EntraAccessToken(
@@ -89,6 +125,17 @@ class EntraTokenVerifier:
             oid=str(claims["oid"]),
             upn=str(upn).lower() if upn else None,
             roles=[str(r) for r in claims.get("roles", [])],
+        )
+
+    def _reject(self, reason: str, token: str) -> None:
+        """Log why a token was refused: a code and its non-secret claims."""
+        log.warning(
+            "token rejected: %s; expected aud %s, iss %s, scope %s; token %s",
+            reason,
+            self.audiences,
+            self.issuer,
+            self.required_scope,
+            _describe(token),
         )
 
     async def verify_token(self, token: str) -> AccessToken | None:

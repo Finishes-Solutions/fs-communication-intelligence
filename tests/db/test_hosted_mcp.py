@@ -72,26 +72,50 @@ VERIFIER = EntraTokenVerifier(TENANT, API_ID, API_URI, keys=StaticKeys())
 
 
 @pytest.mark.parametrize(
-    ("claims", "key", "accepted"),
+    ("claims", "key", "rejected_for"),
     [
-        ({}, KEY, True),
-        ({"aud": API_URI}, KEY, True),
-        ({"aud": "some-other-api"}, KEY, False),
-        ({"iss": "https://login.microsoftonline.com/evil/v2.0"}, KEY, False),
-        ({"tid": "33333333-3333-3333-3333-333333333333"}, KEY, False),
-        ({"scp": None}, KEY, False),  # app-only token: no delegated user
-        ({"scp": "User.Read"}, KEY, False),
-        ({"exp": int(time.time()) - 600}, KEY, False),
-        ({}, OTHER_KEY, False),  # not signed by the tenant's key
+        ({}, KEY, None),
+        ({"aud": API_URI}, KEY, None),
+        ({"aud": "some-other-api"}, KEY, "audience"),
+        ({"iss": "https://login.microsoftonline.com/evil/v2.0"}, KEY, "issuer"),
+        ({"tid": "33333333-3333-3333-3333-333333333333"}, KEY, "tenant"),
+        ({"scp": None}, KEY, "scope"),  # app-only token: no delegated user
+        ({"scp": "User.Read"}, KEY, "scope"),
+        ({"exp": int(time.time()) - 600}, KEY, "expired"),
+        ({}, OTHER_KEY, "signature"),  # not signed by the tenant's key
     ],
 )
-def test_token_rules(claims: dict[str, Any], key: Any, accepted: bool) -> None:
-    result = VERIFIER.verify(token(key, **claims))
-    assert (result is not None) is accepted
+def test_token_rules(
+    claims: dict[str, Any],
+    key: Any,
+    rejected_for: str | None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    raw = token(key, **claims)
+    with caplog.at_level("WARNING", logger="ci_retrieval.entra"):
+        result = VERIFIER.verify(raw)
+    assert (result is None) is (rejected_for is not None)
     if result:
         assert result.principal().oid == "chuck-oid"
         assert result.principal().upn == "chuck@finishessolutions.example"
         assert result.scopes == [f"{API_URI}/Communications.Search"]
+        assert caplog.records == []
+        return
+    (record,) = caplog.records
+    message = record.getMessage()
+    assert message.startswith(f"token rejected: {rejected_for};")
+    # The log says what the token was for, never the token or who it belongs to.
+    assert raw not in message and raw.split(".")[2] not in message
+    assert "chuck" not in message.lower()
+    assert "azp" in message or rejected_for == "signature"
+
+
+def test_unreadable_tokens_are_logged_without_content(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level("WARNING", logger="ci_retrieval.entra"):
+        assert VERIFIER.verify("not-a-jwt") is None
+    (record,) = caplog.records
+    assert record.getMessage().startswith("token rejected: malformed;")
+    assert "not-a-jwt" not in record.getMessage()
 
 
 @pytest.fixture(scope="module")
@@ -154,7 +178,8 @@ INIT = rpc(
 )
 
 
-def test_discovery_and_unauthenticated_requests(app: Any) -> None:
+def test_discovery_and_unauthenticated_requests(app: Any, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("INFO", logger="ci_retrieval.mcp_server")
     with TestClient(app, base_url=BASE) as client:
         response = client.post("/mcp", json=INIT, headers=MCP_HEADERS)
         assert response.status_code == 401
@@ -172,6 +197,13 @@ def test_discovery_and_unauthenticated_requests(app: Any) -> None:
             "/mcp", json=INIT, headers=MCP_HEADERS | {"Authorization": f"Bearer {token(OTHER_KEY)}"}
         )
         assert bad.status_code == 401
+    requests = [r.getMessage() for r in caplog.records if r.name == "ci_retrieval.mcp_server"]
+    assert "mcp request POST /mcp -> 401 (bearer token: no)" in requests
+    assert "mcp request POST /mcp -> 401 (bearer token: yes)" in requests
+    assert any(
+        m.startswith("mcp request GET /.well-known/oauth-protected-resource") for m in requests
+    )
+    assert not any("Bearer" in m or "eyJ" in m for m in requests)
 
 
 def call_tool(client: TestClient, bearer: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
