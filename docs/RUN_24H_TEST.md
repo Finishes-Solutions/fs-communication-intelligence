@@ -103,11 +103,9 @@ az postgres flexible-server firewall-rule create -g $RG -n $PG --rule-name matth
 az postgres flexible-server microsoft-entra-admin create -g $RG -s $PG --display-name "$(az ad signed-in-user show --query userPrincipalName -o tsv)" --object-id $ME
 ```
 
-If that command name is not found, set the admin in the portal: server → **Security → Authentication** → allow Microsoft Entra authentication → **Add Microsoft Entra Admins** → yourself. Then create the database:
+If that command name is not found, set the admin in the portal: server → **Security → Authentication** → allow Microsoft Entra authentication → **Add Microsoft Entra Admins** → yourself.
 
-```bash
-az postgres flexible-server db create -g $RG -s $PG -d ci
-```
+Don't create the database with `az postgres flexible-server db create`. That makes the server's password admin its owner, and your Entra login then can't create the schema. `make azure-migrate` (step 4) creates it as you.
 
 ## 3. Azure AI services
 
@@ -141,7 +139,7 @@ Fill in every `<...>` value: tenant ID (`az account show --query tenantId -o tsv
 make azure-migrate
 ```
 
-It should end with `pgvector 0.8.x`. Set up a short alias for the rest of the run:
+It should end with `pgvector 0.8.x`. If it says `permission denied to set role` or `to grant role "ci_ingest"`, the `ci_*` roles were created earlier by a different login; send me the message. Set up a short alias for the rest of the run:
 
 ```bash
 alias ci='uv run --env-file local/azure-dev.env ci'
