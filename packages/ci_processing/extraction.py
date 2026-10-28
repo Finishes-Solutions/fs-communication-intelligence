@@ -11,6 +11,10 @@ PDFs and images yield ``no_text`` or ``unsupported`` until OCR is added.
 
 Supported: PDF (pypdf), DOCX, PPTX, XLSX (openpyxl), and plain text-like files
 (txt, csv, md, json, xml, html, ics). Everything else is ``unsupported``.
+
+Signature images and logos are ``skipped`` without being downloaded or kept
+(Matthew, 2026-10-28): every inline image, and any image attachment of 100 KB
+or less. Larger attached images (site photos) are kept as files, not read.
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ class ExtractionStatus(StrEnum):
     TOO_LARGE = "too_large"
     FAILED = "failed"
     TIMEOUT = "timeout"
+    SKIPPED = "skipped"  # signature images and logos: not downloaded, not kept
 
 
 @dataclass(frozen=True)
@@ -43,6 +48,19 @@ class Extraction:
     text: str = ""
     kind: str | None = None
     truncated: bool = False
+
+
+SIGNATURE_IMAGE_MAX_BYTES = 100 * 1024
+_IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "webp", "emz", "wmz"}
+
+
+def is_signature_image(
+    name: str | None, content_type: str | None, size_bytes: int, is_inline: bool
+) -> bool:
+    """Signature images and logos: every inline image, and small attached images."""
+    extension = (name or "").rsplit(".", 1)[-1].lower() if "." in (name or "") else ""
+    image = (content_type or "").lower().startswith("image/") or extension in _IMAGE_EXTENSIONS
+    return image and (is_inline or size_bytes <= SIGNATURE_IMAGE_MAX_BYTES)
 
 
 _TEXT_EXTENSIONS = {"txt", "csv", "md", "json", "xml", "html", "htm", "ics", "log", "tsv"}

@@ -321,7 +321,8 @@ def get_email(
     attachments = conn.execute(
         "SELECT name, content_type, size_bytes, is_inline, extraction_status,"
         " CASE WHEN original_stored THEN sha256 END AS file_id"
-        " FROM published_email_attachments WHERE communication_id = %s ORDER BY name",
+        " FROM published_email_attachments WHERE communication_id = %s"
+        " AND extraction_status <> 'skipped' ORDER BY name",  # signature images and logos
         (communication_id,),
     ).fetchall()
     budget = max(500, min(max_chars, 30_000))

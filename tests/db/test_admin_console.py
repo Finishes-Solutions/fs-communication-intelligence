@@ -320,8 +320,9 @@ def invoice_detail(client: TestClient) -> dict[str, Any]:
 def test_original_files_are_served_only_for_authorized_messages(client: TestClient) -> None:
     detail = invoice_detail(client)
     pdf = next(a for a in detail["attachments"] if a["name"] == "Invoice-4471.pdf")
-    logo = next(a for a in detail["attachments"] if a["is_inline"])
-    assert pdf["file_id"] and logo["file_id"] is None  # signature images are not kept
+    assert pdf["file_id"]
+    # The signature image is neither kept nor listed.
+    assert [a["name"] for a in detail["attachments"]] == ["Invoice-4471.pdf"]
     url = f"/api/messages/{detail['communication_id']}/files/{pdf['file_id']}"
     response = client.get(url, headers=auth())
     assert response.status_code == 200 and response.content.startswith(b"%PDF")

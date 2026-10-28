@@ -172,8 +172,7 @@ async function overview() {
     h("div", { class: "split" },
       h("div", {}, h("h3", {}, "Attachments"),
         table([["Text extraction", r => r.extraction_status], ["Attachments", r => r.attachments]], d.extraction),
-        table([["Original file", r => r.stored ? "stored" : r.is_inline ? "inline, not kept" : "not stored"],
-          ["Attachments", r => r.attachments]], d.originals || [])),
+        table([["Original file", r => r.original], ["Attachments", r => r.attachments]], d.originals || [])),
       h("div", {}, h("h3", {}, "Failures"),
         table([["Error code", r => r.error_code], ["Messages", r => r.versions]], d.failures))),
     h("h3", {}, "Mailboxes"),
@@ -347,7 +346,7 @@ async function showMessage(id, holder) {
     aiBlock(m),
     h("h3", {}, "People"),
     h("div", {}, m.participants.map(p => h("span", { class: "chip" }, `${p.role}: ${p.email_normalized}`))),
-    h("h3", {}, `Files (${m.attachments.length})`),
+    h("h3", {}, "Files"),
     filesBlock(id, m),
     h("h3", {}, "Body"), h("pre", { class: "text" }, body ? body.text : "(no body text)"),
     h("p", { class: "note" }, m.note)));
@@ -414,9 +413,12 @@ async function fetchFile(id, fileId) {
 
 function filesBlock(id, m) {
   const texts = m.text || [];
-  const list = m.attachments || [];
-  if (!list.length) return h("p", { class: "muted" }, "No attachments.");
-  return h("div", { class: "files" }, list.map(a => {
+  const all = m.attachments || [];
+  const list = all.filter(a => a.extraction_status !== "skipped");
+  const hidden = all.length - list.length;
+  const hiddenNote = hidden ? h("p", { class: "muted small" }, `${hidden} signature image${hidden > 1 ? "s" : ""} or logo${hidden > 1 ? "s" : ""} not shown.`) : null;
+  if (!list.length) return h("div", {}, h("p", { class: "muted" }, "No attachments."), hiddenNote);
+  return h("div", { class: "files" }, hiddenNote, list.map(a => {
     const t = texts.find(x => x.source === "attachment" && x.attachment_name === a.name);
     const kind = PREVIEW[(a.content_type || "").split(";")[0].trim().toLowerCase()];
     const viewer = h("div", { class: "viewer", hidden: true });
@@ -465,7 +467,7 @@ function filesBlock(id, m) {
           t ? h("button", { onclick: showText }, "Extracted text") : null)),
       h("div", {}, h("span", { class: "chip" + (a.extraction_status === "extracted" ? " good" : "") }, `text: ${a.extraction_status}`),
         a.file_id ? h("span", { class: "chip good" }, "original stored")
-          : h("span", { class: "chip" }, a.is_inline ? "inline image, not kept" : "original not stored")),
+          : h("span", { class: "chip" }, "original not stored")),
       viewer);
   }), h("p", { class: "note" }, "Files are not malware-scanned yet. Previews open inside this page; downloads open on your computer, so treat unexpected files with care."));
 }
@@ -685,7 +687,7 @@ function labResult(r, person, message) {
       h("div", { class: "legend muted small" }, h("span", { class: "zone-key z-no" }), "no", h("span", { class: "zone-key z-mid" }), "review",
         h("span", { class: "zone-key z-yes" }), "yes", " · marker = probability · ", `${r.model}, ${r.policy_version} (uncalibrated)`),
       labelsBox) : h("div", { class: "panel" }, h("p", { class: "muted" }, "Not classified: screening stopped it first, as in processing.")),
-    message ? h("div", { class: "panel" }, h("h3", {}, `Files (${(message.attachments || []).length})`), filesBlock(message.communication_id, message)) : null);
+    message ? h("div", { class: "panel" }, h("h3", {}, "Files"), filesBlock(message.communication_id, message)) : null);
 }
 
 // ---------- router -----------------------------------------------------------

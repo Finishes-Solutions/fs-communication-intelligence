@@ -7,9 +7,10 @@ import zipfile
 from pathlib import Path
 
 import openpyxl  # type: ignore[import-untyped]
+import pytest
 
 from ci_processing.chunking import MAX_CHARS, TARGET_CHARS, chunk_text
-from ci_processing.extraction import ExtractionStatus, detect_kind, extract
+from ci_processing.extraction import ExtractionStatus, detect_kind, extract, is_signature_image
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "email" / "messages"
 MB = 1024 * 1024
@@ -95,3 +96,19 @@ def test_long_paragraph_and_empty_text() -> None:
     chunks = chunk_text("x" * 5000)
     assert all(len(c) <= MAX_CHARS for c in chunks) and sum(map(len, chunks)) >= 5000
     assert chunk_text("   \n\n  ") == []
+
+
+@pytest.mark.parametrize(
+    ("name", "content_type", "size", "inline", "skipped"),
+    [
+        ("image001.png", "image/png", 5_000, True, True),  # signature logo
+        ("photo.jpg", "image/jpeg", 2_500_000, True, True),  # any inline image
+        ("logo.gif", None, 40_000, False, True),  # small attached image, by extension
+        ("Site photo.jpg", "image/jpeg", 2_500_000, False, False),  # kept as a file
+        ("Invoice.pdf", "application/pdf", 5_000, True, False),  # never by size alone
+    ],
+)
+def test_signature_images_and_logos_are_skipped(
+    name: str, content_type: str | None, size: int, inline: bool, skipped: bool
+) -> None:
+    assert is_signature_image(name, content_type, size, inline) is skipped

@@ -216,7 +216,7 @@ A web page at `https://func-fs-ci-adm-dev-1026.azurewebsites.net/` for console a
 - **Overview:** mode, schedule, backlog, message states and reasons, labels, attachment extraction, failures, and recent runs. Also **Run capture now** (any look-back) and **Requeue failed**.
 - **Schedule & runs:** how often capture runs, its look-back, active hours, weekdays only, processing on/off. Below that, every run with its counts.
 - **Mailboxes:** filter, approve or unapprove, exclude or un-exclude (with a reason), approve all enrolled, change mode, and exclude a person or domain in every mailbox.
-- **Messages:** search or list published mail by mailbox, sender, label and date. A message shows the AI summary, action and risk, labels, people, the body, and its **files**: preview (PDF, images, text), download, or the extracted text. There's also an **Open in Outlook** link, which works only for mailboxes your account can open.
+- **Messages:** search or list published mail by mailbox, sender, label and date. A message shows the AI summary, action and risk, labels, people, the body, and its **files**: preview (PDF, images, text), download, or the extracted text. Signature images and logos aren't processed or shown: every inline image, and any attached image of 100 KB or less. There's also an **Open in Outlook** link, which works only for mailboxes your account can open.
 - **Action items:** the same list agents get from `list_actionable`, for any person or window.
 - **Not published:** held, restricted, bulk and failed messages, with metadata and reason only, never the subject or text.
 - **Communication Lab:** write an email (or start from a sample: invoice, change order, lien notice, failed inspection, newsletter, phishing, SSN, prompt injection), or pick a stored one. It runs the real screening, classifier, policy and routing and stores nothing. It shows a verdict ("Action item", "Project risk", "Restricted"…), each pipeline step, why, the AI proposal, every label against its thresholds, the difference from what was stored, and the message's files. Each run calls Azure OpenAI once.
@@ -225,7 +225,15 @@ A web page at `https://func-fs-ci-adm-dev-1026.azurewebsites.net/` for console a
 
 Access takes both the delegated scope `Communications.Admin` and the app role `Communications.Admin` on the search API registration. Everyone else gets 403. Content goes through the same authorized search as the agents, so the console shows exactly what your Reader role allows. Every change and every lab run is written to `audit_events` (lab runs record the input hash only). The app has its own identity (`id-fs-ci-admin-dev`), with database roles `ci_operator` and `ci_search` and no mailbox access.
 
-Set it up once, from Cloud Shell in the repository folder. First see what already exists (this changes nothing):
+**One command does everything**: Azure resources, sign-in, file storage, database changes, GitHub secrets, merging the pull request, waiting for the deploy and checking the result. Run it from Cloud Shell in the repository folder (it asks you to sign in to GitHub once):
+
+```bash
+cd ~/fs-communication-intelligence && git fetch origin && git checkout matthew/nice-lovelace-4sqyit && bash scripts/azure/5-admin-console-live.sh
+```
+
+The console is the web page and its API in one Function App (`func-fs-ci-adm-dev-1026`): same address, no separate Azure Static Web Apps resource, and no cross-site setup.
+
+The steps it runs, if you'd rather go one at a time. First see what already exists (this changes nothing):
 
 ```bash
 CHECK_ONLY=1 bash scripts/azure/4-admin-console.sh

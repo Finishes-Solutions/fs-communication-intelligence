@@ -39,7 +39,12 @@ from ci_processing.classification import (
     Classifier,
 )
 from ci_processing.embedding import Embedder
-from ci_processing.extraction import Extraction, ExtractionStatus, extract
+from ci_processing.extraction import (
+    Extraction,
+    ExtractionStatus,
+    extract,
+    is_signature_image,
+)
 from ci_processing.originals import OriginalStore, OriginalStoreError
 from ci_processing.policy import Disposition, Outcome, classification_outcome, screening_gate
 from ci_processing.screening import Screener
@@ -97,8 +102,8 @@ def _extract_attachments(conn: Connection, job: dict[str, Any], backends: Backen
         result: Extraction
         digest: str | None = None
         stored = False
-        if a["is_inline"] and (a["content_type"] or "").startswith("image/"):
-            result = Extraction(ExtractionStatus.UNSUPPORTED)  # signature images; no OCR yet
+        if is_signature_image(a["name"], a["content_type"], a["size_bytes"], a["is_inline"]):
+            result = Extraction(ExtractionStatus.SKIPPED)  # never downloaded or kept
         elif a["size_bytes"] > backends.attachment_max_bytes:
             result = Extraction(ExtractionStatus.TOO_LARGE)
         else:
@@ -182,7 +187,7 @@ def store_missing_originals(
     connect: Callable[[], Connection], backends: Backends, limit: int = 100
 ) -> Counter[str]:
     """Store originals for published messages processed before storage was on (or
-    whose upload failed). Bounded per call; inline images and oversized files are skipped."""
+    whose upload failed). Bounded per call; signature images and oversized files are skipped."""
     counts: Counter[str] = Counter()
     if backends.originals is None or backends.graph is None:
         return counts
@@ -198,7 +203,7 @@ def store_missing_originals(
             JOIN source_scopes s ON s.id = em.mailbox_scope_id
             WHERE a.original_stored_at IS NULL AND v.processing_state = 'published'
               AND a.extraction_status <> 'not_attempted' AND a.size_bytes <= %s
-              AND NOT (a.is_inline AND coalesce(a.content_type, '') LIKE 'image/%%')
+              AND a.extraction_status <> 'skipped'
             ORDER BY random() LIMIT %s
             """,
             (backends.attachment_max_bytes, limit),
