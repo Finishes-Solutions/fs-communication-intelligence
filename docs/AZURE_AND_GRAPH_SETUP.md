@@ -112,10 +112,12 @@ In PowerShell with ExchangeOnlineManagement available, connect as the authorized
 ```powershell
 Connect-ExchangeOnline
 
-# Replace with IDs returned by the Azure bootstrap.
+# Values for the dev ingestion identity, from Azure Cloud Shell:
+#   az identity show -g fs-communication-intelligence -n id-fs-ci-ingestion-dev --query "{clientId:clientId, principalId:principalId}"
 $CiClientId = 'INGESTION-IDENTITY-CLIENT-ID'
 $CiPrincipalId = 'INGESTION-IDENTITY-PRINCIPAL-ID'
-$CiTestMailboxes = @('FIRST-TEST-MAILBOX@YOUR-DOMAIN', 'SECOND-TEST-MAILBOX@YOUR-DOMAIN')
+# Dev: only the synthetic test mailbox (CLAUDE.md 10.2), then Matthew's, then the pilot group.
+$CiTestMailboxes = @('ci-test@YOUR-DOMAIN')
 
 # First setup only. Use a fresh, uniquely named group and add direct members.
 New-DistributionGroup -Name 'FS CI Email Pilot Scope' -Alias 'fs-ci-email-pilot' -Type Security
@@ -145,6 +147,42 @@ Get-Recipient -RecipientPreviewFilter $CiScope.RecipientFilter |
 ```
 
 Expect the intended read assignment to show in-scope for the first mailbox and out-of-scope for the excluded mailbox. The simulation does not account for separate Entra grants: inspect those too, then perform a real application-token request. Allow permission propagation before diagnosing an immediate negative result.
+
+### 5a. Every Mailbox (Production Scope), Later
+
+Company-wide read access is granted to the **production** ingestion identity (`id-fs-ci-ingestion-prod`, created by `scripts/bootstrap-azure.sh ... production`), never to `id-fs-ci-ingestion-dev`. The dev stack is designed for synthetic and test mail: it has no private networking and is where unfinished code runs. Do this only after all of these are true:
+
+- the capture code is deployed and the pilot passed the acceptance plan (an access grant alone ingests nothing);
+- the production stack exists with private PostgreSQL access (ADR-011);
+- the mailbox inventory, the exclusion list and the reader audience are approved by the business owners, including the owners of any mailbox that holds privileged or personal mail.
+
+"Every email domain" needs no separate grant. Exchange RBAC scopes **mailboxes**, and a mailbox receives mail for all of its addresses in every accepted domain. Mail sent to an external domain is captured only through the internal mailbox that sent or received it.
+
+The production scope covers user and shared mailboxes and keeps out any mailbox tagged with `CustomAttribute15 = FS-CI-Exclude`:
+
+```powershell
+Connect-ExchangeOnline
+$CiProdClientId = 'PROD-INGESTION-IDENTITY-CLIENT-ID'
+$CiProdPrincipalId = 'PROD-INGESTION-IDENTITY-PRINCIPAL-ID'
+
+# Tag every mailbox that must stay out BEFORE creating the scope.
+Set-Mailbox -Identity 'EXCLUDED-MAILBOX@YOUR-DOMAIN' -CustomAttribute15 'FS-CI-Exclude'
+
+New-ServicePrincipal -AppId $CiProdClientId -ObjectId $CiProdPrincipalId -DisplayName 'FS CI Email Ingestion Prod'
+$CiFilter = "(RecipientTypeDetails -eq 'UserMailbox' -or RecipientTypeDetails -eq 'SharedMailbox') -and -not (CustomAttribute15 -eq 'FS-CI-Exclude')"
+New-ManagementScope -Name 'FS-CI-Email-Prod' -RecipientRestrictionFilter $CiFilter
+
+# Review the resolved population before assigning anything.
+Get-Recipient -RecipientPreviewFilter $CiFilter -ResultSize Unlimited |
+    Select-Object PrimarySmtpAddress,RecipientTypeDetails,CustomAttribute15 |
+    Export-Csv fs-ci-prod-scope-preview.csv -NoTypeInformation
+
+New-ManagementRoleAssignment -Name 'FS-CI-Email-Prod-Read' -App $CiProdPrincipalId -Role 'Application Mail.Read' -CustomResourceScope 'FS-CI-Email-Prod'
+Test-ServicePrincipalAuthorization -Identity $CiProdPrincipalId -Resource 'IN-SCOPE-MAILBOX@YOUR-DOMAIN'
+Test-ServicePrincipalAuthorization -Identity $CiProdPrincipalId -Resource 'EXCLUDED-MAILBOX@YOUR-DOMAIN'
+```
+
+Keep the preview CSV out of Git: it lists every mailbox in the company. Permission changes can take up to about two hours to apply; repeat the positive/negative test (section 6) with a real runtime token before relying on it. The hard Exchange boundary and the application's own scope (`ci scope ...`, `runtime_config`) both apply. A mailbox tagged later drops out of the Exchange scope, and the application also needs `ci scope exclude` so already-indexed mail is withdrawn. The filter syntax above follows CLAUDE.md section 6; check it against the current Exchange RBAC documentation before running it.
 
 ## 6. Resolve Mailbox IDs and Test the Actual Runtime Identity
 
