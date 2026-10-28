@@ -5,9 +5,13 @@ Order (first match wins):
 1. Screening: any ``reject`` -> restricted; any ``pending`` -> held
    (``screening_pending``); any ``hold`` -> held with that reason. Classification
    runs only when every check allows.
-2. CLAUDE.md section 7: credentials, potential_phi or sensitive_pii = yes ->
-   restricted (not embedded, never returned).
-3. Any of those three uncertain (review or unresolved), or phishing not ``no``
+2. potential_phi = yes -> restricted (not embedded, never returned). With
+   ``SENSITIVE_DATA_POLICY=restrict``, credentials or sensitive_pii = yes is
+   restricted too. With ``mask`` (the default since Matthew's 2026-10-28
+   decision) those numbers and credentials were already masked before
+   classification (ci_processing.redaction), so the message is indexed and
+   flagged for review instead.
+3. Any of the three uncertain (review or unresolved), or phishing not ``no``
    -> review (indexed and flagged).
 4. spam or newsletter = yes -> not_indexed (recorded only).
 5. Otherwise index.
@@ -26,6 +30,7 @@ from ci_processing.classification import ClassificationResult, Decision
 from ci_processing.screening import CheckDecision, ScreeningResult
 
 RESTRICTING_LABELS = ("credentials", "potential_phi", "sensitive_pii")
+MASKED_LABELS = ("credentials", "sensitive_pii")  # masked, not restricted, in mask mode
 
 
 class Disposition(StrEnum):
@@ -60,9 +65,10 @@ def screening_gate(result: ScreeningResult) -> Outcome | None:
     return None
 
 
-def classification_outcome(result: ClassificationResult) -> Outcome:
+def classification_outcome(result: ClassificationResult, *, mask_sensitive: bool) -> Outcome:
     decisions = result.decisions()
-    restricted = [n for n in RESTRICTING_LABELS if decisions[n] is Decision.YES]
+    yes = [n for n in RESTRICTING_LABELS if decisions[n] is Decision.YES]
+    restricted = [n for n in yes if not (mask_sensitive and n in MASKED_LABELS)]
     if restricted:
         return Outcome(Disposition.RESTRICTED, tuple(restricted))
     review = [n for n in RESTRICTING_LABELS if decisions[n] is not Decision.NO]

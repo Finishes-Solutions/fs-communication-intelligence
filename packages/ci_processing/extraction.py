@@ -157,6 +157,11 @@ json.dump({"text": text[: max_chars + 1]}, sys.stdout)
 """
 
 
+def clean_text(text: str) -> str:
+    """Text PostgreSQL will store: no NUL characters, no lone surrogates (PDFs have both)."""
+    return text.replace("\x00", "").encode("utf-8", "replace").decode("utf-8")
+
+
 def child_environment() -> dict[str, str]:
     """The parent's environment plus the folders holding the parser packages."""
     folders: list[str] = []
@@ -199,7 +204,7 @@ def extract(
     if completed.returncode != 0:
         log.warning("extraction failed kind=%s error=%s", kind, _error_class(completed.stderr))
         return Extraction(ExtractionStatus.FAILED, kind=kind)
-    text = str(json.loads(completed.stdout)["text"])
+    text = clean_text(str(json.loads(completed.stdout)["text"]))
     text = re.sub(r"[ \t]+", " ", text).strip()
     if not text:
         return Extraction(ExtractionStatus.NO_TEXT, kind=kind)

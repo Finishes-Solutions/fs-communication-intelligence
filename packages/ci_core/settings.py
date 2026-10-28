@@ -58,6 +58,14 @@ class AuthMode(StrEnum):
     LOCAL_TEST = "local_test"
 
 
+class SensitiveDataPolicy(StrEnum):
+    """Bank, ID and card numbers and credentials: ``mask`` them and index the rest of
+    the message (Matthew, 2026-10-28), or ``restrict`` the whole message."""
+
+    MASK = "mask"
+    RESTRICT = "restrict"
+
+
 class GraphAuth(StrEnum):
     """``certificate``: app registration (operator's machine). ``managed_identity``: in Azure."""
 
@@ -133,6 +141,7 @@ class Settings(BaseSettings):
     # to L11 approved by Matthew on 2026-10-28 for the first real-mail run.
     attachment_extraction_enabled: bool = False
     attachment_max_bytes: int = 25 * 1024 * 1024
+    sensitive_data_policy: SensitiveDataPolicy = SensitiveDataPolicy.MASK
     # Keep original attachment files in Blob Storage (evidence account, container
     # "attachments"), without malware scanning: approved by Matthew on 2026-10-28
     # (CLAUDE.md section 3a). Locally they go to LOCAL_ORIGINALS_DIR instead.
