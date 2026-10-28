@@ -476,6 +476,44 @@ def _profile(conn: Connection, addresses: list[str]) -> dict[str, Any] | None:
     ).fetchone()
 
 
+# Step 2: the per-person check's answer for one person (alias pc = the message).
+ROUTED_WHERE = """AND EXISTS (SELECT 1 FROM published_action_routes ar
+                   WHERE ar.communication_id = pc.id AND ar.person_key = %(person_key)s
+                     AND ar.decision = %(decision)s)"""
+
+# The rule used when the person has no profile (see list_actionable); aliases pc,
+# e (email message) and cl (classification), parameters from action_rule_params.
+ACTION_RULE_WHERE = """AND cl.yes_labels && %(action_labels)s::text[]
+   AND NOT (cl.yes_labels || cl.uncertain_labels) && %(bulk)s::text[]
+   AND NOT EXISTS (
+       SELECT 1 FROM published_participants fp
+       WHERE fp.communication_id = pc.id AND fp.role = 'from'
+         AND (fp.email_normalized ~ %(automated)s
+              OR fp.email_normalized = ANY(%(people)s::text[])))
+   AND (%(people)s::text[] IS NULL OR cl.action_for && %(people)s::text[]
+        OR (cardinality(cl.action_for) = 0
+            AND e.mailbox_address = ANY(%(people)s::text[])
+            AND e.direction = 'in'
+            AND (SELECT array_agg(tp.email_normalized) FROM published_participants tp
+                 WHERE tp.communication_id = pc.id AND tp.role = 'to')
+                <@ %(people)s::text[]))"""
+
+
+def action_rule_params(people: list[str] | None) -> dict[str, Any]:
+    return {
+        "action_labels": list(ACTION_LABELS),
+        "people": people,
+        "bulk": list(BULK_LABELS),
+        "automated": AUTOMATED_SENDER,
+    }
+
+
+def person_profile(conn: Connection, person: str | None) -> dict[str, Any] | None:
+    """The enabled action_people profile for a key or comma-separated addresses."""
+    addresses = sorted({a.strip().lower() for a in (person or "").split(",") if a.strip()})
+    return _profile(conn, addresses)
+
+
 def _routed(
     conn: Connection,
     principal: Principal,
@@ -488,9 +526,7 @@ def _routed(
         conn,
         principal,
         Filters(since=since),
-        """AND EXISTS (SELECT 1 FROM published_action_routes ar
-                       WHERE ar.communication_id = pc.id AND ar.person_key = %(person_key)s
-                         AND ar.decision = %(decision)s)""",
+        ROUTED_WHERE,
         {"person_key": person_key, "decision": decision},
         limit,
     )
@@ -558,26 +594,8 @@ def list_actionable(
             conn,
             principal,
             Filters(since=since),
-            """AND cl.yes_labels && %(action_labels)s::text[]
-               AND NOT (cl.yes_labels || cl.uncertain_labels) && %(bulk)s::text[]
-               AND NOT EXISTS (
-                   SELECT 1 FROM published_participants fp
-                   WHERE fp.communication_id = pc.id AND fp.role = 'from'
-                     AND (fp.email_normalized ~ %(automated)s
-                          OR fp.email_normalized = ANY(%(people)s::text[])))
-               AND (%(people)s::text[] IS NULL OR cl.action_for && %(people)s::text[]
-                    OR (cardinality(cl.action_for) = 0
-                        AND e.mailbox_address = ANY(%(people)s::text[])
-                        AND e.direction = 'in'
-                        AND (SELECT array_agg(tp.email_normalized) FROM published_participants tp
-                             WHERE tp.communication_id = pc.id AND tp.role = 'to')
-                            <@ %(people)s::text[]))""",
-            {
-                "action_labels": list(ACTION_LABELS),
-                "people": people,
-                "bulk": list(BULK_LABELS),
-                "automated": AUTOMATED_SENDER,
-            },
+            ACTION_RULE_WHERE,
+            action_rule_params(people),
             limit,
         )
     risks = (

@@ -424,7 +424,111 @@ def test_failed_attachments_are_reread_and_messages_republished(
     )
 
 
-# ----- Label check, people and the Lab person step ----------------------------
+# ----- reports, risk analysis and label review --------------------------------
+
+
+def report(client: TestClient, **body: Any) -> Any:
+    return client.post("/api/reports/preview", headers=auth(), json=body)
+
+
+def test_report_rows_carry_no_email_text(client: TestClient) -> None:
+    data = report(client, dataset="messages", columns=["received_at", "subject", "labels"]).json()
+    assert data["total"] >= len(data["rows"]) > 0
+    assert [c["key"] for c in data["columns"]] == ["received_at", "subject", "labels"]
+    for row in data["rows"]:
+        assert not {"text", "body", "excerpts"} & row.keys()
+    # The admin role alone reads no mail: reports use the caller's own grants.
+    blind = client.post(
+        "/api/reports/preview", headers=auth(roles=[ADMIN_ROLE]), json={"dataset": "messages"}
+    ).json()
+    assert blind["total"] == 0 and blind["rows"] == []
+
+
+def test_report_filters_and_groups(client: TestClient) -> None:
+    invoices = report(client, dataset="messages", label="invoice_receipt").json()
+    assert invoices["rows"] and all("invoice_receipt" in r["labels"] for r in invoices["rows"])
+    by_label = report(client, dataset="messages", group_by="label").json()
+    keys = {r["key"] for r in by_label["rows"]}
+    assert "invoice_receipt" in keys and by_label["columns"][0]["title"] == "Label"
+    by_week = report(client, dataset="messages", group_by="week").json()
+    assert (
+        by_week["rows"]
+        and sum(r["messages"] for r in by_week["rows"])
+        == report(client, dataset="messages").json()["total"]
+    )
+    future = report(client, dataset="messages", since="2030-01-01").json()
+    assert future["total"] == 0
+    for bad in (
+        {"dataset": "everything"},
+        {"dataset": "runs", "group_by": "week"},
+        {"dataset": "messages", "group_by": "subject"},
+        {"dataset": "messages", "since": "yesterday"},
+        {"dataset": "messages", "since": "2026-10-28", "until": "2026-10-01"},
+    ):
+        assert report(client, **bad).status_code == 400, bad
+
+
+def test_report_exports_are_files_and_audited(client: TestClient, database_ready: str) -> None:
+    csv_file = client.post(
+        "/api/reports/export",
+        headers=auth(),
+        json={"dataset": "risks", "format": "csv", "label_mode": "names"},
+    )
+    assert csv_file.status_code == 200
+    assert csv_file.headers["content-disposition"].startswith("attachment;")
+    assert csv_file.headers["content-security-policy"] == "sandbox; default-src 'none'"
+    text = csv_file.content.decode("utf-8-sig")
+    assert text.splitlines()[0].startswith("Received,Mailbox,Sender,Subject,Labels")
+    assert "Project Risk" in text and "project_risk" not in text
+    row = latest_audit(database_ready, "report_export")
+    assert row is not None and row["details"]["dataset"] == "risks"
+    assert len(row["details"]["result_ids"]) == int(csv_file.headers["x-report-rows"]) > 0
+    xlsx = client.post(
+        "/api/reports/export",
+        headers=auth(),
+        json={"dataset": "messages", "group_by": "sender_domain", "format": "xlsx"},
+    )
+    assert xlsx.status_code == 200 and xlsx.content.startswith(b"PK")
+    for dataset in ("runs", "mailboxes", "review_metrics"):
+        ops_file = client.post(
+            "/api/reports/export", headers=auth(), json={"dataset": dataset, "format": "csv"}
+        )
+        assert ops_file.status_code == 200, dataset
+    bad = client.post("/api/reports/export", headers=auth(), json={"format": "pdf"})
+    assert bad.status_code == 400
+    assert client.post("/api/reports/export", json={"format": "csv"}).status_code == 401
+
+
+def test_risk_overview(client: TestClient, database_ready: str) -> None:
+    data = client.get("/api/risks?days=366", headers=auth()).json()
+    assert data["total"] == len(data["items"]) > 0
+    assert all("project_risk" in i["labels"] for i in data["items"])
+    assert sum(s["risks"] for s in data["series"]) == data["total"]
+    assert all(c["label"].startswith("cat_") for c in data["by_category"])
+    assert data["by_property"] and all(p["risks"] > 0 for p in data["by_property"])
+    row = latest_audit(database_ready, "risk_overview")
+    assert row is not None and len(row["details"]["result_ids"]) == data["total"]
+    blind = client.get("/api/risks?days=366", headers=auth(roles=[ADMIN_ROLE])).json()
+    assert blind["total"] == 0 and blind["items"] == []
+
+
+def test_reports_by_property_and_action_items_match_the_page(client: TestClient) -> None:
+    by_property = report(client, dataset="messages", group_by="property").json()
+    assert by_property["rows"] and by_property["columns"][0]["title"] == "Property / Project"
+    named = report(client, dataset="messages", columns=["subject", "properties_ai"]).json()
+    assert any(r["properties_ai"] for r in named["rows"])
+    # The Action Items report is the same list as the Action Items page.
+    page = client.get(f"/api/actionable?person={PAT}&hours=744", headers=auth()).json()
+    rows = report(client, dataset="actions", person=PAT).json()["rows"]
+    assert page["actions"]
+    assert sorted(r["subject"] for r in rows) == sorted(a["subject"] for a in page["actions"])
+
+
+def test_labels_have_titles(client: TestClient) -> None:
+    labels = client.get("/api/labels", headers=auth()).json()["labels"]
+    titles = {lb["name"]: lb["title"] for lb in labels}
+    assert titles["cat_payment_billing"] == "Payment"
+    assert all(titles.values())
 
 
 def test_label_feedback_round_trip(client: TestClient, database_ready: str) -> None:

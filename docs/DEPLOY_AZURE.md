@@ -153,7 +153,7 @@ Watch progress (codes and counts only):
 ci stats
 ```
 
-Logs: portal → `func-fs-ci-ing-dev-1026` → **Monitoring → Logs** or **Log stream**. Each capture and processing pass is also recorded with its counts (`ci schedule show`, or **Schedule & runs** in the console). Once the cause of a failure is fixed, requeue the failed messages; the process timer picks them up:
+Logs: portal → `func-fs-ci-ing-dev-1026` → **Monitoring → Logs** or **Log stream**. Each capture and processing pass is also recorded with its counts (`ci schedule show`, or **Schedule & Runs** in the console). Once the cause of a failure is fixed, requeue the failed messages; the process timer picks them up:
 
 ```bash
 ci process --retry-failed --limit 0
@@ -199,7 +199,7 @@ The ingestion app stops a single run after 2 hours. If a large backfill is cut o
 
 ## 9. Turn on hourly capture
 
-In the console (**Schedule & runs**) or from Cloud Shell:
+In the console (**Schedule & Runs**) or from Cloud Shell:
 
 ```bash
 ci schedule set --on --every 60 --window 2
@@ -241,13 +241,16 @@ The hosted endpoint is written to the MCP standard (Streamable HTTP; OAuth prote
 
 A web page at `https://func-fs-ci-adm-dev-1026.azurewebsites.net/` for console admins (you, for now):
 
-- **Overview:** mode, schedule, backlog, message states and reasons, labels, attachment extraction, failures, and recent runs. Also **Run capture now** (any look-back) and **Requeue failed**.
-- **Schedule & runs:** how often capture runs, its look-back, active hours, weekdays only, processing on/off. Below that, every run with its counts.
+- **Overview:** mode, schedule, backlog, message states and reasons, labels, attachment extraction, failures, and recent runs. Also **Run Capture Now** (any look-back) and **Requeue Failed**.
+- **Schedule & Runs:** how often capture runs, its look-back, active hours, weekdays only, processing on/off. Below that, every run with its counts.
 - **Mailboxes:** filter, approve or unapprove, exclude or un-exclude (with a reason), approve all enrolled, change mode, and exclude a person or domain in every mailbox.
 - **Messages:** search or list published mail by mailbox, sender, label and date. A message shows the AI summary, action and risk, labels, people, the body, and its **files**: preview (PDF, images, text), download, or the extracted text. Signature images and logos aren't processed or shown: every inline image, and any attached image of 100 KB or less. There's also an **Open in Outlook** link, which works only for mailboxes your account can open.
-- **Action items:** the same list agents get from `list_actionable`, for any person or window. With a person profile (below), it shows that person's confident items plus a separate **Possible** list, and has a panel to edit profiles.
-- **Label check:** go through emails one at a time (from a person's action items, recent mail, project risks, or a label) and mark each label *Applies* / *Doesn't*, and whether it's really an action item for the person, with a reason when it isn't (someone else's, FYI only, automated, group email, already handled). The side panel shows how often the AI is right per label and, once a label has 20 checked emails with at least 5 of each answer, the "yes" threshold that would have scored best. Suggestions are never applied automatically.
-- **Not published:** held, restricted, bulk and failed messages, with metadata and reason only, never the subject or text.
+- **Action Items:** the same list agents get from `list_actionable`, for any person or window. With a person profile (below), it shows that person's confident items plus a separate **Possible** list, and has a panel to edit profiles.
+- **Not Published:** held, restricted, bulk and failed messages, with metadata and reason only, never the subject or text.
+- **Labels:** shown by name ("Payment", "Needs Approval") or by stored key (`cat_payment_billing`, `approval_required`); switch with **Labels: Names / Keys** in the sidebar. Hovering a label shows the other form. The choice is remembered in that browser.
+- **Risk Analysis:** emails labelled Project Risk in the last 7, 30, 90 or 365 days: count and change against the period before, a chart per day or week, counts by category, property/project, sender company (email domain) and mailbox, how many are also urgent or need approval, and a feed with the AI's one-line risk and the full message. It also shows the risk label's measured precision and recall from Label Review. There is no risk type or severity yet, so nothing is grouped by those.
+- **Reports:** pick a dataset (messages, action items, project risks, run history, mailboxes, or label review results), a date range, filters and columns, and optionally group by mailbox, sender, sender company, label, property/project, legal entity, day, week or month. Preview on screen, then export to CSV or Excel (up to 5,000 rows). The action-items dataset is exactly the Action Items list (including the person check when the person has a profile). Templates cover common reports; **Save Report** keeps a report in this browser with its date range relative ("last 30 days"). Reports hold metadata and AI proposals only (subject, sender, mailbox, date, labels, properties, entities, summary, action, risk). **Email bodies and attachment text are never exported.** Every preview and export is written to `audit_events` with the message ids it included. Cells that a spreadsheet could run as a formula are neutralized (subjects are untrusted).
+- **Label Review** (formerly Label check): go through emails one at a time (from a person's action items, recent mail, project risks, or a label) and mark each label *Yes* / *No* next to what the AI said, and whether it's really an action item for the person, with a reason when it isn't (someone else's, FYI only, automated, group email, already handled). **Results** shows how often the AI is right per label (precision and recall) and, once a label has 20 checked emails with at least 5 of each answer, the "yes" threshold that would have scored best, plus how often listed action items were really each person's. Suggestions are never applied automatically. A message's **Review Labels** button opens it for review.
 - **Communication Lab:** write an email (or start from a sample: invoice, change order, lien notice, failed inspection, newsletter, phishing, SSN, prompt injection), or pick a stored one. It runs the real screening, classifier, policy and routing and stores nothing. It shows a verdict ("Action item", "Project risk", "Restricted"…), each pipeline step, why, the AI proposal, every label against its thresholds, the difference from what was stored, and the message's files. Each run calls Azure OpenAI once.
 
 **Original files.** From the deploy that includes this, processing keeps each attachment's original file in the private container `attachments` of `stfscievidev1026`. Each distinct file is stored once, and inline signature images are skipped. Each processing pass also backfills up to 100 files for mail processed earlier. Files are **not malware-scanned** (your decision, 2026-10-28), so open unexpected downloads with care. The console serves a file only when you may read its message; restricted, held and bulk mail never get file access.

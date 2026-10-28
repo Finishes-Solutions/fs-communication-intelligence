@@ -8,23 +8,22 @@
   <script src="app.js" defer></script>
 </head>
 <body>
-  <header class="top">
-    <div class="brand">Email Intelligence <span class="muted">admin</span></div>
-    <nav id="tabs" hidden>
-      <a href="#overview">Overview</a>
-      <a href="#schedule">Schedule &amp; runs</a>
-      <a href="#mailboxes">Mailboxes</a>
-      <a href="#messages">Messages</a>
-      <a href="#actionable">Action items</a>
-      <a href="#unpublished">Not published</a>
-      <a href="#lab">Lab</a>
-      <a href="#check">Label check</a>
-    </nav>
-    <div id="who" class="muted"></div>
-  </header>
-  <main id="main">
-    <p class="muted">Loading…</p>
-  </main>
+  <div id="shell" class="shell signed-out">
+    <aside class="side">
+      <div class="brand">
+        <div class="brand-mark" id="brand-mark"></div>
+        <div class="brand-text">
+          <div class="brand-name">Email Intelligence</div>
+          <div class="brand-sub">Admin Console</div>
+        </div>
+      </div>
+      <nav id="tabs" class="nav" hidden></nav>
+      <div class="side-foot" id="who"></div>
+    </aside>
+    <main id="main">
+      <p class="muted">Loading…</p>
+    </main>
+  </div>
   <div id="toast" role="status" hidden></div>
 </body>
 </html>
