@@ -389,3 +389,162 @@ def _mark_current(facts: list[dict[str, Any]]) -> None:
     for f in facts:
         if f["direction"] == "in" and f["relation"] == "role_on" and f["role"] in latest:
             f["current"] = f["last_seen"] == latest[f["role"]]
+
+
+GRAPH_MAX_NODES = 200
+GRAPH_MAX_EDGES = 800
+
+
+def knowledge_graph(
+    conn: Connection,
+    principal: Principal,
+    *,
+    kinds: list[str] | None = None,
+    focus: int | None = None,
+    since: datetime | None = None,
+    limit: int = 80,
+    min_shared: int = 2,
+) -> dict[str, Any]:
+    """The knowledge base as a network, from the caller's authorized mail only.
+
+    Nodes are entries: the ``limit`` most mentioned (of ``kinds``), or with ``focus``
+    that entry and the entries most often mentioned with it. Two nodes are linked
+    when at least ``min_shared`` messages mention both; the link also lists the facts
+    stated between them. Each node carries how many messages mention it, how many
+    links it has, and a connector score (betweenness centrality: how often it lies on
+    the shortest path between two other entries)."""
+    limit = max(2, min(limit, GRAPH_MAX_NODES))
+    min_shared = max(1, min(min_shared, 50))
+    wanted = [k for k in (kinds or []) if k in ENTITY_KINDS] or list(ENTITY_KINDS)
+    params = _base(conn, principal, None, since)
+    out: dict[str, Any] = {"note": KNOWLEDGE_NOTE, "nodes": [], "links": [], "truncated": False}
+    if params is not None:
+        p = params | {"kinds": wanted, "limit": limit, "id": focus, "min_shared": min_shared}
+        kind_filter = "AND km.kind = ANY(%(kinds)s::text[])"
+        if focus is not None:
+            rows = conn.execute(
+                f"""
+                WITH m AS ({_mentions(_WITH_ENTITY + " " + kind_filter)})
+                SELECT entity_id, count(DISTINCT msg) AS shared FROM m
+                WHERE entity_id <> %(id)s GROUP BY entity_id
+                ORDER BY shared DESC, entity_id LIMIT %(limit)s - 1
+                """,  # noqa: S608 - fragments are constants; values are bound parameters
+                p,
+            ).fetchall()
+            ids = [focus, *(r["entity_id"] for r in rows)]
+        else:
+            rows = conn.execute(
+                f"""
+                WITH m AS ({_mentions(kind_filter)})
+                SELECT entity_id, count(DISTINCT msg) AS n FROM m
+                GROUP BY entity_id ORDER BY n DESC, entity_id LIMIT %(limit)s
+                """,  # noqa: S608
+                p,
+            ).fetchall()
+            ids = [r["entity_id"] for r in rows]
+        p["ids"] = ids
+        counts = {
+            r["entity_id"]: r["n"]
+            for r in conn.execute(
+                f"""
+                WITH m AS ({_mentions("AND km.entity_id = ANY(%(ids)s)")})
+                SELECT entity_id, count(DISTINCT msg) AS n FROM m GROUP BY entity_id
+                """,  # noqa: S608
+                p,
+            ).fetchall()
+        }
+        pairs = conn.execute(
+            f"""
+            WITH m AS (SELECT DISTINCT entity_id, msg
+                       FROM ({_mentions("AND km.entity_id = ANY(%(ids)s)")}) x)
+            SELECT a.entity_id AS source, b.entity_id AS target, count(*) AS shared
+            FROM m a JOIN m b ON a.msg = b.msg AND a.entity_id < b.entity_id
+            GROUP BY 1, 2 HAVING count(*) >= %(min_shared)s
+            ORDER BY shared DESC, 1, 2 LIMIT {GRAPH_MAX_EDGES + 1}
+            """,  # noqa: S608
+            p,
+        ).fetchall()
+        out["truncated"] = len(pairs) > GRAPH_MAX_EDGES
+        pairs = pairs[:GRAPH_MAX_EDGES]
+        facts: dict[tuple[int, int], set[str]] = {}
+        for r in conn.execute(
+            f"""
+            SELECT DISTINCT k.subject_id, k.object_id, k.relation, k.role
+            FROM published_kg_relations k
+            WHERE k.subject_id = ANY(%(ids)s) AND k.object_id = ANY(%(ids)s)
+              AND {_AUTH.format(a="k")}
+            """,  # noqa: S608
+            p,
+        ).fetchall():
+            key = (min(r["subject_id"], r["object_id"]), max(r["subject_id"], r["object_id"]))
+            facts.setdefault(key, set()).add(r["role"] or r["relation"])
+        described = _describe(conn, params, ids)
+        links = [
+            {
+                "source": r["source"],
+                "target": r["target"],
+                "shared": r["shared"],
+                "facts": sorted(facts.get((r["source"], r["target"]), ())),
+            }
+            for r in pairs
+            if r["source"] in described and r["target"] in described
+        ]
+        score = _betweenness(list(described), [(x["source"], x["target"]) for x in links])
+        degree: dict[int, int] = {}
+        for x in links:
+            degree[x["source"]] = degree.get(x["source"], 0) + 1
+            degree[x["target"]] = degree.get(x["target"], 0) + 1
+        out["nodes"] = [
+            {k: v for k, v in e.items() if k != "also_written"}
+            | {
+                "messages": counts.get(i, 0),
+                "links": degree.get(i, 0),
+                "connector": round(score.get(i, 0.0), 4),
+                "focus": i == focus,
+            }
+            for i, e in described.items()
+        ]
+        out["links"] = links
+    _audit(
+        conn,
+        principal,
+        "knowledge_graph",
+        {"entity_ids": [n["entity_id"] for n in out["nodes"]], "focus": focus},
+    )
+    conn.commit()
+    return out
+
+
+def _betweenness(nodes: list[int], edges: list[tuple[int, int]]) -> dict[int, float]:
+    """Brandes' betweenness centrality on the unweighted graph, scaled to 0..1."""
+    adjacent: dict[int, list[int]] = {n: [] for n in nodes}
+    for a, b in edges:
+        adjacent[a].append(b)
+        adjacent[b].append(a)
+    score = dict.fromkeys(nodes, 0.0)
+    for s in nodes:
+        stack: list[int] = []
+        preds: dict[int, list[int]] = {n: [] for n in nodes}
+        paths = dict.fromkeys(nodes, 0)
+        paths[s] = 1
+        dist = dict.fromkeys(nodes, -1)
+        dist[s] = 0
+        queue = [s]
+        for v in queue:
+            stack.append(v)
+            for w in adjacent[v]:
+                if dist[w] < 0:
+                    dist[w] = dist[v] + 1
+                    queue.append(w)
+                if dist[w] == dist[v] + 1:
+                    paths[w] += paths[v]
+                    preds[w].append(v)
+        delta = dict.fromkeys(nodes, 0.0)
+        while stack:
+            w = stack.pop()
+            for v in preds[w]:
+                delta[v] += paths[v] / paths[w] * (1 + delta[w])
+            if w != s:
+                score[w] += delta[w]
+    top = max(score.values(), default=0.0)
+    return {n: (v / top if top else 0.0) for n, v in score.items()}

@@ -886,6 +886,13 @@ def test_knowledge_page_profiles_and_corrections(client: TestClient, database_re
     assert client.post(f"{url}/unmerge", headers=auth()).status_code == 400  # not merged
     assert client.post(f"{url}/explode", headers=auth()).status_code == 404
     assert client.get("/api/knowledge/abc", headers=auth()).status_code == 404
+    graph = client.get(
+        "/api/knowledge/graph?kinds=organization,person&limit=30&min_shared=1&days=3650",
+        headers=auth(),
+    ).json()
+    assert graph["nodes"] and {n["kind"] for n in graph["nodes"]} <= {"organization", "person"}
+    assert client.get("/api/knowledge/graph?focus=x", headers=auth()).status_code == 400
+    assert client.get("/api/knowledge/graph", headers=auth(roles=[READER_ALL])).status_code == 403
     # Fix Kind: the organization becomes a term, then goes back with Unmerge.
     # Edit Domain (organizations), then back to what emails say.
     fixed = client.post(f"{url}/detail", headers=auth(), json={"detail": "northfield.example"})

@@ -601,6 +601,25 @@ def build_admin_app(
             found["hidden"] = hidden_knowledge(conn)
         return found
 
+    def knowledge_graph(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        q = request.query_params
+        days = q.get("days") or ""
+        focus = q.get("focus") or ""
+        if focus and not focus.isdigit():
+            raise HTTPException(400, "focus must be an entry number")
+        with connector("ci_search") as conn:
+            return kb.knowledge_graph(
+                conn,
+                principal,
+                kinds=[k for k in (q.get("kinds") or "").split(",") if k] or None,
+                focus=int(focus) if focus else None,
+                since=datetime.now(UTC) - timedelta(days=_int(request, "days", 365, 1, 3660))
+                if days
+                else None,
+                limit=_int(request, "limit", 80, 2, kb.GRAPH_MAX_NODES),
+                min_shared=_int(request, "min_shared", 2, 1, 50),
+            )
+
     def knowledge_merge_many(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
         ids = body.get("ids")
         if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):
@@ -1085,6 +1104,7 @@ def build_admin_app(
         Route("/api/actionable", endpoint(actionable)),
         Route("/api/feedback/{id}", endpoint(feedback), methods=["GET", "PUT"]),
         Route("/api/knowledge", endpoint(knowledge_list)),
+        Route("/api/knowledge/graph", endpoint(knowledge_graph)),
         Route("/api/knowledge/merge", endpoint(knowledge_merge_many), methods=["POST"]),
         Route("/api/knowledge/{id}", endpoint(knowledge_entry_page)),
         Route("/api/knowledge/{id}/{action}", endpoint(knowledge_action), methods=["POST"]),

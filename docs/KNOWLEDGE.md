@@ -97,6 +97,14 @@ ci knowledge backfill
 
 Either way the wrong entry stays, merged, so later emails where the AI repeats the mistake still land under the right kind. Unmerge undoes it.
 
+**Map** (Matthew, 2026-10-29). The Knowledge page's **Map** view draws the base as an interactive network (`GET /api/knowledge/graph`, `ci_retrieval.knowledge.knowledge_graph`), from the caller's authorized mail only.
+- **Nodes:** the most-mentioned entries (40, 80 or 150) of the chosen kinds. With **Center on…**, or a double-click on a node, it shows one entry and the entries most often mentioned with it.
+- **Links:** two entries are linked when at least N emails (1, 2, 3 or 5) mention both. Thickness is the number of shared emails. A darker link means the emails also state a fact between the two (works for, lender, owner…).
+- **Size:** either the connector score (betweenness centrality, computed over the drawn network: how often an entry lies on the shortest path between two others) or the number of emails.
+- **Color:** the entry's kind.
+- **Interaction:** pan, zoom, drag a node, hover to light up an entry's links, click to open it.
+- **Limits:** at most 200 nodes and 800 links. A table of the top connectors sits under the map.
+
 **Titles, meanings and domains** (Matthew, 2026-10-29, migration 0020). A person's title, a term's meaning and an organization's domain are the value stated in the most messages, with ties going to the latest. A single email that got it wrong no longer replaces it; for example, one showed Chuck Jr.'s signature title against Chuck Sr.'s address. An admin can set the value by hand: the console's **Edit Title / Meaning / Domain** button, or `ci knowledge set-detail ID "CEO"`. A hand-set value wins for every reader, including AI agents; `--clear` or an empty value goes back to what emails say. The prompt also tells the model to take a title only from that person's own signature or a statement about them.
 
 **Meetings** (Matthew, 2026-10-29, migration 0019). A fifth kind for recurring or named meetings and events, such as a weekly ops meeting, an OAC meeting or a closing. It has two facts: a meeting is **about** a property, and a person **attends** a meeting. Before this kind existed, the AI filed a meeting under a person. The same change tells the AI to name a person only when the email itself ties the name to the address (sender or recipient name, signature, "Name <address>"), never from a first name mentioned in passing. Both apply to mail processed from now on. Earlier mistakes are fixed with Fix Kind… (now offering Meeting), Merge or Hide.

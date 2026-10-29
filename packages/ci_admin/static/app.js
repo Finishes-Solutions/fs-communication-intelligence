@@ -1919,8 +1919,265 @@ function support(f) {
   return badge(`${num(f.messages)} msg${f.messages === 1 ? "" : "s"} · ${num(f.senders)} sender${f.senders === 1 ? "" : "s"}`, weak ? "warn" : "good");
 }
 
+// ---------- knowledge map (force-directed network, inline SVG, no libraries) -------
+
+const KIND_SLOT = { property: 1, organization: 2, person: 3, term: 4, meeting: 7 };
+const MAP_RANGES = [["", "All Time"], ["365", "1 Year"], ["90", "90 Days"], ["30", "30 Days"]];
+const MAP_SIZES = [["40", "40"], ["80", "80"], ["150", "150"]];
+const viewSwitch = (current, go) => h("div", { class: "seg" }, [["list", "List"], ["map", "Map"]].map(([v, t]) =>
+  h("button", { type: "button", class: v === current ? "on" : "", onclick: () => go(v) }, t)));
+
+async function knowledgeMapPage() {
+  const p = pageParams();
+  const state = {
+    kinds: (p.get("kinds") || "property,organization,person,meeting").split(",").filter(k => KIND_TEXT[k]),
+    days: p.get("days") || "", limit: p.get("limit") || "80", min: p.get("min") || "2",
+    focus: p.get("focus") || "", size: p.get("size") || "connector",
+  };
+  const go = changes => {
+    const next = { ...state, ...changes };
+    const qs = new URLSearchParams({ view: "map", kinds: next.kinds.join(","), days: next.days, limit: next.limit,
+      min: next.min, focus: next.focus, size: next.size });
+    for (const [k, v] of [...qs]) if (!v) qs.delete(k);
+    navigate("/knowledge?" + qs);
+  };
+  const detail = h("div", { class: "card reader" }, h("div", { class: "placeholder" },
+    emptyState("Click an Entry", "Its facts, related entries and latest emails appear here. Double-click to center the map on it.", "layers")));
+  const stage = h("div", { class: "kmap-stage" }, h("div", { class: "empty" }, h("div", { class: "spinner" }), "Building the map…"));
+  const seg = (options, value, key) => h("div", { class: "seg" }, options.map(([v, t]) =>
+    h("button", { type: "button", class: v === value ? "on" : "", onclick: () => go({ [key]: v }) }, t)));
+  const kindChips = h("div", { class: "kmap-kinds" }, Object.keys(KIND_TEXT).map(k => {
+    const on = state.kinds.includes(k);
+    return h("button", { type: "button", class: "kmap-kind" + (on ? " on" : ""), "aria-pressed": on ? "true" : "false",
+      onclick: () => { const next = on ? state.kinds.filter(x => x !== k) : [...state.kinds, k]; if (next.length) go({ kinds: next }); } },
+      h("span", { class: `key s${KIND_SLOT[k]}` }), KIND_TEXT[k]);
+  }));
+  const find = h("input", { placeholder: "Center on…", class: "kmap-find" });
+  const toolbar = h("div", { class: "kmap-toolbar" },
+    kindChips,
+    h("div", { class: "kmap-controls" },
+      h("label", { class: "kmap-ctl" }, h("span", {}, "Period"), seg(MAP_RANGES, state.days, "days")),
+      h("label", { class: "kmap-ctl" }, h("span", {}, "Entries"), seg(MAP_SIZES, state.limit, "limit")),
+      h("label", { class: "kmap-ctl" }, h("span", {}, "Link when together in at least"),
+        seg([["1", "1"], ["2", "2"], ["3", "3"], ["5", "5"]], state.min, "min"), h("span", {}, "emails")),
+      h("label", { class: "kmap-ctl" }, h("span", {}, "Size by"),
+        seg([["connector", "Connector"], ["messages", "Emails"]], state.size, "size")),
+      h("form", { class: "kmap-ctl", onsubmit: guard(async e => {
+        e.preventDefault();
+        const r = await pickEntry({ title: "Center the Map On…", text: "The map shows this entry and the entries most often mentioned with it.", query: find.value.trim() });
+        if (r) go({ focus: String(r.entity_id) });
+      }) }, searchBox(find))));
+  show(pageHead("Knowledge", "How the properties, organizations, people, meetings and terms in your mail connect.",
+    viewSwitch("map", v => navigate(v === "list" ? "/knowledge" : "/knowledge?view=map"))),
+    card({ flush: true }, toolbar),
+    h("div", { class: "kmap-layout" }, card({ class: "kmap-card", flush: true }, stage), detail),
+    note("Two entries are linked when the same emails mention both; thicker links mean more emails. Darker links carry a fact (works for, lender, owner…). Size shows how much an entry connects others (betweenness) or how many emails mention it. Built automatically from email, without review.", "info"));
+  const qs = new URLSearchParams({ kinds: state.kinds.join(","), limit: state.limit, min_shared: state.min });
+  if (state.days) qs.set("days", state.days);
+  if (state.focus) qs.set("focus", state.focus);
+  const d = await api("/api/knowledge/graph?" + qs);
+  if (!d.nodes.length) {
+    stage.replaceChildren(emptyState("Nothing to Map", "No entries match these filters in the mail you may read.", "layers"));
+    return;
+  }
+  stage.replaceChildren(networkMap(d, state, {
+    open: id => showEntry(id, detail),
+    center: id => go({ focus: String(id) }),
+  }));
+  if (state.focus) {
+    const f = d.nodes.find(n => n.focus);
+    toolbar.append(h("div", { class: "kmap-focus" }, badge(h("span", {}, "Centered on ", h("b", {}, f ? f.name : `#${state.focus}`),
+      h("button", { class: "chip-x", type: "button", "aria-label": "Show the whole map", onclick: () => go({ focus: "" }) }, icon("x"))), "info")));
+    if (f) showEntry(f.entity_id, detail);
+  }
+  if (d.truncated) toolbar.append(note("Only the strongest 800 links are drawn. Raise the minimum shared emails to see the structure more clearly.", "warn"));
+}
+
+// The network itself: nodes are entries, links are emails they share.
+function networkMap(d, state, actions) {
+  const W = 1000, H = 680;
+  const byId = new Map(d.nodes.map(n => [n.entity_id, { ...n, x: 0, y: 0, vx: 0, vy: 0 }]));
+  const nodes = [...byId.values()];
+  const links = d.links.map(l => ({ ...l, s: byId.get(l.source), t: byId.get(l.target) })).filter(l => l.s && l.t);
+  const maxMsg = Math.max(1, ...nodes.map(n => n.messages));
+  const maxShared = Math.max(1, ...links.map(l => l.shared));
+  for (const n of nodes) {
+    const v = state.size === "messages" ? Math.sqrt(n.messages / maxMsg) : Math.sqrt(n.connector);
+    n.r = 6 + 26 * v + (n.focus ? 4 : 0);
+  }
+  // Start on a circle (deterministic), heavier nodes nearer the middle.
+  [...nodes].sort((a, b) => b.r - a.r).forEach((n, i) => {
+    const a = i * 2.39996, rad = 30 + 9 * Math.sqrt(i) * 10;
+    n.x = W / 2 + Math.cos(a) * rad; n.y = H / 2 + Math.sin(a) * rad;
+  });
+  const neighbours = new Map(nodes.map(n => [n.entity_id, new Set()]));
+  for (const l of links) { neighbours.get(l.s.entity_id).add(l.t.entity_id); neighbours.get(l.t.entity_id).add(l.s.entity_id); }
+
+  const view = svg("g", {});
+  const linkLayer = svg("g", { class: "km-links" });
+  const nodeLayer = svg("g", { class: "km-nodes" });
+  const labelLayer = svg("g", { class: "km-labels" });
+  view.append(linkLayer, nodeLayer, labelLayer);
+  const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, class: "kmap", role: "img", "aria-label": `Knowledge map: ${nodes.length} entries, ${links.length} links` }, view);
+  const tip = h("div", { class: "chart-tip kmap-tip", hidden: true });
+  const wrap = h("div", { class: "kmap-wrap" }, root, tip,
+    h("div", { class: "kmap-zoom" },
+      h("button", { type: "button", class: "btn sm", "aria-label": "Zoom in", onclick: () => zoomBy(1.25) }, "+"),
+      h("button", { type: "button", class: "btn sm", "aria-label": "Zoom out", onclick: () => zoomBy(0.8) }, "−"),
+      h("button", { type: "button", class: "btn sm", onclick: () => { userMoved = false; fit(); } }, "Fit")));
+
+  for (const l of links) {
+    l.el = svg("line", { class: "km-link" + (l.facts.length ? " fact" : ""), "stroke-width": (0.6 + 3.4 * Math.sqrt(l.shared / maxShared)).toFixed(2) });
+    linkLayer.append(l.el);
+  }
+  const labelled = new Set([...nodes].sort((a, b) => b.r - a.r).slice(0, 28).map(n => n.entity_id));
+  for (const n of nodes) {
+    n.el = svg("circle", { r: n.r.toFixed(1), class: `km-node dot s${KIND_SLOT[n.kind] || 8}` + (n.focus ? " focus" : ""), tabindex: "0",
+      "aria-label": `${n.name}, ${KIND_TEXT[n.kind] || n.kind}, ${n.messages} emails, ${n.links} links` });
+    n.label = svg("text", { class: "km-label" + (labelled.has(n.entity_id) ? "" : " hidden"), "text-anchor": "middle" }, n.name.length > 28 ? n.name.slice(0, 27) + "…" : n.name);
+    nodeLayer.append(n.el); labelLayer.append(n.label);
+    n.el.addEventListener("mouseenter", () => highlight(n));
+    n.el.addEventListener("mouseleave", () => highlight(null));
+    n.el.addEventListener("focus", () => highlight(n));
+    n.el.addEventListener("blur", () => highlight(null));
+    n.el.addEventListener("click", () => actions.open(n.entity_id));
+    n.el.addEventListener("dblclick", () => actions.center(n.entity_id));
+    n.el.addEventListener("keydown", e => { if (e.key === "Enter") actions.open(n.entity_id); });
+    n.el.addEventListener("pointerdown", e => startDrag(e, n));
+  }
+
+  function highlight(n) {
+    root.classList.toggle("dim", !!n);
+    for (const m of nodes) {
+      const on = n && (m === n || neighbours.get(n.entity_id).has(m.entity_id));
+      m.el.classList.toggle("on", !!on);
+      m.label.classList.toggle("show", !!on);
+    }
+    for (const l of links) l.el.classList.toggle("on", !!n && (l.s === n || l.t === n));
+    if (!n) { tip.hidden = true; return; }
+    const sub = [KIND_TEXT[n.kind], n.title || n.email || n.domain || n.meaning].filter(Boolean).join(" · ");
+    tip.replaceChildren(h("div", { class: "tip-head" }, n.name), h("div", { class: "muted small" }, sub),
+      h("div", { class: "tip-row" }, "Emails", h("b", {}, num(n.messages))),
+      h("div", { class: "tip-row" }, "Links", h("b", {}, num(n.links))),
+      h("div", { class: "tip-row" }, "Connector score", h("b", {}, n.connector.toFixed(2))));
+    const box = root.getBoundingClientRect();
+    const px = ((n.x * cam.k + cam.x) / W) * box.width, py = ((n.y * cam.k + cam.y) / H) * box.height;
+    const above = py - (n.r * cam.k * box.height) / H - 10;
+    tip.style.cssText = `left:${px}px;top:${Math.max(110, above)}px`;
+    tip.hidden = false;
+  }
+
+  // Camera: wheel to zoom at the pointer, drag the background to pan.
+  let cam = { x: 0, y: 0, k: 1 };
+  const applyCam = () => {
+    view.setAttribute("transform", `translate(${cam.x.toFixed(1)} ${cam.y.toFixed(1)}) scale(${cam.k.toFixed(3)})`);
+    labelLayer.style.fontSize = `${(13 / cam.k).toFixed(2)}px`;  // labels stay readable at any zoom
+    labelLayer.style.strokeWidth = `${(3 / cam.k).toFixed(2)}px`;
+  };
+  const toSvg = e => { const b = root.getBoundingClientRect(); return [((e.clientX - b.left) / b.width) * W, ((e.clientY - b.top) / b.height) * H]; };
+  function zoomBy(f, at) {
+    userMoved = true;
+    const [px, py] = at || [W / 2, H / 2];
+    const k = Math.min(6, Math.max(0.3, cam.k * f));
+    cam.x = px - ((px - cam.x) / cam.k) * k; cam.y = py - ((py - cam.y) / cam.k) * k; cam.k = k;
+    applyCam();
+  }
+  root.addEventListener("wheel", e => { e.preventDefault(); zoomBy(e.deltaY < 0 ? 1.12 : 0.89, toSvg(e)); }, { passive: false });
+  let pan = null;
+  root.addEventListener("pointerdown", e => {
+    if (e.target !== root) return;
+    userMoved = true;
+    pan = { at: toSvg(e), x: cam.x, y: cam.y }; root.setPointerCapture(e.pointerId);
+  });
+  root.addEventListener("pointermove", e => {
+    if (!pan) return;
+    const [x, y] = toSvg(e); cam.x = pan.x + x - pan.at[0]; cam.y = pan.y + y - pan.at[1]; applyCam();
+  });
+  root.addEventListener("pointerup", () => { pan = null; });
+
+  // Dragging a node pins it while held and wakes the layout.
+  function startDrag(e, n) {
+    e.stopPropagation();
+    n.el.setPointerCapture(e.pointerId);
+    const move = ev => { const [x, y] = toSvg(ev); n.x = (x - cam.x) / cam.k; n.y = (y - cam.y) / cam.k; n.fixed = true; heat = Math.max(heat, 0.3); kick(); };
+    const up = () => { n.fixed = false; n.el.removeEventListener("pointermove", move); n.el.removeEventListener("pointerup", up); };
+    n.el.addEventListener("pointermove", move);
+    n.el.addEventListener("pointerup", up);
+  }
+
+  // Layout: Fruchterman-Reingold. Every pair repels (k²/d), links attract (d²/k,
+  // stronger with more shared emails), a weak pull keeps the map wide like the
+  // canvas, and overlapping nodes push apart. Each step moves a node at most the
+  // current temperature, which cools until the layout settles and stops.
+  let heat = 1, running = false, userMoved = false;
+  const k = 0.9 * Math.sqrt((W * H) / Math.max(1, nodes.length));
+  function tick() {
+    const n = nodes.length;
+    for (const m of nodes) { m.dx = 0; m.dy = 0; }
+    for (let i = 0; i < n; i++) {
+      const a = nodes[i];
+      for (let j = i + 1; j < n; j++) {
+        const b = nodes[j];
+        let dx = a.x - b.x, dy = a.y - b.y;
+        const d = Math.max(0.5, Math.sqrt(dx * dx + dy * dy)), min = a.r + b.r + 8;
+        const f = (k * k) / d + (d < min ? (min - d) * 4 : 0);
+        dx /= d; dy /= d;
+        a.dx += dx * f; a.dy += dy * f; b.dx -= dx * f; b.dy -= dy * f;
+      }
+    }
+    for (const l of links) {
+      const a = l.s, b = l.t, dx = a.x - b.x, dy = a.y - b.y, d = Math.max(0.5, Math.sqrt(dx * dx + dy * dy));
+      const f = ((d * d) / k) * (0.6 + 0.8 * Math.sqrt(l.shared / maxShared));
+      a.dx -= (dx / d) * f; a.dy -= (dy / d) * f; b.dx += (dx / d) * f; b.dy += (dy / d) * f;
+    }
+    const temp = 60 * heat;
+    for (const m of nodes) {
+      m.dx += (W / 2 - m.x) * 0.6; m.dy += (H / 2 - m.y) * 1.2;  // gentle, wider than tall
+      if (m.fixed) continue;
+      const len = Math.sqrt(m.dx * m.dx + m.dy * m.dy) || 1, step = Math.min(len, temp);
+      m.x += (m.dx / len) * step; m.y += (m.dy / len) * step;
+    }
+    heat *= 0.985;
+  }
+  function draw() {
+    for (const l of links) { l.el.setAttribute("x1", l.s.x.toFixed(1)); l.el.setAttribute("y1", l.s.y.toFixed(1)); l.el.setAttribute("x2", l.t.x.toFixed(1)); l.el.setAttribute("y2", l.t.y.toFixed(1)); }
+    for (const m of nodes) {
+      m.el.setAttribute("cx", m.x.toFixed(1)); m.el.setAttribute("cy", m.y.toFixed(1));
+      m.label.setAttribute("x", m.x.toFixed(1)); m.label.setAttribute("y", (m.y + m.r + 13 / cam.k).toFixed(1));
+    }
+  }
+  // Fit everything in view (until the person pans or zooms themselves).
+  function fit() {
+    if (userMoved || !nodes.length) return;
+    const pad = 40;
+    const x0 = Math.min(...nodes.map(m => m.x - m.r)), x1 = Math.max(...nodes.map(m => m.x + m.r));
+    const y0 = Math.min(...nodes.map(m => m.y - m.r)), y1 = Math.max(...nodes.map(m => m.y + m.r + 16));
+    const k = Math.min(2, (W - 2 * pad) / Math.max(1, x1 - x0), (H - 2 * pad) / Math.max(1, y1 - y0));
+    cam = { k, x: W / 2 - ((x0 + x1) / 2) * k, y: H / 2 - ((y0 + y1) / 2) * k };
+    applyCam();
+  }
+  function frame() {
+    for (let i = 0; i < 3; i++) tick();
+    draw();
+    fit();
+    if (heat > 0.02 && wrap.isConnected) requestAnimationFrame(frame); else running = false;
+  }
+  function kick() { if (!running) { running = true; requestAnimationFrame(frame); } }
+  const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reduce) { while (heat > 0.02) tick(); draw(); fit(); } else { for (let i = 0; i < 60; i++) tick(); draw(); fit(); kick(); }
+
+  // The table view of the same data: the strongest connectors first.
+  const top = [...nodes].sort((a, b) => b.connector - a.connector || b.messages - a.messages).slice(0, 15);
+  return h("div", {}, wrap,
+    h("details", { class: "kmap-table" }, h("summary", {}, `Top connectors (table view of ${num(nodes.length)} entries, ${num(links.length)} links)`),
+      table([["Entry", n => h("button", { class: "linkish", onclick: () => actions.open(n.entity_id) }, n.name)],
+        ["Kind", n => kindBadge(n.kind)], ["Connector", n => n.connector.toFixed(2), "num"],
+        ["Links", n => num(n.links), "num"], ["Emails", n => num(n.messages), "num"]], top)));
+}
+
 async function knowledgePage() {
   const p = pageParams();
+  if (p.get("view") === "map") return knowledgeMapPage();
   const q = h("input", { placeholder: "Name, spelling or email address", value: p.get("q") || "" });
   const kind = h("select", {}, h("option", { value: "" }, "Any kind"),
     Object.entries(KIND_TEXT).map(([k, t]) => h("option", { value: k, selected: k === (p.get("kind") || "") }, t)));
@@ -1929,7 +2186,8 @@ async function knowledgePage() {
     emptyState("Select an Entry", "Its facts, related entries and latest emails appear here.", "layers")));
   const go = () => navigate("/knowledge?" + new URLSearchParams(Object.fromEntries(
     [["q", q.value.trim()], ["kind", kind.value]].filter(([, v]) => v))));
-  show(pageHead("Knowledge", "Properties, organizations, people and terms learned from email, counted over the mail you may read."),
+  show(pageHead("Knowledge", "Properties, organizations, people, meetings and terms learned from email, counted over the mail you may read.",
+    viewSwitch("list", v => navigate(v === "list" ? "/knowledge" : "/knowledge?view=map"))),
     card({}, h("form", { class: "toolbar", onsubmit: e => { e.preventDefault(); go(); } },
       searchBox(q), kind, h("button", { class: "btn primary", type: "submit" }, "Search"))),
     h("div", { class: "inbox" }, list, detail),
