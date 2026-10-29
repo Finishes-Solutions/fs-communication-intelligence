@@ -21,6 +21,7 @@ AOAI="${AOAI:-aoai-fs-ci-dev-$SUFFIX}"
 LANG_SVC="${LANG_SVC:-lang-fs-ci-dev-$SUFFIX}"
 SAFE="${SAFE:-safe-fs-ci-dev-$SUFFIX}"
 APPI="${APPI:-appi-fs-ci-dev}"
+KV="${KV:-kv-fs-ci-dev-$SUFFIX}"
 REPO="${REPO:-Finishes-Solutions/fs-communication-intelligence}"
 API_NAME="${API_NAME:-FS Communications Search API}"
 GRAPH_APP_ID=00000003-0000-0000-c000-000000000000
