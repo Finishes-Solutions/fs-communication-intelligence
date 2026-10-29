@@ -92,12 +92,21 @@ function icon(name) {
 
 const main = () => document.getElementById("main");
 const pageParams = () => new URLSearchParams(location.search);
+// The page being shown. Navigating away aborts its pending reads, so a slow page
+// can't replace the one the user moved on to.
+let current = { path: null, ctl: new AbortController(), shown: false, done: true };
 function navigate(path) {
+  // A second click on a page that is still loading would only start it over.
+  if (path === location.pathname + location.search && path === current.path && !current.done) return;
   if (path !== location.pathname + location.search) history.pushState(null, "", path);
   window.scrollTo(0, 0);
   route();
 }
-function show(...nodes) { main().replaceChildren(h("div", { class: "page" }, ...nodes)); }
+function show(...nodes) {
+  current.shown = true;
+  main().replaceChildren(h("div", { class: "page" }, ...nodes));
+}
+const aborted = e => e && e.name === "AbortError";
 function toast(msg) {
   const t = document.getElementById("toast");
   t.textContent = msg; t.hidden = false;
@@ -106,7 +115,7 @@ function toast(msg) {
 // Wraps a click handler so a failed API call shows as a toast instead of vanishing.
 function guard(fn) {
   return async (...args) => {
-    try { await fn(...args); } catch (e) { if (e.message !== "signing in") toast(e.message); }
+    try { await fn(...args); } catch (e) { if (e.message !== "signing in" && !aborted(e)) toast(e.message); }
   };
 }
 function when(iso) { return iso ? new Date(iso).toLocaleString() : "—"; }
@@ -307,6 +316,8 @@ async function api(path, options = {}) {
   const t = token();
   if (!t) { await signIn(); throw new Error("signing in"); }
   const res = await fetch(path, {
+    // Reads stop when the user leaves the page; changes (POST, PUT...) always finish.
+    signal: (options.method || "GET") === "GET" ? current.ctl.signal : undefined,
     ...options,
     headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json", ...(options.headers || {}) },
   });
@@ -1541,9 +1552,16 @@ async function reviewPage() {
 
   let reviewed = 0;
   let done = false;
+  const loading = text => {
+    panel.hidden = true;
+    reader.replaceChildren(h("div", { class: "placeholder" }, h("div", {}, h("div", { class: "spinner" }), text)));
+  };
   async function next() {
     let id = browseId;
     if (!browseId) {
+      // Picking the list's next email can take a while on a large mailbox.
+      loading("Finding the next email…");
+      status.textContent = "";
       const q = new URLSearchParams({ source, person: personInput.value });
       if (source === "label") q.set("label", label);
       const r = await api("/api/review/next?" + q);
@@ -1558,9 +1576,9 @@ async function reviewPage() {
       panel.hidden = true;
       return;
     }
-    panel.hidden = false;
-    reader.replaceChildren(h("div", { class: "placeholder" }, h("div", {}, h("div", { class: "spinner" }), "Loading…")));
+    loading("Loading the email…");
     const d = await api(`/api/feedback/${encodeURIComponent(id)}`);
+    panel.hidden = false;
     reader.replaceChildren(messageView(id, d.email));
     drawPanel(id, d);
   }
@@ -2467,14 +2485,27 @@ function drawNav() {
 }
 
 async function route() {
+  current.ctl.abort();
+  const mine = current = { path: location.pathname + location.search, ctl: new AbortController(), shown: false, done: false };
   const name = location.pathname.split("/")[1] || "overview";
   const navName = name === "check" ? "review" : name; // "Label check" became Label Review
   document.querySelectorAll(".nav a").forEach(a => a.classList.toggle("active", a.getAttribute("href") === "/" + navName));
+  // A page still waiting after a moment shows that it is loading instead of leaving the last page up.
+  const entry = NAV.find(n => n && n[0] === navName);
+  const slow = setTimeout(() => {
+    if (mine === current && !mine.shown) {
+      main().replaceChildren(h("div", { class: "page" }, pageHead(entry ? entry[1] : "Loading", null),
+        card({}, h("div", { class: "empty" }, h("div", { class: "spinner" }), "Loading…"))));
+    }
+  }, 150);
   try { await (PAGES[name] || overview)(); }
   catch (e) {
-    if (e.message !== "signing in") {
+    if (mine === current && !aborted(e) && e.message !== "signing in") {
       show(pageHead("Something Went Wrong", null), card({}, h("p", { class: "status-failed", style: "margin:0" }, e.message)));
     }
+  } finally {
+    clearTimeout(slow);
+    mine.done = true;
   }
 }
 
