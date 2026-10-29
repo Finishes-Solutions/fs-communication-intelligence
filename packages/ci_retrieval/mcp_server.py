@@ -27,7 +27,7 @@ from typing import Any
 from urllib.parse import quote
 
 from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server.auth.settings import AuthSettings
+from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
@@ -38,6 +38,7 @@ from ci_core.settings import Settings
 from ci_processing.embedding import Embedder
 from ci_retrieval import knowledge, reports
 from ci_retrieval import search as retrieval
+from ci_retrieval.broker import CALLBACK_PATH, CONSENT_PATH, EntraBroker
 from ci_retrieval.entra import EntraAccessToken, EntraTokenVerifier
 from ci_retrieval.identity import Principal
 
@@ -93,7 +94,7 @@ def build_server(
     """``view_base`` is the admin console's address: results then link to its
     read-only email page and attachment downloads (``with_links``)."""
     server: MCPServer[Any] = MCPServer(
-        name="fs-communications",
+        name="FS Communication Intelligence",
         instructions="Finishes Solutions email evidence, limited to what the signed-in "
         "person is authorized to read. Which tool: search_email finds emails by meaning and "
         "keywords; list_email lists the newest by mailbox, sender, label, property, entity or "
@@ -519,8 +520,10 @@ def build_http_app(
     *,
     verifier: EntraTokenVerifier | None = None,
     connector: Connector = _search_connection,
+    broker_http: Any = None,
 ) -> Starlette:
-    """The hosted MCP endpoint at ``{SEARCH_PUBLIC_URL}/mcp``."""
+    """The hosted MCP endpoint at ``{SEARCH_PUBLIC_URL}/mcp``; with the broker
+    settings, also the OAuth endpoints platforms register and sign in through."""
     tenant = settings.entra_tenant_id or settings.graph_tenant_id
     settings.require("search_public_url", "search_api_client_id", "search_api_app_id_uri")
     if not tenant:
@@ -530,20 +533,47 @@ def build_http_app(
     verifier = verifier or EntraTokenVerifier(
         tenant or "", settings.search_api_client_id or "", app_id_uri
     )
+    secret = settings.mcp_broker_client_secret
+    if settings.mcp_broker_client_id and secret and secret.get_secret_value():
+        # Platforms register themselves with the broker, which signs people in at
+        # Entra; the tokens stay Entra's own and are checked by the same verifier.
+        broker: EntraBroker | None = EntraBroker(
+            base_url=base,
+            tenant_id=tenant or "",
+            client_id=settings.mcp_broker_client_id,
+            client_secret=secret.get_secret_value(),
+            verifier=verifier,
+            extra_redirects=tuple(
+                u.strip() for u in settings.mcp_broker_extra_redirects.split(",") if u.strip()
+            ),
+            http=broker_http,
+        )
+        auth_options: dict[str, Any] = {"auth_server_provider": broker}
+        issuer = base
+        registration = ClientRegistrationOptions(enabled=True, default_scopes=[verifier.scope_uri])
+    else:
+        broker = None
+        auth_options = {"token_verifier": verifier}
+        issuer = f"https://login.microsoftonline.com/{tenant}/v2.0"
+        registration = None
     server = build_server(
         _token_principal,
         embedder,
         connector=connector,
         view_base=settings.admin_public_url,
-        token_verifier=verifier,
         auth=AuthSettings(
-            issuer_url=f"https://login.microsoftonline.com/{tenant}/v2.0",
+            issuer_url=issuer,
             resource_server_url=f"{base}/mcp",
             required_scopes=[verifier.scope_uri],
             # The verifier checks the audience itself; Entra does not echo RFC 8707 resources.
             validate_token_resource=False,
+            client_registration_options=registration,
         ),
+        **auth_options,
     )
+    if broker is not None:
+        server.custom_route(CONSENT_PATH, methods=["GET", "POST"])(broker.consent)
+        server.custom_route(CALLBACK_PATH, methods=["GET"])(broker.callback_route)
     # DNS-rebinding protection guards servers on localhost. This one is public,
     # HTTPS-only and refuses every request without a valid Entra token, and an
     # Origin allow-list could reject the agent platforms' own servers.

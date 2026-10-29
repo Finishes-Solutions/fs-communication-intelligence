@@ -339,6 +339,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "azure-identity" },
+    { name = "cryptography" },
     { name = "httpx" },
     { name = "mcp" },
     { name = "openpyxl" },
@@ -360,6 +361,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "azure-identity", specifier = "==1.27.0" },
+    { name = "cryptography", specifier = "==50.0.2" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "mcp", specifier = "==2.3.0" },
     { name = "openpyxl", specifier = "==3.1.5" },

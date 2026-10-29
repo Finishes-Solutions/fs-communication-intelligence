@@ -1933,7 +1933,7 @@ async function readerPage() {
     return;
   }
   show(h("div", { class: "reader-page" },
-    h("div", { class: "reader-bar" }, h("span", { class: "muted small" }, "Email Intelligence · read-only view"),
+    h("div", { class: "reader-bar" }, h("span", { class: "muted small" }, "FS Communication Intelligence · read-only view"),
       h("a", { href: "/overview", target: "_self", class: "btn sm ghost" }, "Open Console")),
     card({}, messageView(id, m, { readOnly: true }))));
   const wanted = pageParams().get("file");
@@ -2533,7 +2533,7 @@ async function connectionsPage() {
           secretStep(c),
           step("Add the connector in Claude",
             para("Admin settings → ", b("Connectors"), " → ", b("Add custom connector"), ". Fill in:"),
-            kv(copyRow("Name", "FS Email", "Any name; people see it in Claude"),
+            kv(copyRow("Name", "FS Communication Intelligence", "Any name; people see it in Claude"),
               copyRow("Remote MCP server URL", d.mcp_url),
               copyRow("OAuth Client ID", c.client_id, "Under Advanced settings"),
               h("div", { class: "kv-row" }, h("div", { class: "kv-label" }, "OAuth Client Secret", h("div", { class: "hint" }, "Under Advanced settings")),
@@ -2542,9 +2542,9 @@ async function connectionsPage() {
           callbackStep(c, "Only if sign-in fails with AADSTS50011",
             para("Claude's callback ", h("code", {}, "https://claude.ai/api/mcp/auth_callback"), " is already registered. If Claude shows a different callback URL, add that one.")),
           step("Each person connects",
-            para("Settings → ", b("Connectors"), " → FS Email → ", b("Connect"), ", then sign in with their Finishes Microsoft account. ",
+            para("Settings → ", b("Connectors"), " → FS Communication Intelligence → ", b("Connect"), ", then sign in with their Finishes Microsoft account. ",
               "In a chat, switch it on from the tools menu.")),
-          testStep("FS Email")),
+          testStep("FS Communication Intelligence")),
       ];
     },
     chatgpt: () => {
@@ -2577,7 +2577,7 @@ async function connectionsPage() {
               ". Each plugin has its own, and it changes if the plugin is deleted and added again.")),
           step("Sign in",
             para("Click ", b("Connect"), " and sign in with your Finishes Microsoft account.")),
-          testStep("the FS Email plugin")),
+          testStep("the FS Communication Intelligence plugin")),
         note("\"We couldn't connect your account\" after a successful sign-in means Resource is not the api:// value above, or OIDC is ticked.", "warn"),
       ];
     },
@@ -2589,7 +2589,7 @@ async function connectionsPage() {
           secretStep(c),
           step("Add the MCP tool",
             para("Open the agent → ", b("Tools"), " → ", b("Add a tool"), " → ", b("New tool"), " → ", b("Model Context Protocol"), ". Fill in:"),
-            kv(copyRow("Server name", "FS Email"),
+            kv(copyRow("Server name", "FS Communication Intelligence"),
               copyRow("Server description", "Searches Finishes company email that the signed-in person may read."),
               copyRow("Server URL", d.mcp_url),
               copyRow("Authentication", "OAuth 2.0, Manual")),
@@ -2606,7 +2606,7 @@ async function connectionsPage() {
           step("Use each person's own sign-in",
             para("Create the connection and add the tool to the agent. In the tool's settings, set ", b("Credentials to use"),
               " to ", b("End user credentials"), ". Otherwise everyone using the agent searches as the maker.")),
-          testStep("FS Email")),
+          testStep("FS Communication Intelligence")),
       ];
     },
   };
@@ -2636,10 +2636,38 @@ async function connectionsPage() {
   if (!clients[CONN_TAB]) CONN_TAB = d.clients[0] ? d.clients[0].key : "claude";
   select(CONN_TAB);
 
+  const quick = card({ title: "Quick Connect", sub: "Paste one link; each person signs in with their Microsoft 365 account." },
+    kv(copyRow("MCP server URL", d.mcp_url)),
+    d.quick_connect ? h("ol", { class: "howto" },
+      step("Claude",
+        para("Settings → ", b("Connectors"), " → ", b("Add custom connector"), ". Name it FS Communication Intelligence, paste the URL, leave ",
+          b("Advanced settings"), " empty and click ", b("Add"), ". Then ", b("Connect"), ".")),
+      step("ChatGPT",
+        para("Plugins → ", b("Add"), " → ", b("Add custom MCP server"), ". Paste the URL, choose ", b("OAuth"),
+          ", leave the advanced settings as they are and connect.")),
+      step("Copilot Studio",
+        para("Agent → ", b("Tools"), " → ", b("Add a tool"), " → ", b("New tool"), " → ", b("Model Context Protocol"),
+          ". Paste the URL, choose ", b("OAuth 2.0"), " → ", b("Dynamic discovery"), " and click ", b("Create"),
+          ". In the tool's settings, set ", b("Credentials to use"), " to ", b("End user credentials"), ".")),
+      step("Sign in",
+        para("A page asks to connect the app to FS Communication Intelligence; click ", b("Continue with Microsoft"),
+          " and sign in. Only the people added under Who Can Connect get in; anyone else is refused by Microsoft."))) : null,
+    d.quick_connect
+      ? note("A Claude connector added earlier with a client ID and secret stops working once Quick Connect is on: remove it and add it again with only the URL.", "warn")
+      : note("Quick Connect is off. To turn it on, run bash scripts/azure/8-mcp-broker.sh in Cloud Shell. Until then, use the manual setup below.", "warn"));
+
   show(
     pageHead("Connections", "Connect Claude, ChatGPT or Copilot Studio to company email through the MCP server. Each person signs in as themselves and sees only what their access allows."),
     d.missing.length ? note(`Not set up yet: ${d.missing.join(", ")}. Run bash scripts/azure/7-connections-page.sh in Cloud Shell, then reload this page.`, "warn") : null,
-    card({ title: "Connection Values", sub: "The same for every platform. IDs and addresses, not secrets." },
+    quick,
+    card({ title: "Connector Icon", class: "spaced", sub: "Optional: upload one when adding the connector, if the platform offers an icon." },
+      h("div", { class: "icon-downloads" }, [["black", "White on black"], ["white", "Black on white"]].map(([key, label]) =>
+        h("div", { class: "icon-dl" },
+          h("img", { src: `/connector-icon-${key}.jpg`, alt: label, width: "64", height: "64" }),
+          h("div", {}, h("div", { class: "kv-label" }, label), h("div", { class: "muted small" }, "JPG, 1024 × 1024")),
+          h("a", { class: "btn sm", href: `/connector-icon-${key}.jpg`, download: `FS-Communication-Intelligence-${key}.jpg` },
+            icon("download"), "Download"))))),
+    card({ title: "Connection Values", class: "spaced", sub: "For the manual setup. The same for every platform. IDs and addresses, not secrets." },
       kv(copyRow("MCP server URL", d.mcp_url),
         copyRow("Tenant ID", d.tenant_id),
         copyRow("Authorization URL", d.authorization_url),
@@ -2652,7 +2680,7 @@ async function connectionsPage() {
         ", so keep the list short. Without it, Microsoft refuses the sign-in (AADSTS50105). In Cloud Shell, from the repository folder:"),
       cmdBlock("bash scripts/azure/people.sh add name@finishessolutions.com search"),
       para(h("span", { class: "muted small" }, "bash scripts/azure/people.sh list shows who has access; remove takes it away."))),
-    card({ title: "Set Up", sub: "Choose the platform to connect.", class: "spaced" }, picker, heading, body),
+    card({ title: d.quick_connect ? "Manual Setup (Only If Quick Connect Fails)" : "Set Up", sub: "Choose the platform to connect.", class: "spaced" }, picker, heading, body),
     card({ title: "If It Doesn't Work", class: "spaced" },
       kv(...[
         ["AADSTS50011", "The platform's callback URL isn't registered. Add it (see the setup step)."],
@@ -2729,7 +2757,7 @@ async function render() {
     nav.hidden = true; who.replaceChildren();
     main().replaceChildren(h("div", { class: "signin" }, h("div", { class: "signin-card" },
       h("div", { class: "brand-mark" }, icon("graph")),
-      h("h1", {}, "Email Intelligence"),
+      h("h1", {}, "FS Communication Intelligence"),
       h("p", {}, isReader()
         ? "Sign in with your Finishes Solutions account to read this email. Only console admins can open it."
         : "Sign in with your Finishes Solutions account. Only console admins get in."),

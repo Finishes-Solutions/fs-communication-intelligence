@@ -40,6 +40,7 @@ def test_values_come_from_settings() -> None:
         ("copilot", "copilot-id"),
     ]
     assert page["missing"] == []
+    assert page["quick_connect"] is False
     assert not any("secret" in k for k in page) and not any(
         "secret" in k for c in page["clients"] for k in c
     )
@@ -53,6 +54,11 @@ def test_unset_values_are_listed_as_missing() -> None:
         "MCP_CLIENT_ID_CHATGPT",
         "MCP_CLIENT_ID_COPILOT",
     ]
+
+
+def test_quick_connect_follows_the_broker_setting() -> None:
+    page = connection_settings(settings(mcp_broker_client_id="broker-id"), TENANT)
+    assert page["quick_connect"] is True
 
 
 def test_every_sidebar_page_is_served_and_the_platform_logos_exist() -> None:
