@@ -1907,9 +1907,9 @@ async function readerPage() {
 
 // ---------- knowledge base -----------------------------------------------------
 
-const KIND_TEXT = { property: "Property / Project", organization: "Organization", person: "Person", term: "Term" };
-const KIND_ICON = { property: "building", organization: "scale", person: "users", term: "text" };
-const ROLE_TEXT = { works_for: "Works for", role_on: "Role on", owns: "Owns", affiliate_of: "Affiliate of" };
+const KIND_TEXT = { property: "Property / Project", organization: "Organization", person: "Person", term: "Term", meeting: "Meeting" };
+const KIND_ICON = { property: "building", organization: "scale", person: "users", term: "text", meeting: "clock" };
+const ROLE_TEXT = { works_for: "Works for", role_on: "Role on", owns: "Owns", affiliate_of: "Affiliate of", about: "About", attends: "Attends" };
 
 function kindBadge(kind) { return h("span", { class: "badge outline" }, icon(KIND_ICON[kind] || "layers"), KIND_TEXT[kind] || nice(kind)); }
 function entrySub(e) { return e.email || e.meaning || e.title || e.domain || (e.also_written || []).join(" · ") || ""; }

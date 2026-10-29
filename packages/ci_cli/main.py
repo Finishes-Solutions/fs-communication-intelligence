@@ -46,13 +46,13 @@ The database comes from the standard ``PG*`` environment variables; locally,
     ci names add entity "Capital Company LLC"
     ci names remove property|entity NAME
 
-    ci knowledge list [QUERY] [--kind property|organization|person|term]
+    ci knowledge list [QUERY] [--kind property|organization|person|term|meeting]
                                               what the email taught the knowledge base
     ci knowledge show ID                      one entry: facts, related entries, emails
     ci knowledge merge ID [ID ...] --into ID  count entries as one (undo: unmerge ID)
     ci knowledge hide ID | unhide ID          hide a wrong entry from every reader
     ci knowledge rename ID "NAME" | rename ID --clear
-    ci knowledge reclassify ID person|property|organization|term
+    ci knowledge reclassify ID person|property|organization|term|meeting
                                               show an entry as another kind (undo: unmerge ID)
     ci knowledge backfill                     knowledge for mail processed before it existed
                                               (from stored classifications; no AI cost)
@@ -258,7 +258,7 @@ def _parser() -> argparse.ArgumentParser:
     know_action = know.add_subparsers(dest="action", required=True)
     klist = know_action.add_parser("list")
     klist.add_argument("query", nargs="?")
-    klist.add_argument("--kind", choices=["property", "organization", "person", "term"])
+    klist.add_argument("--kind", choices=["property", "organization", "person", "term", "meeting"])
     klist.add_argument("--limit", type=int, default=30)
     know_action.add_parser("show").add_argument("entity_id", type=int)
     kmerge = know_action.add_parser("merge", help="count the IDs as the --into entry from now on")
@@ -272,7 +272,7 @@ def _parser() -> argparse.ArgumentParser:
     krename.add_argument("--clear", action="store_true", help="use the name emails use most")
     krecl = know_action.add_parser("reclassify", help="show an entry as another kind")
     krecl.add_argument("entity_id", type=int)
-    krecl.add_argument("kind", choices=["person", "property", "organization", "term"])
+    krecl.add_argument("kind", choices=["person", "property", "organization", "term", "meeting"])
     kback = know_action.add_parser("backfill")
     kback.add_argument("--limit", type=int, default=0, help="0 = all")
     runs = sub.add_parser("runs", help="recent capture and processing runs and the backlog")

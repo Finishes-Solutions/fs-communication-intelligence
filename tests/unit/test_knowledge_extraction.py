@@ -307,3 +307,41 @@ def test_stored_answers_from_another_version_never_break_reuse() -> None:
     loaded = Knowledge.from_json(newer)
     assert loaded is not None and loaded.names[0].written == "Example Ridge"
     assert Knowledge.from_json({"names": [{"kind": "property"}]}) is None  # unreadable: none
+
+
+def test_meetings_are_their_own_kind_with_about_and_attends() -> None:
+    text = (
+        "Pat, the Monday ops meeting will cover Example Ridge. Jordan Rivera "
+        "<jordan.rivera@acme-sitework.example> attends the Monday ops meeting."
+    )
+    source = Source(text, frozenset({"pat@example.com"}))
+    person = {
+        "name": "Jordan Rivera",
+        "email": "jordan.rivera@acme-sitework.example",
+        "organization": None,
+        "title": None,
+    }
+
+    def fact(subject: str, relation: str, obj: str) -> dict[str, object]:
+        return {"subject": subject, "relation": relation, "object": obj, "role": None,
+                "evidence": "will cover"}  # fmt: skip
+
+    k = validate(
+        raw(
+            names=[name("meeting", "Monday ops meeting"), name("property", "Example Ridge")],
+            people=[person],
+            relations=[
+                fact("Monday ops meeting", "about", "Example Ridge"),
+                fact("jordan.rivera@acme-sitework.example", "attends", "Monday ops meeting"),
+                fact("Example Ridge", "about", "Monday ops meeting"),  # kinds reversed
+                fact("jordan.rivera@acme-sitework.example", "attends", "Example Ridge"),
+            ],
+        ),
+        source,
+    )
+    assert [(n.kind, n.written) for n in k.names] == [
+        ("meeting", "Monday ops meeting"),
+        ("property", "Example Ridge"),
+    ]
+    assert [r.relation for r in k.relations] == ["about", "attends"]
+    assert name_key("meeting", "Monday Ops Meeting!") == "monday ops meeting"
