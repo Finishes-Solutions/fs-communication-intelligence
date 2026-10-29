@@ -35,17 +35,21 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from typing import Any
 
-KNOWLEDGE_VERSION = "knowledge-2026-10-28a"
+KNOWLEDGE_VERSION = "knowledge-2026-10-29"
 
-# property / organization names come back in `names`; people and terms separately.
-NAME_KINDS = ("property", "organization")
-ENTITY_KINDS = ("property", "organization", "person", "term")
+# property / organization / meeting names come back in `names`; people and terms
+# separately. Meetings were added 2026-10-29 (Matthew): without a box for them the
+# model filed a recurring meeting under a person.
+NAME_KINDS = ("property", "organization", "meeting")
+ENTITY_KINDS = ("property", "organization", "person", "term", "meeting")
 # subject kind(s) -> object kind for each fact type.
 RELATIONS: Mapping[str, tuple[frozenset[str], str]] = {
     "works_for": (frozenset({"person"}), "organization"),
     "role_on": (frozenset({"person", "organization"}), "property"),
     "owns": (frozenset({"organization"}), "property"),
     "affiliate_of": (frozenset({"organization"}), "organization"),
+    "about": (frozenset({"meeting"}), "property"),
+    "attends": (frozenset({"person"}), "meeting"),
 }
 ROLES = (
     "owner",
@@ -90,7 +94,7 @@ _DOMAIN = re.compile(r"^[a-z0-9-]+(\.[a-z0-9-]+)+$")
 
 @dataclass(frozen=True)
 class NameMention:
-    kind: str  # property | organization
+    kind: str  # property | organization | meeting
     written: str  # exactly as in the email
     known: str | None = None  # the learned name it is the same as (listed to the model)
     domain: str | None = None  # an organization's email/web domain, when the email shows it
@@ -353,18 +357,23 @@ PROMPT = """- knowledge: what this email says about the business, for a knowledg
 from many emails. State only what the email or its attachments say; never guess, and leave \
 a list empty when unsure. Never include bank, account, routing or card numbers or payment \
 instructions. Newsletters, marketing and automated mail: all lists empty.
-  - names: properties, projects, developments or assets (kind "property") and companies or \
+  - names: properties, projects, developments or assets (kind "property"), companies or \
 organizations, including legal entities and businesses without a suffix (kind \
-"organization"), each written exactly as in the email (max 10). known: when it is clearly the \
+"organization"), and recurring or named meetings and events, e.g. a weekly ops meeting, an \
+OAC meeting or a closing (kind "meeting"; a meeting is never a person), each written exactly \
+as in the email (max 10). known: when it is clearly the \
 same thing as an entry in learned_names (if given), that entry's exact name, else null. \
 domain: the organization's email or web domain when the email shows it, else null.
   - people: people the email names together with their email address, which must be written \
 in the email or be one of its participants (max 8): name, email, organization as written or \
-null, title (job title as written) or null.
+null, title (job title as written) or null. Only when the email itself ties that name to that \
+address (sender or recipient name, signature, "Name <address>"); a first name mentioned in \
+passing is not enough.
   - relations: facts the email states (max 10). subject and object are names from names or \
 people (a person by email address). relation is one of: works_for (person -> organization), \
 role_on (person or organization -> property, with role), owns (organization -> property), \
-affiliate_of (organization -> organization, e.g. parent or subsidiary). role: for role_on one \
+affiliate_of (organization -> organization, e.g. parent or subsidiary), about (meeting -> \
+property it is about), attends (person -> meeting). role: for role_on one \
 of {roles}, else null. evidence: the email's words that state the fact (max 25 words).
   - terms: abbreviations, project codes and industry terms the email uses whose meaning the \
 email makes clear (max 5): term as written, meaning (max 20 words).

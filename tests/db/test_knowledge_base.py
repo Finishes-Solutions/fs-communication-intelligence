@@ -32,7 +32,7 @@ from ci_processing.classification import (
     KnownName,
 )
 from ci_processing.embedding import FakeEmbedder
-from ci_processing.knowledge import name_key, validate
+from ci_processing.knowledge import Source, name_key, validate
 from ci_processing.screening import FakeScreener
 from ci_retrieval import knowledge as kb
 from ci_retrieval.identity import READER_ALL, READER_OWN, Principal
@@ -480,6 +480,61 @@ def test_merge_many_spellings_into_one_all_or_nothing(ready: str) -> None:
         ridge,
         commons,
     }
+
+
+def test_meetings_are_stored_and_found(ready: str) -> None:
+    """The fifth kind (migration 0019): a meeting, what it is about and who attends,
+    from one email's knowledge; and an entry can be reclassified as a meeting."""
+    with connect(dbname=ready) as conn:
+        row = conn.execute(
+            "SELECT active_version_id::text AS v FROM communications WHERE title = %s LIMIT 1",
+            (DRAW,),
+        ).fetchone()
+        assert row is not None
+        knowledge = validate(
+            {
+                "names": [
+                    {"kind": "meeting", "written": "Draw review call", "known": None,
+                     "domain": None},
+                    prop("Example Commons"),
+                ],
+                "people": [],
+                "relations": [
+                    fact("Draw review call", "about", "Example Commons", None, "the draw"),
+                ],
+                "terms": [],
+            },
+            Source("Draw review call for Example Commons", frozenset()),
+        )  # fmt: skip
+        counts = knowledge_store.record(conn, row["v"], knowledge)
+        conn.commit()
+    try:
+        assert counts == {"mentions": 2, "relations": 1}
+        meeting = find(ready, READER, "draw review", kind="meeting")
+        assert [m["name"] for m in meeting] == ["Draw review call"]
+        found = profile(ready, READER, meeting[0]["entity_id"])
+        assert found is not None
+        assert [(f["relation"], f["other"]["name"]) for f in found["facts"]] == [
+            ("about", "Example Commons")
+        ]
+        term = entity_id(ready, "pay application", "term")
+        with connect(dbname=ready, role="ci_operator") as conn:
+            as_meeting = reclassify_knowledge(conn, "pytest", term, "meeting", name_key)
+            unmerge_knowledge(conn, "pytest", term)
+            conn.commit()
+        assert as_meeting != term
+    finally:
+        with connect(dbname=ready) as conn:
+            ids = [
+                r["id"]
+                for r in conn.execute(
+                    "SELECT id FROM kg_entities WHERE kind = 'meeting'"
+                ).fetchall()
+            ]
+            conn.execute("DELETE FROM kg_relations WHERE subject_id = ANY(%s)", (ids,))
+            conn.execute("DELETE FROM kg_mentions WHERE entity_id = ANY(%s)", (ids,))
+            conn.execute("DELETE FROM kg_entities WHERE id = ANY(%s)", (ids,))
+            conn.commit()
 
 
 def test_search_role_cannot_read_the_base_tables(ready: str) -> None:

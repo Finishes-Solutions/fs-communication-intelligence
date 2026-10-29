@@ -358,11 +358,12 @@ def build_server(
 
     @server.tool(
         description="Find what the email has taught the knowledge base: properties/projects,"
-        " organizations (companies, legal entities), people (by name or email address) and"
-        " terms (abbreviations, project codes, with their meaning). `query` matches names,"
-        " other spellings and addresses (partial, case-insensitive); leave it empty to list"
-        " the most-mentioned. kind: property, organization, person or term. Each result has"
-        " an entity_id for get_profile and how many emails mention it."
+        " organizations (companies, legal entities), people (by name or email address),"
+        " terms (abbreviations, project codes, with their meaning) and recurring or named"
+        " meetings. `query` matches names, other spellings and addresses (partial,"
+        " case-insensitive); leave it empty to list the most-mentioned. kind: property,"
+        " organization, person, term or meeting. Each result has an entity_id for"
+        " get_profile and how many emails mention it."
         " Use it to resolve a name before filtering email (property=, entity=) or to answer"
         " 'who is', 'what is' and 'what does X mean'." + _KNOWLEDGE
     )

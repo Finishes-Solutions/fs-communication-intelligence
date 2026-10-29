@@ -406,7 +406,7 @@ def merge_knowledge(conn: Connection, actor: str, source_id: int, target_id: int
     )
 
 
-RECLASSIFY_KINDS = ("property", "organization", "term", "person")
+RECLASSIFY_KINDS = ("property", "organization", "term", "person", "meeting")
 
 
 def reclassify_knowledge(

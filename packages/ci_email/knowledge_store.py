@@ -81,12 +81,12 @@ _PUBLISHED_MENTIONS = """
 def learned_names(
     conn: Connection, *, minimum: int = LEARNED_MIN_MESSAGES, limit: int = LEARNED_LIMIT
 ) -> list[LearnedName]:
-    """Properties, organizations and terms seen in at least ``minimum`` messages over
+    """Properties, organizations, terms and meetings seen in at least ``minimum`` messages over
     the last year, most frequent first, as the classifier is shown them."""
     rows = conn.execute(
         f"""
         WITH m AS ({_PUBLISHED_MENTIONS}
-                   AND r.kind IN ('property', 'organization', 'term')
+                   AND r.kind IN ('property', 'organization', 'term', 'meeting')
                    AND c.occurred_at > now() - make_interval(days => %(days)s))
         SELECT entity_id, kind, max(name_override) AS override, count(DISTINCT cid) AS n
         FROM m GROUP BY entity_id, kind HAVING count(DISTINCT cid) >= %(minimum)s
