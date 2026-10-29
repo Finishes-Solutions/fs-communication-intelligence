@@ -2641,9 +2641,9 @@ async function connectionsPage() {
     card({ title: "Connector Icon", class: "spaced", sub: "Optional: upload one when adding the connector, if the platform offers an icon." },
       h("div", { class: "icon-downloads" }, [["black", "White on black"], ["white", "Black on white"]].map(([key, label]) =>
         h("div", { class: "icon-dl" },
-          h("img", { src: `/connector-icon-${key}.jpg`, alt: label, width: "64", height: "64" }),
-          h("div", {}, h("div", { class: "kv-label" }, label), h("div", { class: "muted small" }, "JPG, 1024 × 1024")),
-          h("a", { class: "btn sm", href: `/connector-icon-${key}.jpg`, download: `FS-Communication-Intelligence-${key}.jpg` },
+          h("img", { src: `/connector-icon-${key}.png`, alt: label, width: "64", height: "64" }),
+          h("div", {}, h("div", { class: "kv-label" }, label), h("div", { class: "muted small" }, "PNG, 1024 × 1024, under 10 KB")),
+          h("a", { class: "btn sm", href: `/connector-icon-${key}.png`, download: `FS-Communication-Intelligence-${key}.png` },
             icon("download"), "Download"))))),
     card({ title: "Connection Values", class: "spaced", sub: "For the manual setup. The same for every platform. IDs and addresses, not secrets." },
       kv(copyRow("MCP server URL", d.mcp_url),
