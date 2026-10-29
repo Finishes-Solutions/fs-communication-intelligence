@@ -15,7 +15,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from starlette.testclient import TestClient
 
-from ci_admin.api import ADMIN_ROLE, ADMIN_SCOPE, build_admin_app
+from ci_admin.api import ADMIN_ROLE, ADMIN_SCOPE, FILES_ROLE, build_admin_app
 from ci_admin.lab import LabBackends
 from ci_cli.seed import seed
 from ci_core.db import AppRole, Connection, connect
@@ -512,6 +512,38 @@ def test_original_files_are_served_only_for_authorized_messages(client: TestClie
     assert client.get(wrong, headers=auth()).status_code == 404
     bad = f"/api/messages/{detail['communication_id']}/files/..%2F..%2Fetc"
     assert client.get(bad, headers=auth()).status_code == 404
+
+
+def test_files_role_opens_emails_and_files_but_not_the_console(client: TestClient) -> None:
+    """Someone who opens links (e.g. from a monday board) without the console:
+    Communications.Files with a reader role reads one email and its files, and
+    nothing else; which emails still follows the reader role."""
+    detail = invoice_detail(client)
+    pdf = next(a for a in detail["attachments"] if a["name"] == "Invoice-4471.pdf")
+    email = f"/api/messages/{detail['communication_id']}"
+    file = f"{email}/files/{pdf['file_id']}"
+    chuck = auth(oid="chuck-oid", roles=[READER_ALL, FILES_ROLE])
+    assert client.get(email, headers=chuck).status_code == 200
+    response = client.get(file, headers=chuck)
+    assert response.status_code == 200 and response.content.startswith(b"%PDF")
+    assert client.get("/api/labels", headers=chuck).status_code == 200
+    # Everything else in the console stays closed.
+    for path in (
+        "/api/overview",
+        "/api/messages?since_days=0",
+        "/api/schedule",
+        "/api/mailboxes",
+        "/api/actionable",
+        "/api/connections",
+        "/api/knowledge",
+        "/api/runs",
+    ):
+        assert client.get(path, headers=chuck).status_code == 403, path
+    assert client.post("/api/requeue-failed", headers=chuck).status_code == 403
+    # The files role without a reader role opens nothing.
+    files_only = auth(oid="chuck-oid", roles=[FILES_ROLE])
+    assert client.get(email, headers=files_only).status_code == 404
+    assert client.get(file, headers=files_only).status_code == 404
 
 
 def test_missing_originals_are_backfilled(database_ready: str, files: DirectoryStore) -> None:

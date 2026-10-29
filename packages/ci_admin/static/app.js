@@ -313,6 +313,15 @@ function token() {
   const t = store.get("token");
   return t && Number(store.get("token_exp") || 0) > Date.now() ? t : null;
 }
+// The token's app roles, for display only (the API enforces every check):
+// people with only Communications.Files see the read-only page without the console link.
+function isAdmin() {
+  try {
+    const t = token() || "";
+    const claims = JSON.parse(atob(t.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+    return (claims.roles || []).includes("Communications.Admin");
+  } catch { return false; }
+}
 function signOut() { ["token", "token_exp", "who"].forEach(store.del); history.replaceState(null, "", "/"); render(); }
 
 async function api(path, options = {}) {
@@ -1929,12 +1938,12 @@ async function readerPage() {
     if (e.message === "signing in") throw e;
     show(h("div", { class: "reader-page" }, pageHead("Can't Open This Email", null),
       card({}, h("p", { style: "margin:0" }, e.message),
-        h("p", { class: "muted small" }, "This page is for console admins. If you need this email, ask an admin to share it with you."))));
+        h("p", { class: "muted small" }, "Only people given access to email files can open this page. If you need this email, ask Matthew or Cody."))));
     return;
   }
   show(h("div", { class: "reader-page" },
     h("div", { class: "reader-bar" }, h("span", { class: "muted small" }, "FS Communication Intelligence · read-only view"),
-      h("a", { href: "/overview", target: "_self", class: "btn sm ghost" }, "Open Console")),
+      isAdmin() ? h("a", { href: "/overview", target: "_self", class: "btn sm ghost" }, "Open Console") : null),
     card({}, messageView(id, m, { readOnly: true }))));
   const wanted = pageParams().get("file");
   if (wanted) {
@@ -2766,7 +2775,7 @@ async function render() {
       h("div", { class: "brand-mark" }, icon("graph")),
       h("h1", {}, "FS Communication Intelligence"),
       h("p", {}, isReader()
-        ? "Sign in with your Finishes Solutions account to read this email. Only console admins can open it."
+        ? "Sign in with your Finishes Solutions account to read this email. Only people given access can open it."
         : "Sign in with your Finishes Solutions account. Only console admins get in."),
       h("button", { class: "btn primary lg block", onclick: signIn },
         h("span", { class: "ms-logo" }, h("span"), h("span"), h("span"), h("span")), "Sign In with Microsoft"))));

@@ -2,8 +2,12 @@
 
 Every ``/api`` call needs an Entra delegated token for the search API
 registration carrying the scope ``Communications.Console`` **and** the app role
-``Communications.Admin`` (assigned to named people only). A missing or invalid
-token gets 401; a valid token without the role gets 403. The browser signs in
+``Communications.Admin`` (assigned to named people only). The one exception is
+the read-only email page (``/read/<id>``) that MCP results and board links point
+to: reading one email and downloading its files also accept the role
+``Communications.Files``, for people who should open those links but not use
+the console. What they can read still comes from their reader role. A missing
+or invalid token gets 401; a valid token without the role gets 403. The browser signs in
 with authorization code + PKCE (public SPA client, no secret) and sends the
 token as a bearer header, so there are no cookies and no CSRF surface.
 
@@ -92,6 +96,10 @@ log = logging.getLogger("ci.admin")
 
 ADMIN_SCOPE = "Communications.Console"  # Entra refuses a scope and a role with one name
 ADMIN_ROLE = "Communications.Admin"
+# Opens emails and files from links (the read-only page) without the console.
+FILES_ROLE = "Communications.Files"
+# What the read-only page calls: one email, its files and the label names.
+READER_PAGE = (ADMIN_ROLE, FILES_ROLE)
 STATIC = Path(__file__).parent / "static"
 # Console pages are plain paths (/reports, /messages?q=...); each returns the same
 # single-page app, which reads the path. "check" is the old name of "review".
@@ -343,7 +351,9 @@ def build_admin_app(
             schedule = ops.read_schedule(conn)
         return lab.with_switches(lab_ready(schedule.chat_deployment), settings, schedule)
 
-    async def authenticate(request: Request) -> Principal | Response:
+    async def authenticate(
+        request: Request, allowed: tuple[str, ...] = (ADMIN_ROLE,)
+    ) -> Principal | Response:
         header = request.headers.get("authorization", "")
         scheme, _, token = header.partition(" ")
         challenge = {"WWW-Authenticate": 'Bearer error="invalid_token"'}
@@ -353,14 +363,16 @@ def build_admin_app(
         if verified is None:
             return JSONResponse({"error": "sign in again"}, 401, headers=challenge)
         principal = verified.principal()
-        if ADMIN_ROLE not in principal.roles:
-            log.info("admin refused: no %s role", ADMIN_ROLE)
+        if not set(allowed) & set(principal.roles):
+            log.info("admin refused: none of the roles %s", ", ".join(allowed))
             return JSONResponse({"error": "you are not an admin of this console"}, 403)
         return principal
 
-    def endpoint(handler: Handler) -> Callable[[Request], Awaitable[Response]]:
+    def endpoint(
+        handler: Handler, allowed: tuple[str, ...] = (ADMIN_ROLE,)
+    ) -> Callable[[Request], Awaitable[Response]]:
         async def run(request: Request) -> Response:
-            principal = await authenticate(request)
+            principal = await authenticate(request, allowed)
             if isinstance(principal, Response):
                 return principal
             body: dict[str, Any] = {}
@@ -1120,7 +1132,7 @@ def build_admin_app(
         Route("/config.json", config),
         Route("/healthz", health),
         Route("/api/overview", endpoint(overview)),
-        Route("/api/labels", endpoint(labels)),
+        Route("/api/labels", endpoint(labels, READER_PAGE)),
         Route("/api/connections", endpoint(connections_page)),
         Route("/api/runs", endpoint(runs)),
         Route("/api/runs/capture", endpoint(run_now), methods=["POST"]),
@@ -1131,8 +1143,8 @@ def build_admin_app(
         Route("/api/unpublished", endpoint(unpublished)),
         Route("/api/requeue-failed", endpoint(requeue), methods=["POST"]),
         Route("/api/messages", endpoint(messages)),
-        Route("/api/messages/{id}", endpoint(message)),
-        Route("/api/messages/{id}/files/{file_id}", endpoint(attachment)),
+        Route("/api/messages/{id}", endpoint(message, READER_PAGE)),
+        Route("/api/messages/{id}/files/{file_id}", endpoint(attachment, READER_PAGE)),
         Route("/api/actionable", endpoint(actionable)),
         Route("/api/feedback/{id}", endpoint(feedback), methods=["GET", "PUT"]),
         Route("/api/knowledge", endpoint(knowledge_list)),
