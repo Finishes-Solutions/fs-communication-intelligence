@@ -2526,7 +2526,7 @@ async function connectionsPage() {
           secretStep(c),
           step("Add the connector in Claude",
             para("Admin settings → ", b("Connectors"), " → ", b("Add custom connector"), ". Fill in:"),
-            kv(copyRow("Name", "FS Email", "Any name; people see it in Claude"),
+            kv(copyRow("Name", "FS Communication Intelligence", "Any name; people see it in Claude"),
               copyRow("Remote MCP server URL", d.mcp_url),
               copyRow("OAuth Client ID", c.client_id, "Under Advanced settings"),
               h("div", { class: "kv-row" }, h("div", { class: "kv-label" }, "OAuth Client Secret", h("div", { class: "hint" }, "Under Advanced settings")),
@@ -2535,9 +2535,9 @@ async function connectionsPage() {
           callbackStep(c, "Only if sign-in fails with AADSTS50011",
             para("Claude's callback ", h("code", {}, "https://claude.ai/api/mcp/auth_callback"), " is already registered. If Claude shows a different callback URL, add that one.")),
           step("Each person connects",
-            para("Settings → ", b("Connectors"), " → FS Email → ", b("Connect"), ", then sign in with their Finishes Microsoft account. ",
+            para("Settings → ", b("Connectors"), " → FS Communication Intelligence → ", b("Connect"), ", then sign in with their Finishes Microsoft account. ",
               "In a chat, switch it on from the tools menu.")),
-          testStep("FS Email")),
+          testStep("FS Communication Intelligence")),
       ];
     },
     chatgpt: () => {
@@ -2570,7 +2570,7 @@ async function connectionsPage() {
               ". Each plugin has its own, and it changes if the plugin is deleted and added again.")),
           step("Sign in",
             para("Click ", b("Connect"), " and sign in with your Finishes Microsoft account.")),
-          testStep("the FS Email plugin")),
+          testStep("the FS Communication Intelligence plugin")),
         note("\"We couldn't connect your account\" after a successful sign-in means Resource is not the api:// value above, or OIDC is ticked.", "warn"),
       ];
     },
@@ -2582,7 +2582,7 @@ async function connectionsPage() {
           secretStep(c),
           step("Add the MCP tool",
             para("Open the agent → ", b("Tools"), " → ", b("Add a tool"), " → ", b("New tool"), " → ", b("Model Context Protocol"), ". Fill in:"),
-            kv(copyRow("Server name", "FS Email"),
+            kv(copyRow("Server name", "FS Communication Intelligence"),
               copyRow("Server description", "Searches Finishes company email that the signed-in person may read."),
               copyRow("Server URL", d.mcp_url),
               copyRow("Authentication", "OAuth 2.0, Manual")),
@@ -2599,7 +2599,7 @@ async function connectionsPage() {
           step("Use each person's own sign-in",
             para("Create the connection and add the tool to the agent. In the tool's settings, set ", b("Credentials to use"),
               " to ", b("End user credentials"), ". Otherwise everyone using the agent searches as the maker.")),
-          testStep("FS Email")),
+          testStep("FS Communication Intelligence")),
       ];
     },
   };
@@ -2618,7 +2618,7 @@ async function connectionsPage() {
     kv(copyRow("MCP server URL", d.mcp_url)),
     d.quick_connect ? h("ol", { class: "howto" },
       step("Claude",
-        para("Settings → ", b("Connectors"), " → ", b("Add custom connector"), ". Name it FS Email, paste the URL, leave ",
+        para("Settings → ", b("Connectors"), " → ", b("Add custom connector"), ". Name it FS Communication Intelligence, paste the URL, leave ",
           b("Advanced settings"), " empty and click ", b("Add"), ". Then ", b("Connect"), ".")),
       step("ChatGPT",
         para("Plugins → ", b("Add"), " → ", b("Add custom MCP server"), ". Paste the URL, choose ", b("OAuth"),
@@ -2628,7 +2628,7 @@ async function connectionsPage() {
           ". Paste the URL, choose ", b("OAuth 2.0"), " → ", b("Dynamic discovery"), " and click ", b("Create"),
           ". In the tool's settings, set ", b("Credentials to use"), " to ", b("End user credentials"), ".")),
       step("Sign in",
-        para("A page asks to connect the app to FS Email; click ", b("Continue with Microsoft"),
+        para("A page asks to connect the app to FS Communication Intelligence; click ", b("Continue with Microsoft"),
           " and sign in. Only the people added under Who Can Connect get in; anyone else is refused by Microsoft."))) : null,
     d.quick_connect
       ? note("A Claude connector added earlier with a client ID and secret stops working once Quick Connect is on: remove it and add it again with only the URL.", "warn")
