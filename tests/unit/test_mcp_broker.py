@@ -173,7 +173,9 @@ def sign_in(
     consent_url = start.headers["location"]
     assert consent_url.startswith(f"{BASE}/oauth/consent?")
     page = client.get(consent_url)
-    assert page.status_code == 200 and "Connect Claude to FS Email?" in page.text
+    assert (
+        page.status_code == 200 and "Connect Claude to FS Communication Intelligence?" in page.text
+    )
     assert "frame-ancestors 'none'" in page.headers["content-security-policy"]
     csrf = page.text.split('name=csrf value="')[1].split('"')[0]
     to_ms = client.post(

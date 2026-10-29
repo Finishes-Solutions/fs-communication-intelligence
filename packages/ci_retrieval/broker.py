@@ -463,7 +463,9 @@ class EntraBroker:
         access = await asyncio.to_thread(self.verifier.verify, str(tokens["access_token"]))
         if access is None or not {READER_ALL, READER_OWN} & set(access.roles):
             log.warning("mcp sign-in refused: the account has no reader role")
-            raise TokenError("invalid_grant", "This account isn't allowed to use FS Email.")
+            raise TokenError(
+                "invalid_grant", "This account isn't allowed to use FS Communication Intelligence."
+            )
         refresh = tokens.get("refresh_token")
         return OAuthToken(
             access_token=str(tokens["access_token"]),
@@ -520,8 +522,8 @@ def _page(title: str, text: str, status: int = 200) -> HTMLResponse:
 def _consent_page(platform: str, sealed: str, csrf: str, cancel: str) -> HTMLResponse:
     name = html.escape(platform)
     return _html(
-        "Connect FS Email",
-        f"<h1>Connect {name} to FS Email?</h1>"
+        "Connect FS Communication Intelligence",
+        f"<h1>Connect {name} to FS Communication Intelligence?</h1>"
         f"<p>{name} will be able to search Finishes company email that your account "
         "is allowed to read. You sign in with your Microsoft 365 account next.</p>"
         f'<form method=post action="{CONSENT_PATH}">'

@@ -94,7 +94,7 @@ def build_server(
     """``view_base`` is the admin console's address: results then link to its
     read-only email page and attachment downloads (``with_links``)."""
     server: MCPServer[Any] = MCPServer(
-        name="fs-communications",
+        name="FS Communication Intelligence",
         instructions="Finishes Solutions email evidence, limited to what the signed-in "
         "person is authorized to read. Which tool: search_email finds emails by meaning and "
         "keywords; list_email lists the newest by mailbox, sender, label, property, entity or "
