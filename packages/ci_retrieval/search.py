@@ -294,11 +294,15 @@ def _metadata(conn: Connection, ids: Sequence[str]) -> dict[str, dict[str, Any]]
                cl.yes_labels, cl.uncertain_labels, cl.disposition, cl.summary, cl.action_text,
                cl.action_for, cl.due_text, cl.risk_text, cl.properties, cl.entities
         FROM published_communications pc
-        JOIN published_email_messages e ON e.communication_id = pc.id
-        LEFT JOIN published_classifications cl ON cl.communication_id = pc.id
-        WHERE pc.id = ANY(%s::uuid[])
+        JOIN (SELECT * FROM published_email_messages y
+              WHERE y.communication_id = ANY(%(ids)s::uuid[])) e ON e.communication_id = pc.id
+        -- Read by id: joined directly, the view builds every email's label lists.
+        LEFT JOIN (SELECT * FROM published_classifications x
+                   WHERE x.communication_id = ANY(%(ids)s::uuid[])) cl
+          ON cl.communication_id = pc.id
+        WHERE pc.id = ANY(%(ids)s::uuid[])
         """,
-        (list(ids),),
+        {"ids": list(ids)},
     ).fetchall()
     return {r["communication_id"]: r for r in rows}
 
@@ -612,6 +616,21 @@ def get_attachment(
     }
 
 
+# Classification columns of published_classifications, also returned by
+# published_labelled (migration 0021).
+_CL_COLUMNS = """communication_id, yes_labels, uncertain_labels, disposition, summary,
+    action_text, action_for, due_text, risk_text, properties, entities"""
+
+
+def _label_lookup(conn: Connection) -> bool:
+    """True once migration 0021 (the index-backed published_labelled) is applied."""
+    row = conn.execute(
+        "SELECT to_regprocedure('ci.published_labelled(text[], timestamptz, timestamptz)')"
+        " IS NOT NULL AS ok"
+    ).fetchone()
+    return bool(row and row["ok"])
+
+
 def _listing(
     conn: Connection,
     principal: Principal,
@@ -620,33 +639,88 @@ def _listing(
     extra: dict[str, Any],
     limit: int,
     ids: list[str] | None = None,
+    labels: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Newest first, copies collapsed. ``ids`` limits the listing to those emails
-    and lets every view read them by id; without it the planner builds every
-    email's classification before the limit."""
+    """Newest first, copies collapsed. ``extra_where`` may use the aliases pc
+    (email), e (message) and cl (classification).
+
+    Joined directly, published_classifications builds every email's label lists
+    before any filter or limit, so the classification is read for few emails.
+    ``ids`` limits the listing to those emails. ``labels`` says every row must
+    have one of them as yes (the caller's filter requires it), so the candidates
+    come from the label index (published_labelled, 0021). Without either, the
+    newest 500 are picked first when ``extra_where`` does not use cl, else the
+    emails in scope. The answer is the same either way."""
     auth = authorize(conn, principal)
     if auth.empty:
         return []
+    params = _params(auth, filters) | extra
+    lookup = bool(labels or filters.label) and _label_lookup(conn)
+    if labels is None and filters.label is not None:
+        labels = [filters.label]
+        if lookup:
+            params["label"] = None  # published_labelled([label]) already requires it
+    if labels and lookup:
+        # The emails with one of the labels, from the index; the listing then reads
+        # those by id (as a constant list the planner sizes correctly).
+        found = [
+            r["id"]
+            for r in conn.execute(
+                "SELECT communication_id::text AS id FROM published_labelled(%s::text[], %s, %s)",
+                (list(labels), filters.since, filters.until),
+            ).fetchall()
+        ]
+        ids = found if ids is None else sorted(set(ids) & set(found))
+    if ids is None and "cl." in extra_where:
+        # The emails in scope (dates, mailbox...) first; the classification is then
+        # read for those only.
+        ids = [
+            r["id"]
+            for r in conn.execute(
+                f"SELECT pc.id::text AS id FROM {_PUBLISHED} pc WHERE {_scope('pc')}",  # noqa: S608
+                params,
+            ).fetchall()
+        ]
     only = "WHERE {a}.communication_id = ANY(%(only_ids)s::uuid[])" if ids is not None else ""
-    rows = conn.execute(
-        f"""
+    select = """
         SELECT pc.id::text AS communication_id, pc.title, pc.occurred_at, pc.source_url,
                e.mailbox_address, e.internet_message_id, e.content_fingerprint, e.direction,
                (SELECT p.email_normalized FROM published_participants p
                  WHERE p.communication_id = pc.id AND p.role = 'from' LIMIT 1) AS sender,
                cl.yes_labels, cl.disposition, cl.summary, cl.action_text, cl.action_for,
-               cl.due_text, cl.risk_text, cl.properties, cl.entities
-        FROM {_PUBLISHED} pc
-        JOIN (SELECT * FROM published_email_messages y {only.format(a="y")}) e
-          ON e.communication_id = pc.id
-        LEFT JOIN (SELECT * FROM published_classifications x {only.format(a="x")}) cl
+               cl.due_text, cl.risk_text, cl.properties, cl.entities"""
+    messages = f"(SELECT * FROM published_email_messages y {only.format(a='y')}) e"  # noqa: S608
+    if ids is None and "cl." not in extra_where:
+        sql = f"""
+        WITH top AS MATERIALIZED (
+            SELECT pc.*, e.mailbox_address, e.internet_message_id, e.content_fingerprint,
+                   e.direction
+            FROM {_PUBLISHED} pc
+            JOIN {messages} ON e.communication_id = pc.id
+            WHERE {_scope("pc")} {extra_where}
+            ORDER BY pc.occurred_at DESC
+            LIMIT 500)
+        {select.replace("e.", "pc.")}
+        FROM top pc
+        LEFT JOIN (SELECT {_CL_COLUMNS} FROM published_classifications x
+                   WHERE x.communication_id = ANY(ARRAY(SELECT id FROM top))) cl
           ON cl.communication_id = pc.id
-        WHERE {_scope("pc")} {extra_where}
+        ORDER BY pc.occurred_at DESC"""  # noqa: S608 - fragments are constants; values are bound parameters
+    else:
+        # The message and classification are read one email at a time (LIMIT 1
+        # keeps each a per-row lookup; both views have one row per email): joined
+        # as sets, mis-estimated row counts made the planner compare every email
+        # with every other.
+        sql = f"""{select}
+        FROM {_PUBLISHED} pc
+        JOIN LATERAL (SELECT * FROM published_email_messages y
+                      WHERE y.communication_id = pc.id LIMIT 1) e ON true
+        LEFT JOIN LATERAL (SELECT {_CL_COLUMNS} FROM published_classifications x
+                           WHERE x.communication_id = pc.id LIMIT 1) cl ON true
+        WHERE {_scope("pc")} {extra_where} {only.format(a="pc").replace("WHERE", "AND")}
         ORDER BY pc.occurred_at DESC
-        LIMIT 500
-        """,  # noqa: S608 - fragments are constants; values are bound parameters
-        _params(auth, filters) | extra | {"only_ids": ids},
-    ).fetchall()
+        LIMIT 500"""  # noqa: S608 - fragments are constants; values are bound parameters
+    rows = conn.execute(sql, params | {"only_ids": ids}).fetchall()
     seen: set[tuple[str, str]] = set()
     out = []
     for r in rows:
@@ -850,6 +924,7 @@ def list_actionable(
             ACTION_RULE_WHERE,
             action_rule_params(people),
             limit,
+            labels=ACTION_LABELS,  # the rule requires one of them
         )
     risks = (
         _listing(
@@ -859,6 +934,7 @@ def list_actionable(
             "AND cl.yes_labels && %(risk_labels)s::text[]",
             {"risk_labels": list(RISK_LABELS)},
             limit,
+            labels=RISK_LABELS,
         )
         if include_risks
         else []

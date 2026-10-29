@@ -684,19 +684,39 @@ def build_admin_app(
 
     def feedback(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
         communication_id = request.path_params["id"]
-        email = _authorized_email(principal, communication_id)
         actor = _actor(principal)
+        if request.method == "PUT":
+            # Saving needs only the authorization check, not the email again.
+            with connector("ci_search") as conn:
+                if not retrieval._authorized(
+                    conn, retrieval.authorize(conn, principal), communication_id
+                ):
+                    raise HTTPException(404, "not found in mail you are authorized to see")
+            email = None
+        else:
+            email = _authorized_email(principal, communication_id)
         with connector("ci_operator") as conn:
             if request.method == "PUT":
-                _save_feedback(conn, communication_id, actor, body)
+                # One answer, or {"labels": {name: true/false/null}} for several at once
+                # (all saved or none).
+                many = body.get("labels")
+                if isinstance(many, dict):
+                    for name, applies in many.items():
+                        _save_feedback(
+                            conn,
+                            communication_id,
+                            actor,
+                            {"kind": "label", "subject": name, "applies": applies},
+                        )
+                else:
+                    _save_feedback(conn, communication_id, actor, body)
                 conn.commit()
             rows = conn.execute(
                 "SELECT subject_kind, subject, applies, reason_code FROM label_feedback"
                 " WHERE communication_id = %s AND reviewer = %s",
                 (communication_id, actor),
             ).fetchall()
-        return {
-            "email": email,
+        return ({"email": email} if email is not None else {}) | {
             "labels": {r["subject"]: r["applies"] for r in rows if r["subject_kind"] == "label"},
             "action_for": {
                 r["subject"]: {"applies": r["applies"], "reason": r["reason_code"]}
