@@ -702,3 +702,28 @@ span.kv-value { font-family: var(--sans); font-size: 13px; color: var(--muted); 
   .kv-row { grid-template-columns: minmax(0, 1fr) auto; }
   .kv-label { grid-column: 1 / -1; }
 }
+
+/* ---------- connections: platform picker ---------- */
+.platforms { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
+.platform { position: relative; display: flex; align-items: center; gap: 12px; padding: 14px 16px; text-align: left;
+  border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface); color: var(--text);
+  font: inherit; cursor: pointer; transition: border-color .12s, box-shadow .12s, background .12s; }
+.platform:hover { background: var(--subtle); }
+.platform:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus); }
+.platform.on { border: 2px solid var(--primary); padding: 13px 15px; background: var(--surface); box-shadow: var(--shadow-pop); }
+.platform-logo { flex: none; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 10px;
+  background: var(--surface); border: 1px solid var(--line); }
+.platform-logo img { width: 24px; height: 24px; display: block; }
+.platform-text { display: flex; flex-direction: column; min-width: 0; }
+.platform-name { font-weight: 600; font-size: 15px; }
+.platform-sub { color: var(--muted); font-size: 12px; }
+.platform-check { margin-left: auto; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%;
+  background: var(--primary); color: var(--on-primary); visibility: hidden; flex: none; }
+.platform-check svg { width: 14px; height: 14px; }
+.platform.on .platform-check { visibility: visible; }
+.platform:not(.on) .platform-name { color: var(--text-2); }
+.platform-heading { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 16px;
+  padding-top: 4px; margin-bottom: 8px; }
+.platform-heading .platform-logo { width: 32px; height: 32px; border-radius: 8px; }
+.platform-heading .platform-logo img { width: 20px; height: 20px; }
+@media (max-width: 720px) { .platforms { grid-template-columns: minmax(0, 1fr); } }

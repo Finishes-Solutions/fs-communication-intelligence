@@ -53,3 +53,20 @@ def test_unset_values_are_listed_as_missing() -> None:
         "MCP_CLIENT_ID_CHATGPT",
         "MCP_CLIENT_ID_COPILOT",
     ]
+
+
+def test_every_sidebar_page_is_served_and_the_platform_logos_exist() -> None:
+    """A page in the console's sidebar must also be a server path, or reloading it
+    (or opening a link to it) shows Not Found, as /connections did."""
+    import re
+
+    from ci_admin.api import PAGES, STATIC
+
+    app = (STATIC / "app.js").read_text()
+    nav = app[app.index("const NAV = [") : app.index("];", app.index("const NAV = ["))]
+    keys = re.findall(r'\["([a-z]+)", "[^"]+", "[a-z]+"\]', nav)
+    assert "connections" in keys and len(keys) >= 10
+    assert set(keys) <= set(PAGES)
+    for name in ("claude", "chatgpt", "copilot-studio"):
+        logo = (STATIC / "logos" / f"{name}.svg").read_text()
+        assert logo.startswith("<svg") and "<script" not in logo

@@ -109,6 +109,7 @@ PAGES = (
     "check",
     "knowledge",
     "lab",
+    "connections",
 )
 
 Connector = Callable[[str], Connection]
