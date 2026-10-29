@@ -1552,9 +1552,16 @@ async function reviewPage() {
 
   let reviewed = 0;
   let done = false;
+  const loading = text => {
+    panel.hidden = true;
+    reader.replaceChildren(h("div", { class: "placeholder" }, h("div", {}, h("div", { class: "spinner" }), text)));
+  };
   async function next() {
     let id = browseId;
     if (!browseId) {
+      // Picking the list's next email can take a while on a large mailbox.
+      loading("Finding the next email…");
+      status.textContent = "";
       const q = new URLSearchParams({ source, person: personInput.value });
       if (source === "label") q.set("label", label);
       const r = await api("/api/review/next?" + q);
@@ -1569,9 +1576,9 @@ async function reviewPage() {
       panel.hidden = true;
       return;
     }
-    panel.hidden = false;
-    reader.replaceChildren(h("div", { class: "placeholder" }, h("div", {}, h("div", { class: "spinner" }), "Loading…")));
+    loading("Loading the email…");
     const d = await api(`/api/feedback/${encodeURIComponent(id)}`);
+    panel.hidden = false;
     reader.replaceChildren(messageView(id, d.email));
     drawPanel(id, d);
   }
