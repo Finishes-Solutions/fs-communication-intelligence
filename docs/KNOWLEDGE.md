@@ -52,7 +52,7 @@ Everything is computed per caller from the messages their grants allow, using th
 - `find_knowledge(query, kind)` looks up a property, organization, person (by name or address) or term. With no query it lists the most-mentioned entries.
 - `get_profile(entity_id | name)` returns everything about one entry: facts in both directions with their support, related entries, activity and the latest emails (with `view_url`).
 
-**Admin console.** The **Knowledge** page (under Insights) has search and a kind filter. Each entry shows its facts, support badges, related entries, activity by month and the latest emails. Buttons rename, fix the kind, merge into another entry (found by name), or hide it, and hidden entries are listed with an Unhide button. The **Lab** shows what an email would add to the knowledge base before anything is stored.
+**Admin console.** The **Knowledge** page (under Insights) has search and a kind filter. Each entry shows its facts, support badges, related entries, activity by month and the latest emails. Buttons rename, fix the kind, merge into another entry (found by name), or hide it, and hidden entries are listed with an Unhide button. Ticking several entries in the list (or the select-all box) and choosing **Merge Selected Into…** merges them all into one, all or nothing: if one can't be merged (a person into a non-person), nothing changes (Matthew, 2026-10-29: one property had many entries). The **Lab** shows what an email would add to the knowledge base before anything is stored.
 
 **CLI.**
 
@@ -65,7 +65,7 @@ ci knowledge show 42
 ```
 
 ```bash
-ci knowledge merge 57 --into 42
+ci knowledge merge 57 58 61 --into 42
 ```
 
 ```bash

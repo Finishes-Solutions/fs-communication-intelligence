@@ -459,6 +459,36 @@ def reclassify_knowledge(
     return target_id
 
 
+MAX_MERGE = 200
+
+
+def merge_knowledge_many(
+    conn: Connection, actor: str, source_ids: list[int], target_id: int
+) -> int:
+    """Merge several entries into one (e.g. every spelling of a property), all or
+    nothing: the caller commits only when every merge succeeded. Entries that are
+    already the target, or already count as it, are skipped. Returns how many merged."""
+    ids = list(dict.fromkeys(int(i) for i in source_ids))
+    if not ids:
+        raise OperatorError("select at least one entry to merge")
+    if len(ids) > MAX_MERGE:
+        raise OperatorError(f"merge at most {MAX_MERGE} entries at a time")
+    target = _entity(conn, target_id)
+    root = int(target["merged_into"] or target["id"])
+    merged = 0
+    for source_id in ids:
+        source = _entity(conn, source_id)
+        if source["id"] == root or source["merged_into"] == root:
+            continue
+        try:
+            merge_knowledge(conn, actor, source_id, root)
+        except OperatorError as exc:
+            name = source["name_override"] or source["name"]
+            raise OperatorError(f"#{source_id} {name}: {exc}") from exc
+        merged += 1
+    return merged
+
+
 def unmerge_knowledge(conn: Connection, actor: str, entity_id: int) -> None:
     entry = _entity(conn, entity_id)
     if entry["merged_into"] is None:

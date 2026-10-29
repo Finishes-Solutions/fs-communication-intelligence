@@ -896,6 +896,28 @@ def test_knowledge_page_profiles_and_corrections(client: TestClient, database_re
     assert client.post(f"{url}/unmerge", headers=auth()).status_code == 200
     back = client.get("/api/knowledge?q=northfield&kind=organization", headers=auth()).json()
     assert [r["entity_id"] for r in back["results"]] == [firm["entity_id"]]
+    # Merge several at once (the list's checkboxes), then undo one by one.
+    orgs = client.get("/api/knowledge?kind=organization&limit=100", headers=auth()).json()
+    others = [r["entity_id"] for r in orgs["results"] if r["entity_id"] != firm["entity_id"]][:2]
+    assert len(others) == 2
+    body = {"ids": others, "into": firm["entity_id"]}
+    merged = client.post("/api/knowledge/merge", headers=auth(), json=body).json()
+    assert merged["merged"] == 2 and {m["id"] for m in merged["merged_from"]} == set(others)
+    for other in others:
+        assert client.post(f"/api/knowledge/{other}/unmerge", headers=auth()).status_code == 200
+    assert (
+        client.post(
+            "/api/knowledge/merge", headers=auth(), json={"ids": "1", "into": 1}
+        ).status_code
+        == 400
+    )
+    assert (
+        client.post(
+            "/api/knowledge/merge", headers=auth(), json={"ids": [], "into": firm["entity_id"]}
+        ).status_code
+        == 400
+    )
+    assert client.post("/api/knowledge/merge", json=body).status_code == 401
 
 
 def test_lab_shows_what_an_email_would_teach(client: TestClient) -> None:

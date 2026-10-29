@@ -49,7 +49,7 @@ The database comes from the standard ``PG*`` environment variables; locally,
     ci knowledge list [QUERY] [--kind property|organization|person|term]
                                               what the email taught the knowledge base
     ci knowledge show ID                      one entry: facts, related entries, emails
-    ci knowledge merge ID --into ID           count two entries as one (undo: unmerge ID)
+    ci knowledge merge ID [ID ...] --into ID  count entries as one (undo: unmerge ID)
     ci knowledge hide ID | unhide ID          hide a wrong entry from every reader
     ci knowledge rename ID "NAME" | rename ID --clear
     ci knowledge reclassify ID person|property|organization|term
@@ -92,7 +92,7 @@ from ci_core.operator import (
     list_names,
     list_participant_exclusions,
     list_people,
-    merge_knowledge,
+    merge_knowledge_many,
     reclassify_knowledge,
     remove_name,
     rename_knowledge,
@@ -261,8 +261,8 @@ def _parser() -> argparse.ArgumentParser:
     klist.add_argument("--kind", choices=["property", "organization", "person", "term"])
     klist.add_argument("--limit", type=int, default=30)
     know_action.add_parser("show").add_argument("entity_id", type=int)
-    kmerge = know_action.add_parser("merge", help="count ID as the --into entry from now on")
-    kmerge.add_argument("entity_id", type=int)
+    kmerge = know_action.add_parser("merge", help="count the IDs as the --into entry from now on")
+    kmerge.add_argument("entity_id", type=int, nargs="+")
     kmerge.add_argument("--into", type=int, required=True)
     for name in ("unmerge", "hide", "unhide"):
         know_action.add_parser(name).add_argument("entity_id", type=int)
@@ -386,8 +386,8 @@ def _knowledge(args: argparse.Namespace, conn: Connection, actor: str) -> None:
         counts = knowledge_store.backfill(conn, known=known_names(conn), limit=args.limit or None)
         print(f"knowledge backfill: {dict(sorted(counts.items()))}")
     elif args.action == "merge":
-        merge_knowledge(conn, actor, args.entity_id, args.into)
-        print(f"entry {args.entity_id} now counts as entry {args.into}")
+        merged = merge_knowledge_many(conn, actor, args.entity_id, args.into)
+        print(f"{merged} entr{'y' if merged == 1 else 'ies'} now count as entry {args.into}")
     elif args.action == "unmerge":
         unmerge_knowledge(conn, actor, args.entity_id)
         print(f"entry {args.entity_id} is separate again")

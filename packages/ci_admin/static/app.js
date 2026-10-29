@@ -1933,23 +1933,55 @@ async function knowledgePage() {
     card({}, h("form", { class: "toolbar", onsubmit: e => { e.preventDefault(); go(); } },
       searchBox(q), kind, h("button", { class: "btn primary", type: "submit" }, "Search"))),
     h("div", { class: "inbox" }, list, detail),
-    note("Built automatically, without approval. A fact one sender stated once is marked in yellow: check its email before relying on it. Fix the kind of, merge, rename or hide entries that are wrong; every change is audited and can be undone.", "warn"));
+    note("Built automatically, without approval. A fact one sender stated once is marked in yellow: check its email before relying on it. Fix the kind of, merge, rename or hide entries that are wrong; tick several entries to merge them at once. Every change is audited and can be undone.", "warn"));
   const d = await api("/api/knowledge?" + new URLSearchParams(Object.fromEntries(
-    [["q", p.get("q") || ""], ["kind", p.get("kind") || ""]].filter(([, v]) => v))));
+    [["q", p.get("q") || ""], ["kind", p.get("kind") || ""], ["limit", "100"]].filter(([, v]) => v))));
   const open = id => showEntry(id, detail);
+  // Several entries can be picked and merged into one (e.g. every spelling of a property).
+  const picked = new Map();
+  const boxes = [];
+  const count = h("span", {});
+  const all = h("input", { type: "checkbox", "aria-label": "Select every entry shown" });
+  const bar = h("div", { class: "select-bar", hidden: true }, count,
+    h("button", { class: "btn sm primary", type: "button", onclick: guard(async () => {
+      const target = await chooseMergeTarget([...picked.values()]);
+      if (!target) return;
+      const ids = [...picked.keys()].filter(i => i !== target.entity_id);
+      const r = await post("/api/knowledge/merge", { ids, into: target.entity_id });
+      toast(`${num(r.merged)} entr${r.merged === 1 ? "y" : "ies"} merged into ${target.name}`);
+      navigate(`/knowledge?${new URLSearchParams(Object.fromEntries([["q", p.get("q") || ""], ["kind", p.get("kind") || ""], ["id", String(target.entity_id)]].filter(([, v]) => v)))}`);
+    }) }, "Merge Selected Into…"),
+    h("button", { class: "btn sm ghost", type: "button", onclick: () => setAll(false) }, "Clear"));
+  const sync = () => {
+    count.textContent = `${num(picked.size)} selected`;
+    bar.hidden = picked.size === 0;
+    all.checked = boxes.length > 0 && picked.size === boxes.length;
+    all.indeterminate = picked.size > 0 && picked.size < boxes.length;
+  };
+  const setAll = on => {
+    for (const [box, e] of boxes) { box.checked = on; if (on) picked.set(e.entity_id, e); else picked.delete(e.entity_id); }
+    sync();
+  };
+  all.addEventListener("change", () => setAll(all.checked));
   list.replaceChildren(
-    h("div", { class: "card-head" }, h("h2", {}, p.get("q") ? "Matches" : "Most Mentioned"), h("span", { class: "muted small" }, `${num(d.results.length)} shown`)),
+    h("div", { class: "card-head" },
+      h("label", { class: "select-all" }, d.results.length ? all : null, h("h2", {}, p.get("q") ? "Matches" : "Most Mentioned")),
+      h("span", { class: "muted small" }, `${num(d.results.length)} shown`)),
+    bar,
     d.results.length
       ? h("div", { class: "msg-list" }, d.results.map(e => {
+        const box = h("input", { type: "checkbox", "aria-label": `Select ${e.name}` });
+        box.addEventListener("change", () => { if (box.checked) picked.set(e.entity_id, e); else picked.delete(e.entity_id); sync(); });
+        boxes.push([box, e]);
         const el = h("button", { class: "msg", type: "button" },
           h("div", { class: "msg-top" }, h("span", { class: "msg-from" }, e.name), h("span", { class: "msg-time" }, `${num(e.messages)} msgs`)),
           h("div", { class: "badges" }, kindBadge(e.kind), h("span", { class: "muted small" }, `#${e.entity_id} · last ${short(e.last_seen)}`)),
           entrySub(e) ? h("div", { class: "msg-summary" }, entrySub(e)) : null);
         el.addEventListener("click", () => {
-          el.parentElement.querySelectorAll(".on").forEach(x => x.classList.remove("on"));
+          list.querySelectorAll(".msg.on").forEach(x => x.classList.remove("on"));
           el.classList.add("on"); open(e.entity_id);
         });
-        return el;
+        return h("div", { class: "k-row" }, h("label", { class: "k-check" }, box), el);
       }))
       : emptyState("Nothing Learned Yet", "Entries appear as mail is processed; ci knowledge backfill adds mail processed earlier.", "layers"),
     (d.hidden || []).length ? h("div", { class: "card-body" }, h("div", { class: "section-title" }, "Hidden Entries"),
@@ -1997,6 +2029,32 @@ function pickEntry({ title, text, query, kind, kinds, exclude, extra }) {
     dlg.showModal();
     box.focus();
     search();
+  });
+}
+
+// Which entry several selected ones become: one of them (most mentioned first) or another.
+function chooseMergeTarget(selected) {
+  return new Promise(resolve => {
+    const dlg = h("dialog", {});
+    const done = v => { dlg.close(); dlg.remove(); resolve(v); };
+    const sorted = [...selected].sort((a, b) => b.messages - a.messages);
+    const kinds = new Set(sorted.map(e => e.kind));
+    dlg.append(h("form", { class: "dlg", onsubmit: ev => ev.preventDefault() },
+      h("h2", {}, `Merge ${num(sorted.length)} Entries`),
+      h("p", {}, "Pick the entry they should all count as. Its name and kind are kept; the others' spellings, emails and facts move to it. Each can be unmerged later."),
+      kinds.has("person") && kinds.size > 1 ? note("A person can only be merged into another person.", "warn") : null,
+      h("div", { class: "pick-list" }, sorted.map(e => h("button", { type: "button", class: "pick", onclick: () => done(e) },
+        h("div", { class: "pick-top" }, h("b", {}, e.name), kindBadge(e.kind)),
+        h("div", { class: "muted small" }, [`#${e.entity_id}`, `${num(e.messages)} msgs`, entrySub(e)].filter(Boolean).join(" · "))))),
+      h("div", { class: "actions" },
+        h("button", { type: "button", class: "btn", onclick: async () => {
+          dlg.close(); dlg.remove();
+          resolve(await pickEntry({ title: "Merge Into Another Entry", text: "Search for the entry they should all count as.", query: sorted[0].name }));
+        } }, "Another Entry…"),
+        h("button", { type: "button", class: "btn", onclick: () => done(null) }, "Cancel"))));
+    dlg.addEventListener("cancel", ev => { ev.preventDefault(); done(null); });
+    document.body.append(dlg);
+    dlg.showModal();
   });
 }
 
