@@ -337,7 +337,6 @@ async function overview() {
   const published = (d.versions || []).filter(v => v.processing_state === "published")
     .reduce((n, v) => n + v.versions, 0);
   const s = d.schedule;
-  const hours = h("input", { type: "number", min: "0.25", max: "2232", step: "0.25", value: s.capture_window_hours, style: "width:110px" });
   const requeue = guard(async () => { const r = await post("/api/requeue-failed"); toast(`${r.requeued} failed messages requeued.`); route(); });
   const failed = (d.failures || []).reduce((n, f) => n + f.versions, 0);
   show(
@@ -355,12 +354,6 @@ async function overview() {
     ),
     (s.prompt_shield_enabled === false || s.masking_enabled === false)
       ? note(`Testing mode: ${[s.prompt_shield_enabled === false ? "prompt-injection check" : "", s.masking_enabled === false ? "masking" : ""].filter(Boolean).join(" and ")} switched off in Schedule & Runs.`, "warn") : null,
-    card({ title: "Run a Capture Now", sub: "Pulls mail from every eligible mailbox for the window you choose. Duplicates are skipped.",
-      actions: [field("Look Back (Hours)", hours),
-        h("button", { class: "btn primary", style: "align-self:flex-end", onclick: guard(async () => {
-          await post("/api/runs/capture", { hours: Number(hours.value) });
-          toast("Capture requested; it starts within about 5 minutes."); route(); }) }, icon("play"), "Run Capture Now")] },
-      s.run_requested_at ? note(`A capture was requested at ${when(s.run_requested_at)} and has not started yet.`, "warn") : null),
     card({ title: "Recent Runs", flush: true, actions: h("a", { class: "btn sm ghost", href: "/schedule" }, "View All") }, runsTable(d.runs)),
     h("div", { class: "cols" },
       card({ title: "Message States", sub: "Every stored version, by processing state" },
