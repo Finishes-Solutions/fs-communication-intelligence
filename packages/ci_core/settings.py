@@ -174,6 +174,11 @@ class Settings(BaseSettings):
     search_public_url: str | None = None  # e.g. https://func-fs-ci-search-dev.azurewebsites.net
     search_api_client_id: str | None = None  # the search API app registration
     search_api_app_id_uri: str | None = None  # e.g. api://<client id>
+    # Client IDs of the per-platform app registrations, shown on the console's
+    # Connections page (scripts/azure/7-connections-page.sh). IDs, not secrets.
+    mcp_client_id_claude: str | None = None
+    mcp_client_id_chatgpt: str | None = None
+    mcp_client_id_copilot: str | None = None
 
     # Cost page: Azure Cost Management for this resource group (the admin
     # console's identity needs Cost Management Reader there).

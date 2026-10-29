@@ -43,7 +43,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from ci_admin import billing, calibration, costs, lab, models, reports
+from ci_admin import billing, calibration, connections, costs, lab, models, reports
 from ci_core import ops
 from ci_core.db import Connection, connect, required
 from ci_core.operator import (
@@ -1106,6 +1106,9 @@ def build_admin_app(
             "policy_version": POLICY_VERSION,
         }
 
+    def connections_page(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        return connections.connection_settings(settings, tenant)
+
     async def page(request: Request) -> Response:
         return FileResponse(STATIC / "index.html", media_type="text/html")
 
@@ -1117,6 +1120,7 @@ def build_admin_app(
         Route("/healthz", health),
         Route("/api/overview", endpoint(overview)),
         Route("/api/labels", endpoint(labels)),
+        Route("/api/connections", endpoint(connections_page)),
         Route("/api/runs", endpoint(runs)),
         Route("/api/runs/capture", endpoint(run_now), methods=["POST"]),
         Route("/api/schedule", endpoint(schedule), methods=["GET", "PUT"]),
