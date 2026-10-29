@@ -22,7 +22,7 @@ import logging
 import threading
 import time
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -250,12 +250,23 @@ def _entity_ids(conn: Connection, wanted: dict[tuple[str, str], str]) -> dict[tu
     return {(r["kind"], r["key"]): int(r["id"]) for r in rows}
 
 
+BACKFILL_BATCH = 200
+
+
 def backfill(
-    conn: Connection, *, known: Sequence[KnownName] = (), limit: int | None = None
+    conn: Connection,
+    *,
+    known: Sequence[KnownName] = (),
+    limit: int | None = None,
+    progress: Callable[[Counter[str]], None] | None = None,
 ) -> Counter[str]:
     """Knowledge for published mail that has none yet, from what its classification
     already holds (no AI call): the knowledge answer when there is one, else the
-    property and entity names. Mail with phishing indicators is skipped."""
+    property and entity names. Mail with phishing indicators is skipped.
+
+    Commits every ``BACKFILL_BATCH`` messages: one long transaction would hold the
+    new entries' locks and make processing wait on the same names, and an
+    interrupted run keeps what it finished (a rerun continues from there)."""
     rows = conn.execute(
         """
         SELECT DISTINCT ON (cv.id) cv.id::text AS version_id, r.knowledge, r.properties,
@@ -285,4 +296,9 @@ def backfill(
         added = record(conn, row["version_id"], item, known=known)
         counts["messages"] += 1
         counts.update(added)
+        if counts["messages"] % BACKFILL_BATCH == 0:
+            conn.commit()
+            if progress is not None:
+                progress(counts)
+    conn.commit()
     return counts

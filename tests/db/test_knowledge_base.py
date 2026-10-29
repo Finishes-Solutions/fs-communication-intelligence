@@ -624,6 +624,38 @@ def test_backfill_rebuilds_knowledge_without_a_model_call(
     assert counts["messages"] == 1 and kinds == {"property"}
 
 
+def test_backfill_commits_in_batches(ready: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A long backfill must not hold one transaction (processing would wait on the same
+    names); each batch is committed and reported, so an interrupted run keeps its work."""
+    monkeypatch.setattr(knowledge_store, "BACKFILL_BATCH", 1)
+    with connect(dbname=ready) as conn:
+        versions = [
+            r["v"]
+            for r in conn.execute(
+                "SELECT DISTINCT version_id::text AS v FROM kg_mentions LIMIT 2"
+            ).fetchall()
+        ]
+        assert len(versions) == 2
+        conn.execute("DELETE FROM kg_relations WHERE version_id = ANY(%s::uuid[])", (versions,))
+        conn.execute("DELETE FROM kg_mentions WHERE version_id = ANY(%s::uuid[])", (versions,))
+        conn.commit()
+    seen: list[int] = []
+
+    def progress(counts: Any) -> None:
+        seen.append(counts["messages"])
+        with connect(dbname=ready) as other:  # visible to others: already committed
+            row = other.execute(
+                "SELECT count(DISTINCT version_id) AS n FROM kg_mentions"
+                " WHERE version_id = ANY(%s::uuid[])",
+                (versions,),
+            ).fetchone()
+            assert row is not None and row["n"] == counts["messages"]
+
+    with connect(dbname=ready) as conn:
+        counts = knowledge_store.backfill(conn, progress=progress)
+    assert counts["messages"] == 2 and seen == [1, 2]
+
+
 def test_cli_corrections(ready: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PGDATABASE", ready)
     monkeypatch.setenv("DEPLOYMENT_ENVIRONMENT", "local")

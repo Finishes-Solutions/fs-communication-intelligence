@@ -383,7 +383,12 @@ def _schedule(args: argparse.Namespace, conn: Connection, actor: str) -> None:
 
 def _knowledge(args: argparse.Namespace, conn: Connection, actor: str) -> None:
     if args.action == "backfill":
-        counts = knowledge_store.backfill(conn, known=known_names(conn), limit=args.limit or None)
+        counts = knowledge_store.backfill(
+            conn,
+            known=known_names(conn),
+            limit=args.limit or None,
+            progress=lambda c: print(f"  ... {c['messages']} messages so far", flush=True),
+        )
         print(f"knowledge backfill: {dict(sorted(counts.items()))}")
     elif args.action == "merge":
         merged = merge_knowledge_many(conn, actor, args.entity_id, args.into)
