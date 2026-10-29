@@ -865,6 +865,7 @@ def test_knowledge_page_profiles_and_corrections(client: TestClient, database_re
         "name_override": None,
         "merged_into": None,
         "hidden": False,
+        "detail_override": None,
         "merged_from": [],
     }
     url = f"/api/knowledge/{firm['entity_id']}"
@@ -886,6 +887,13 @@ def test_knowledge_page_profiles_and_corrections(client: TestClient, database_re
     assert client.post(f"{url}/explode", headers=auth()).status_code == 404
     assert client.get("/api/knowledge/abc", headers=auth()).status_code == 404
     # Fix Kind: the organization becomes a term, then goes back with Unmerge.
+    # Edit Domain (organizations), then back to what emails say.
+    fixed = client.post(f"{url}/detail", headers=auth(), json={"detail": "northfield.example"})
+    assert fixed.json()["detail_override"] == "northfield.example"
+    shown = client.get(url, headers=auth()).json()["entity"]
+    assert shown["domain"] == "northfield.example"
+    assert latest_audit(database_ready, "knowledge_set_detail") is not None
+    assert client.post(f"{url}/detail", headers=auth(), json={"detail": ""}).status_code == 200
     bad = client.post(f"{url}/reclassify", headers=auth(), json={"kind": "planet"})
     assert bad.status_code == 400
     fixed = client.post(f"{url}/reclassify", headers=auth(), json={"kind": "term"}).json()

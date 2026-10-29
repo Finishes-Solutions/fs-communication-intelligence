@@ -45,7 +45,7 @@ ACTIVITY_LABELS = ("project_risk", "action_required", "approval_required", "invo
 # copies of one message in several mailboxes once.
 _MENTIONS = """
     SELECT km.entity_id, km.kind, km.key, km.name_override, km.written, km.detail,
-           km.communication_id, km.occurred_at,
+           {override} AS detail_override, km.communication_id, km.occurred_at,
            coalesce(em.internet_message_id, km.communication_id::text) AS msg
     FROM published_kg_mentions km
     JOIN published_email_messages em ON em.communication_id = km.communication_id
@@ -61,8 +61,18 @@ _WITH_ENTITY = (
 )
 
 
-def _mentions(extra: str = "") -> str:
-    return _MENTIONS.format(auth=_AUTH.format(a="km")) + extra
+def _mentions(extra: str = "", *, override: bool = False) -> str:
+    """``override``: read the operator-set detail (migration 0020); NULL without it."""
+    column = "km.detail_override" if override else "NULL::text"
+    return _MENTIONS.format(auth=_AUTH.format(a="km"), override=column) + extra
+
+
+def _has_detail_override(conn: Connection) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.columns WHERE table_schema = 'ci'"
+        " AND table_name = 'published_kg_mentions' AND column_name = 'detail_override'"
+    ).fetchone()
+    return row is not None
 
 
 def _base(
@@ -79,10 +89,27 @@ def _base(
 def _describe(
     conn: Connection, params: dict[str, Any], ids: list[int]
 ) -> dict[int, dict[str, Any]]:
-    """Name, other spellings and latest detail of each entity, from authorized mail only."""
+    """Name, other spellings and detail of each entity, from authorized mail only.
+
+    The detail (title, meaning, domain) is the one an operator set, else the one
+    stated in the most messages (ties: the latest), so a single email that got it
+    wrong does not replace it."""
     if not ids:
         return {}
     p = params | {"ids": ids, "kind": None, "since": None}
+    override = _has_detail_override(conn)
+    details: dict[int, str] = {}
+    for r in conn.execute(
+        f"""
+        WITH m AS ({_mentions("AND km.entity_id = ANY(%(ids)s)")})
+        SELECT DISTINCT ON (entity_id) entity_id, detail
+        FROM (SELECT entity_id, detail, count(DISTINCT msg) AS n, max(occurred_at) AS last
+              FROM m WHERE detail IS NOT NULL GROUP BY entity_id, detail) d
+        ORDER BY entity_id, n DESC, last DESC
+        """,  # noqa: S608 - fragments are constants; values are bound parameters
+        p,
+    ).fetchall():
+        details[r["entity_id"]] = r["detail"]
     forms: dict[int, list[str]] = {}
     for r in conn.execute(
         f"""
@@ -96,16 +123,16 @@ def _describe(
     out: dict[int, dict[str, Any]] = {}
     for r in conn.execute(
         f"""
-        WITH m AS ({_mentions("AND km.entity_id = ANY(%(ids)s)")})
+        WITH m AS ({_mentions("AND km.entity_id = ANY(%(ids)s)", override=override)})
         SELECT entity_id, kind, key, max(name_override) AS override,
-               (array_agg(detail ORDER BY occurred_at DESC)
-                  FILTER (WHERE detail IS NOT NULL))[1] AS detail
+               max(detail_override) AS detail_override
         FROM m GROUP BY entity_id, kind, key
         """,  # noqa: S608
         p,
     ).fetchall():
         written = forms.get(r["entity_id"], [])
         name = r["override"] or (written[0] if written else r["key"])
+        detail = r["detail_override"] or details.get(r["entity_id"])
         entry: dict[str, Any] = {
             "entity_id": r["entity_id"],
             "kind": r["kind"],
@@ -115,11 +142,11 @@ def _describe(
         if r["kind"] == "person":
             # Reclassified by an operator without an address: the key is a name.
             entry["email"] = r["key"] if "@" in r["key"] else None
-            entry["title"] = r["detail"]
+            entry["title"] = detail
         elif r["kind"] == "term":
-            entry["meaning"] = r["detail"]
+            entry["meaning"] = detail
         elif r["kind"] == "organization":
-            entry["domain"] = r["detail"]
+            entry["domain"] = detail
         out[r["entity_id"]] = entry
     return out
 

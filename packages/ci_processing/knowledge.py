@@ -35,7 +35,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from typing import Any
 
-KNOWLEDGE_VERSION = "knowledge-2026-10-29"
+KNOWLEDGE_VERSION = "knowledge-2026-10-29b"
 
 # property / organization / meeting names come back in `names`; people and terms
 # separately. Meetings were added 2026-10-29 (Matthew): without a box for them the
@@ -368,7 +368,8 @@ domain: the organization's email or web domain when the email shows it, else nul
 in the email or be one of its participants (max 8): name, email, organization as written or \
 null, title (job title as written) or null. Only when the email itself ties that name to that \
 address (sender or recipient name, signature, "Name <address>"); a first name mentioned in \
-passing is not enough.
+passing is not enough. A title only from that person's own signature or a statement about \
+them; never another person's signature in the same thread.
   - relations: facts the email states (max 10). subject and object are names from names or \
 people (a person by email address). relation is one of: works_for (person -> organization), \
 role_on (person or organization -> property, with role), owns (organization -> property), \

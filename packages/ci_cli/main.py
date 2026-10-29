@@ -53,6 +53,8 @@ The database comes from the standard ``PG*`` environment variables; locally,
     ci knowledge hide ID | unhide ID          hide a wrong entry from every reader
     ci knowledge rename ID "NAME" | rename ID --clear
     ci knowledge reclassify ID person|property|organization|term|meeting
+    ci knowledge set-detail ID "CEO" | set-detail ID --clear
+                                              a person's title, a term's meaning, a domain
                                               show an entry as another kind (undo: unmerge ID)
     ci knowledge backfill                     knowledge for mail processed before it existed
                                               (from stored classifications; no AI cost)
@@ -96,6 +98,7 @@ from ci_core.operator import (
     reclassify_knowledge,
     remove_name,
     rename_knowledge,
+    set_knowledge_detail,
     set_mode,
     set_person,
     unmerge_knowledge,
@@ -273,6 +276,10 @@ def _parser() -> argparse.ArgumentParser:
     krecl = know_action.add_parser("reclassify", help="show an entry as another kind")
     krecl.add_argument("entity_id", type=int)
     krecl.add_argument("kind", choices=["person", "property", "organization", "term", "meeting"])
+    kdetail = know_action.add_parser("set-detail", help="title, meaning or domain by hand")
+    kdetail.add_argument("entity_id", type=int)
+    kdetail.add_argument("detail", nargs="?")
+    kdetail.add_argument("--clear", action="store_true", help="use what emails say most")
     kback = know_action.add_parser("backfill")
     kback.add_argument("--limit", type=int, default=0, help="0 = all")
     runs = sub.add_parser("runs", help="recent capture and processing runs and the backlog")
@@ -404,6 +411,11 @@ def _knowledge(args: argparse.Namespace, conn: Connection, actor: str) -> None:
             raise OperatorError("give a NAME, or --clear")
         rename_knowledge(conn, actor, args.entity_id, None if args.clear else args.name)
         print(f"entry {args.entity_id} renamed" if not args.clear else "name cleared")
+    elif args.action == "set-detail":
+        if not args.clear and not args.detail:
+            raise OperatorError("give the text, or --clear")
+        set_knowledge_detail(conn, actor, args.entity_id, None if args.clear else args.detail)
+        print(f"entry {args.entity_id} updated" if not args.clear else "detail cleared")
     elif args.action == "reclassify":
         into = reclassify_knowledge(conn, actor, args.entity_id, args.kind, name_key)
         print(f"entry {args.entity_id} now counts as {args.kind} entry {into}")

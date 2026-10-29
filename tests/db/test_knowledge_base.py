@@ -19,6 +19,7 @@ from ci_core.operator import (
     merge_knowledge_many,
     reclassify_knowledge,
     rename_knowledge,
+    set_knowledge_detail,
     unmerge_knowledge,
 )
 from ci_email import knowledge_store
@@ -534,6 +535,52 @@ def test_meetings_are_stored_and_found(ready: str) -> None:
             conn.execute("DELETE FROM kg_relations WHERE subject_id = ANY(%s)", (ids,))
             conn.execute("DELETE FROM kg_mentions WHERE entity_id = ANY(%s)", (ids,))
             conn.execute("DELETE FROM kg_entities WHERE id = ANY(%s)", (ids,))
+            conn.commit()
+
+
+def test_title_is_the_most_stated_unless_an_admin_set_it(ready: str) -> None:
+    """One email with the wrong title (another person's signature) must not replace
+    the title most emails gave; an admin's title wins over both (migration 0020)."""
+    with connect(dbname=ready) as conn:
+        versions = [
+            r["v"]
+            for r in conn.execute(
+                "SELECT c.active_version_id::text AS v FROM communications c"
+                " JOIN communication_versions cv ON cv.id = c.active_version_id"
+                " WHERE cv.processing_state = 'published' ORDER BY c.occurred_at LIMIT 3"
+            ).fetchall()
+        ]
+        person = conn.execute(
+            "INSERT INTO kg_entities (kind, key, name) VALUES"
+            " ('person', 'pat.owner@example.com', 'Pat Owner') RETURNING id"
+        ).fetchone()["id"]  # type: ignore[index]
+        for version, title in zip(versions, ["Owner", "Owner", "Director of Sales"], strict=True):
+            conn.execute(
+                "INSERT INTO kg_mentions (version_id, entity_id, written, detail)"
+                " VALUES (%s, %s, 'Pat Owner', %s)",
+                (version, person, title),
+            )
+        conn.commit()
+    try:
+        # The latest email says "Director of Sales"; two earlier ones say "Owner".
+        assert find(ready, READER, "pat.owner", kind="person")[0]["title"] == "Owner"
+        with connect(dbname=ready, role="ci_operator") as conn:
+            set_knowledge_detail(conn, "pytest", person, "  CEO /  Owner ")
+            conn.commit()
+        assert find(ready, READER, "pat.owner", kind="person")[0]["title"] == "CEO / Owner"
+        with connect(dbname=ready, role="ci_operator") as conn:
+            with pytest.raises(OperatorError):
+                set_knowledge_detail(
+                    conn, "pytest", entity_id(ready, "example ridge", "property"), "x"
+                )
+            conn.rollback()
+            set_knowledge_detail(conn, "pytest", person, None)
+            conn.commit()
+        assert find(ready, READER, "pat.owner", kind="person")[0]["title"] == "Owner"
+    finally:
+        with connect(dbname=ready) as conn:
+            conn.execute("DELETE FROM kg_mentions WHERE entity_id = %s", (person,))
+            conn.execute("DELETE FROM kg_entities WHERE id = %s", (person,))
             conn.commit()
 
 
