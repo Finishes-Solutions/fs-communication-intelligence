@@ -1625,7 +1625,7 @@ async function reviewPage() {
       const list = LABELS.filter(x => members ? members.includes(x.name) : x.name.startsWith("cat_"));
       return h("div", { class: "lgroup" }, h("div", { class: "lgroup-title" }, gname), list.map(x => {
         const ai = scores[x.name] || { decision: "unresolved", probability: null };
-        const rowEl = h("div", { class: "rv-row" },
+        const rowEl = h("div", { class: "rv-row", "data-label": x.name },
           h("div", { class: "rv-name" }, h("div", { style: "font-weight:500" }, labelEl(x.name)), h("div", { class: "muted small" }, x.question)),
           h("div", { class: "rv-ai", title: "What the AI said" }, badge(`AI ${nice(ai.decision).toLowerCase()}`, { yes: "good", review: "warn", unresolved: "bad" }[ai.decision] || ""),
             h("span", { class: "muted small" }, ai.probability == null ? "" : Number(ai.probability).toFixed(2))),
@@ -1636,12 +1636,22 @@ async function reviewPage() {
         return rowEl;
       }));
     });
+    // Shows the answers at once, then saves them in one request (all or none).
     const restNo = guard(async () => {
-      for (const x of LABELS.filter(l => !(l.name in mine))) {
-        await save({ kind: "label", subject: x.name, applies: false });
-        mine[x.name] = false;
+      const rest = LABELS.filter(l => !(l.name in mine)).map(l => l.name);
+      if (!rest.length) { toast("Every label already has an answer."); return; }
+      rest.forEach(name => { mine[name] = false; });
+      groups.forEach(g => g.querySelectorAll(".rv-row").forEach(row => paintRow(row, row.dataset.label)));
+      paintProgress();
+      try {
+        await save({ labels: Object.fromEntries(rest.map(name => [name, false])) });
+        toast(`${rest.length} unanswered ${rest.length === 1 ? "label" : "labels"} saved as No.`);
+      } catch (e) {
+        rest.forEach(name => { delete mine[name]; });
+        groups.forEach(g => g.querySelectorAll(".rv-row").forEach(row => paintRow(row, row.dataset.label)));
+        paintProgress();
+        throw e;
       }
-      drawPanel(id, { ...d, labels: mine, action_for: action ? { ...d.action_for, [person]: action } : d.action_for });
     });
     panel.replaceChildren(
       h("div", { class: "card-head" }, h("div", {}, h("h2", {}, "Does Each Label Apply?"), h("div", { class: "sub" }, "Judge from the email, not from the AI's answer. Click an answer again to clear it.")), progress),

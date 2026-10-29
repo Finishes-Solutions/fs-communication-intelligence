@@ -739,6 +739,20 @@ def test_label_feedback_round_trip(client: TestClient, database_ready: str) -> N
         url, headers=auth(), json={"kind": "label", "subject": "spam", "applies": None}
     ).json()
     assert cleared["labels"] == {}
+    assert "email" not in cleared  # saving doesn't send the email back
+    # Several answers in one request ("Mark Unanswered as No"), all or none.
+    many = client.put(
+        url, headers=auth(), json={"labels": {"spam": False, "newsletter": False, "urgent": True}}
+    ).json()
+    assert many["labels"] == {"spam": False, "newsletter": False, "urgent": True}
+    rejected = client.put(
+        url, headers=auth(), json={"labels": {"phishing": False, "made_up": False}}
+    )
+    assert rejected.status_code == 400
+    assert client.get(url, headers=auth()).json()["labels"] == many["labels"]
+    client.put(
+        url, headers=auth(), json={"labels": {"spam": None, "newsletter": None, "urgent": None}}
+    )
     for bad in (
         {"kind": "label", "subject": "made_up", "applies": True},
         {"kind": "action_for", "subject": PAT, "applies": False, "reason": "because"},
@@ -749,6 +763,12 @@ def test_label_feedback_round_trip(client: TestClient, database_ready: str) -> N
     assert client.get(missing, headers=auth()).status_code == 404
     # An admin without a reader role can't judge (or see) mail.
     assert client.get(url, headers=auth(roles=[ADMIN_ROLE])).status_code == 404
+    no_reader = client.put(
+        url,
+        headers=auth(roles=[ADMIN_ROLE]),
+        json={"kind": "label", "subject": "spam", "applies": True},
+    )
+    assert no_reader.status_code == 404
     with connect(dbname=database_ready) as conn:
         rows = conn.execute(
             "SELECT subject_kind, reviewer FROM label_feedback WHERE communication_id = %s",
