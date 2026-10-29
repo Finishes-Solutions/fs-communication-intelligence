@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -369,13 +370,18 @@ def _touch(
 
 
 def merge_knowledge(conn: Connection, actor: str, source_id: int, target_id: int) -> None:
-    """Count ``source`` (and anything already merged into it) as ``target`` from now on.
-    Both must be the same kind; a target that is itself merged is followed to its root."""
+    """Count ``source`` (and anything already merged into it) as ``target`` from now on;
+    a target that is itself merged is followed to its root.
+
+    Kinds may differ (a person the AI took for a project merges into that person,
+    and is shown as one), but a person never merges into another kind: people
+    are keyed by address, and participant exclusions are checked on the entry
+    readers see."""
     source, target = _entity(conn, source_id), _entity(conn, target_id)
     if target["merged_into"] is not None:
         target = _entity(conn, target["merged_into"])
-    if source["kind"] != target["kind"]:
-        raise OperatorError(f"cannot merge a {source['kind']} into a {target['kind']}")
+    if source["kind"] == "person" and target["kind"] != "person":
+        raise OperatorError("a person can only be merged into another person")
     if source["id"] == target["id"] or source["merged_into"] == target["id"]:
         raise OperatorError("those entries are already one")
     moved = [
@@ -391,8 +397,66 @@ def merge_knowledge(conn: Connection, actor: str, source_id: int, target_id: int
         "knowledge_merge",
         "kg_entities",
         str(target["id"]),
-        {"source": source["id"], "entries": len(moved), "kind": source["kind"]},
+        {
+            "source": source["id"],
+            "entries": len(moved),
+            "kind": source["kind"],
+            "target_kind": target["kind"],
+        },
     )
+
+
+RECLASSIFY_KINDS = ("property", "organization", "term", "person")
+
+
+def reclassify_knowledge(
+    conn: Connection, actor: str, entity_id: int, kind: str, key_of: Callable[[str, str], str]
+) -> int:
+    """Show an entry as another kind: find or create an entry of ``kind`` with its
+    name and merge it into that one. Returns the entry it now counts as.
+
+    The wrong entry stays (merged), so later emails that repeat the AI's mistake
+    still land under the right kind; Unmerge undoes it. A person found only by name
+    (no address) can be created; merging into an existing person is better when
+    the address is known. ``key_of(kind, name)`` is the knowledge base's key
+    (ci_processing.knowledge.name_key), so the entry matches what processing finds."""
+    if kind not in RECLASSIFY_KINDS:
+        raise OperatorError(f"kind must be one of {', '.join(RECLASSIFY_KINDS)}")
+    entry = _entity(conn, entity_id)
+    if entry["merged_into"] is not None:
+        entry = _entity(conn, entry["merged_into"])
+    if entry["kind"] == "person":
+        raise OperatorError("people are keyed by address; merge or hide them instead")
+    if entry["kind"] == kind:
+        raise OperatorError(f"entry {entry['id']} is already a {kind}")
+    name = entry["name_override"] or entry["name"]
+    key = key_of(kind, name)
+    if not key:
+        raise OperatorError("the entry has no usable name; rename it first")
+    conn.execute(
+        "INSERT INTO kg_entities (kind, key, name, name_override, updated_by, updated_at)"
+        " VALUES (%s, %s, %s, %s, %s, now()) ON CONFLICT (kind, key) DO NOTHING",
+        (kind, key, name, entry["name_override"], actor),
+    )
+    target = required(
+        conn.execute(
+            "SELECT id, merged_into, hidden FROM kg_entities WHERE kind = %s AND key = %s",
+            (kind, key),
+        ).fetchone()
+    )
+    if target["hidden"]:
+        raise OperatorError(f"entry {target['id']} ({kind} {name!r}) is hidden; unhide it first")
+    target_id = int(target["merged_into"] or target["id"])
+    merge_knowledge(conn, actor, entry["id"], target_id)
+    audit(
+        conn,
+        actor,
+        "knowledge_reclassify",
+        "kg_entities",
+        str(entry["id"]),
+        {"from_kind": entry["kind"], "to_kind": kind, "into": target_id},
+    )
+    return target_id
 
 
 def unmerge_knowledge(conn: Connection, actor: str, entity_id: int) -> None:

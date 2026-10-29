@@ -52,6 +52,8 @@ The database comes from the standard ``PG*`` environment variables; locally,
     ci knowledge merge ID --into ID           count two entries as one (undo: unmerge ID)
     ci knowledge hide ID | unhide ID          hide a wrong entry from every reader
     ci knowledge rename ID "NAME" | rename ID --clear
+    ci knowledge reclassify ID person|property|organization|term
+                                              show an entry as another kind (undo: unmerge ID)
     ci knowledge backfill                     knowledge for mail processed before it existed
                                               (from stored classifications; no AI cost)
 
@@ -91,6 +93,7 @@ from ci_core.operator import (
     list_participant_exclusions,
     list_people,
     merge_knowledge,
+    reclassify_knowledge,
     remove_name,
     rename_knowledge,
     set_mode,
@@ -101,6 +104,7 @@ from ci_core.runtime import RuntimeConfigError, active_config, eligible_mailboxe
 from ci_core.settings import DeploymentEnvironment, SettingsError, load_settings
 from ci_email import knowledge_store
 from ci_email.process import known_names
+from ci_processing.knowledge import name_key
 from ci_retrieval.identity import IdentityError
 
 
@@ -266,6 +270,9 @@ def _parser() -> argparse.ArgumentParser:
     krename.add_argument("entity_id", type=int)
     krename.add_argument("name", nargs="?")
     krename.add_argument("--clear", action="store_true", help="use the name emails use most")
+    krecl = know_action.add_parser("reclassify", help="show an entry as another kind")
+    krecl.add_argument("entity_id", type=int)
+    krecl.add_argument("kind", choices=["person", "property", "organization", "term"])
     kback = know_action.add_parser("backfill")
     kback.add_argument("--limit", type=int, default=0, help="0 = all")
     runs = sub.add_parser("runs", help="recent capture and processing runs and the backlog")
@@ -392,6 +399,9 @@ def _knowledge(args: argparse.Namespace, conn: Connection, actor: str) -> None:
             raise OperatorError("give a NAME, or --clear")
         rename_knowledge(conn, actor, args.entity_id, None if args.clear else args.name)
         print(f"entry {args.entity_id} renamed" if not args.clear else "name cleared")
+    elif args.action == "reclassify":
+        into = reclassify_knowledge(conn, actor, args.entity_id, args.kind, name_key)
+        print(f"entry {args.entity_id} now counts as {args.kind} entry {into}")
 
 
 def _runs(args: argparse.Namespace, conn: Connection) -> None:

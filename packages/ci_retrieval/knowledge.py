@@ -113,7 +113,8 @@ def _describe(
             "also_written": [w for w in written if w.casefold() != name.casefold()][:5],
         }
         if r["kind"] == "person":
-            entry["email"] = r["key"]
+            # Reclassified by an operator without an address: the key is a name.
+            entry["email"] = r["key"] if "@" in r["key"] else None
             entry["title"] = r["detail"]
         elif r["kind"] == "term":
             entry["meaning"] = r["detail"]

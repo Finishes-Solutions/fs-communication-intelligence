@@ -16,6 +16,7 @@ from ci_core.operator import (
     exclude_participant,
     hide_knowledge,
     merge_knowledge,
+    reclassify_knowledge,
     rename_knowledge,
     unmerge_knowledge,
 )
@@ -30,7 +31,7 @@ from ci_processing.classification import (
     KnownName,
 )
 from ci_processing.embedding import FakeEmbedder
-from ci_processing.knowledge import validate
+from ci_processing.knowledge import name_key, validate
 from ci_processing.screening import FakeScreener
 from ci_retrieval import knowledge as kb
 from ci_retrieval.identity import READER_ALL, READER_OWN, Principal
@@ -353,6 +354,75 @@ def test_corrections_merge_hide_rename_and_undo(ready: str) -> None:
     with connect(dbname=ready, role="ci_search") as conn:
         audits = conn.execute("SELECT count(*) AS n FROM published_kg_mentions").fetchone()
         assert audits is not None and audits["n"] > 0
+
+
+def test_reclassify_and_merge_across_kinds(ready: str) -> None:
+    """A name the AI filed under the wrong kind: reclassify it, or merge it into the
+    right entry of another kind; later mail repeating the mistake follows the fix."""
+    ridge = entity_id(ready, "example ridge", "property")
+
+    def operator() -> Connection:
+        return connect(dbname=ready, role="ci_operator")
+
+    with operator() as conn:
+        org_id = reclassify_knowledge(conn, "pytest", ridge, "organization", name_key)
+        conn.commit()
+    assert find(ready, READER, "example ridge", kind="property") == []
+    as_org = find(ready, READER, "example ridge", kind="organization")
+    assert [e["entity_id"] for e in as_org] == [org_id] and as_org[0]["name"] == "Example Ridge"
+    with operator() as conn, pytest.raises(OperatorError):
+        reclassify_knowledge(conn, "pytest", ridge, "organization", name_key)  # already one
+
+    # Processing the same email again records the AI's "property" on the old entry,
+    # which still shows as the organization.
+    with connect(dbname=ready) as conn:
+        versions = [
+            r["version_id"]
+            for r in conn.execute(
+                "SELECT version_id FROM kg_mentions WHERE entity_id = %s", (ridge,)
+            ).fetchall()
+        ]
+        conn.execute("DELETE FROM kg_relations WHERE version_id = ANY(%s)", (versions,))
+        conn.execute("DELETE FROM kg_mentions WHERE version_id = ANY(%s)", (versions,))
+        assert knowledge_store.backfill(conn)["mentions"] > 0
+        conn.commit()
+        again = conn.execute(
+            "SELECT count(*) AS n FROM kg_mentions WHERE entity_id = %s", (ridge,)
+        ).fetchone()
+    assert again is not None and again["n"] == len(versions)
+    assert [e["entity_id"] for e in find(ready, READER, "example ridge")] == [org_id]
+
+    # Undo, then merge it into a person instead: it shows as that person.
+    jordan = entity_id(ready, "jordan.rivera@acme-sitework.example", "person")
+    with operator() as conn:
+        unmerge_knowledge(conn, "pytest", ridge)
+        merge_knowledge(conn, "pytest", ridge, jordan)
+        conn.commit()
+    person = find(ready, READER, "example ridge")
+    assert [(e["entity_id"], e["kind"]) for e in person] == [(jordan, "person")]
+    assert person[0]["email"] == "jordan.rivera@acme-sitework.example"
+    with operator() as conn:
+        with pytest.raises(OperatorError):
+            merge_knowledge(conn, "pytest", jordan, org_id)  # a person stays a person
+        with pytest.raises(OperatorError):
+            reclassify_knowledge(conn, "pytest", jordan, "property", name_key)
+        conn.rollback()
+        unmerge_knowledge(conn, "pytest", ridge)
+        # No address known: a person found by name only.
+        named = reclassify_knowledge(conn, "pytest", ridge, "person", name_key)
+        conn.commit()
+    by_name = find(ready, READER, "example ridge", kind="person")
+    assert [e["entity_id"] for e in by_name] == [named] and by_name[0]["email"] is None
+    with operator() as conn:
+        unmerge_knowledge(conn, "pytest", ridge)
+        conn.commit()
+    assert [e["entity_id"] for e in find(ready, READER, "example ridge")] == [ridge]
+    with connect(dbname=ready) as conn:
+        row = conn.execute(
+            "SELECT details FROM audit_events WHERE action = 'knowledge_reclassify'"
+            " ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert row is not None and row["details"]["to_kind"] == "person"
 
 
 def test_search_role_cannot_read_the_base_tables(ready: str) -> None:

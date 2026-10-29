@@ -52,7 +52,7 @@ Everything is computed per caller from the messages their grants allow, using th
 - `find_knowledge(query, kind)` looks up a property, organization, person (by name or address) or term. With no query it lists the most-mentioned entries.
 - `get_profile(entity_id | name)` returns everything about one entry: facts in both directions with their support, related entries, activity and the latest emails (with `view_url`).
 
-**Admin console.** The **Knowledge** page (under Insights) has search and a kind filter. Each entry shows its facts, support badges, related entries, activity by month and the latest emails. Buttons rename, merge into another entry, or hide it, and hidden entries are listed with an Unhide button. The **Lab** shows what an email would add to the knowledge base before anything is stored.
+**Admin console.** The **Knowledge** page (under Insights) has search and a kind filter. Each entry shows its facts, support badges, related entries, activity by month and the latest emails. Buttons rename, fix the kind, merge into another entry (found by name), or hide it, and hidden entries are listed with an Unhide button. The **Lab** shows what an email would add to the knowledge base before anything is stored.
 
 **CLI.**
 
@@ -69,6 +69,10 @@ ci knowledge merge 57 --into 42
 ```
 
 ```bash
+ci knowledge reclassify 57 organization
+```
+
+```bash
 ci knowledge hide 57
 ```
 
@@ -80,7 +84,14 @@ ci knowledge rename 42 "Waller Station Retail"
 ci knowledge backfill
 ```
 
-`list` and `show` run as the signed-in person, like `ci search`. Merge, unmerge, hide, unhide and rename are audited operator changes, and each can be undone.
+`list` and `show` run as the signed-in person, like `ci search`. Merge, unmerge, reclassify, hide, unhide and rename are audited operator changes, and each can be undone.
+
+**Wrong kind** (Matthew, 2026-10-29: people filed as projects). The AI sometimes files a name under the wrong kind, such as a person's name as a property. There are two fixes, on the console's **Fix Kind…** button or from the command line:
+
+* **Merge it into the right entry.** Kinds may differ, and the merged entry shows as the target's kind. For a person, pick the person, who is known by email address. A person entry itself can only merge into another person, because people are keyed by address and participant exclusions are checked on the entry readers see.
+* **Reclassify it.** This finds or creates an entry of the new kind with the same name (`ci knowledge reclassify ID KIND`, migration 0018 lets the operator role create it) and merges the wrong one into it. A person created this way has no email address.
+
+Either way the wrong entry stays, merged, so later emails where the AI repeats the mistake still land under the right kind. Unmerge undoes it.
 
 **Mail processed before this existed.** `ci knowledge backfill` adds it from what its classification already holds, with no AI call. That is only the property and legal-entity names, because those messages were never asked for people, facts or terms. For the full knowledge, reprocess them, at full classification cost:
 

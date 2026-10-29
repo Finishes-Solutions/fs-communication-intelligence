@@ -60,6 +60,7 @@ from ci_core.operator import (
     list_participant_exclusions,
     list_people,
     merge_knowledge,
+    reclassify_knowledge,
     rename_knowledge,
     set_mode,
     set_person,
@@ -76,6 +77,7 @@ from ci_processing.classification import (
     KnownName,
 )
 from ci_processing.embedding import Embedder
+from ci_processing.knowledge import name_key
 from ci_processing.originals import OriginalStore
 from ci_processing.routing import PersonProfile
 from ci_retrieval import knowledge as kb
@@ -620,6 +622,12 @@ def build_admin_app(
                 hide_knowledge(conn, actor, entity_id, hidden=action == "hide")
             elif action == "rename":
                 rename_knowledge(conn, actor, entity_id, str(body.get("name") or "") or None)
+            elif action == "reclassify":
+                into = reclassify_knowledge(
+                    conn, actor, entity_id, str(body.get("kind") or ""), name_key
+                )
+                conn.commit()
+                return knowledge_entry(conn, entity_id) | {"now_counts_as": into}
             else:
                 raise HTTPException(404, "unknown action")
             conn.commit()
