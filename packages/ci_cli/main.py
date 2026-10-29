@@ -36,6 +36,8 @@ The database comes from the standard ``PG*`` environment variables; locally,
     ci schedule set [--on|--off] [--every 60] [--window 2] [--hours 6-20]
                     [--weekdays-only|--every-day] [--time-zone America/Chicago]
                     [--processing-on|--processing-off]
+    ci runs [--limit 20] [--failed]           recent capture and processing runs, the backlog
+                                              and failures (also in the console)
     ci run-capture [--hours 24 | --since 2026-09-01]
                                               capture at the next 5-minute tick (up to 93 days)
 
@@ -69,6 +71,7 @@ import os
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 import psycopg
 
@@ -265,6 +268,9 @@ def _parser() -> argparse.ArgumentParser:
     krename.add_argument("--clear", action="store_true", help="use the name emails use most")
     kback = know_action.add_parser("backfill")
     kback.add_argument("--limit", type=int, default=0, help="0 = all")
+    runs = sub.add_parser("runs", help="recent capture and processing runs and the backlog")
+    runs.add_argument("--limit", type=int, default=20, help="how many runs (max 500)")
+    runs.add_argument("--failed", action="store_true", help="only failed, partial or refused runs")
     run_now = sub.add_parser("run-capture", help="ask the ingestion app to capture now")
     run_when = run_now.add_mutually_exclusive_group()
     run_when.add_argument("--hours", type=float, help="look-back (default: the schedule's window)")
@@ -388,6 +394,49 @@ def _knowledge(args: argparse.Namespace, conn: Connection, actor: str) -> None:
         print(f"entry {args.entity_id} renamed" if not args.clear else "name cleared")
 
 
+def _runs(args: argparse.Namespace, conn: Connection) -> None:
+    """Recent runs in the schedule's time zone, then the processing backlog and failures."""
+    tz = ZoneInfo(ops.read_schedule(conn).time_zone)
+    rows = ops.recent_runs(conn, 500 if args.failed else args.limit)
+    if args.failed:
+        rows = [r for r in rows if r["status"] in ("failed", "partial", "refused")][: args.limit]
+    print(
+        f"{'STARTED (' + tz.key + ')':<26} {'KIND':<8} {'TRIGGER':<9} {'STATUS':<10}"
+        f" {'TOOK':>8}  DETAILS"
+    )
+    for r in rows:
+        started = datetime.fromisoformat(r["started_at"])
+        took = "-"
+        if r["finished_at"]:
+            seconds = (datetime.fromisoformat(r["finished_at"]) - started).total_seconds()
+            took = f"{seconds:.0f} s" if seconds < 90 else f"{seconds / 60:.1f} min"
+        counts = r["counts"] or {}
+        details = ", ".join(
+            f"{k}={v}" for k, v in sorted(counts.items()) if not isinstance(v, dict)
+        )
+        if r["error_code"]:
+            details = f"error={r['error_code']}  {details}"
+        print(
+            f"{started.astimezone(tz):%Y-%m-%d %H:%M:%S}{'':7} {r['kind']:<8} {r['trigger']:<9}"
+            f" {r['status']:<10} {took:>8}  {details[:110]}"
+        )
+    if not rows:
+        print("(no runs yet)" if not args.failed else "(no failed runs)")
+    backlog = conn.execute("SELECT fetched, oldest_fetched_at FROM ops_backlog").fetchone()
+    if backlog:
+        oldest = backlog["oldest_fetched_at"]
+        waiting = f", oldest since {oldest.astimezone(tz):%Y-%m-%d %H:%M}" if oldest else ""
+        print(f"\nwaiting to be processed: {backlog['fetched']}{waiting}")
+    failures = conn.execute(
+        "SELECT error_code, versions FROM ops_failures ORDER BY versions DESC"
+    ).fetchall()
+    if failures:
+        print(
+            "failed messages: " + ", ".join(f"{f['error_code']} x{f['versions']}" for f in failures)
+        )
+        print("(requeue them with: ci process --retry-failed --limit 0)")
+
+
 def _run(args: argparse.Namespace, conn: Connection) -> None:
     actor = args.actor
     if args.command == "seed":
@@ -428,6 +477,9 @@ def _run(args: argparse.Namespace, conn: Connection) -> None:
 
     if args.command == "schedule":
         _schedule(args, conn, actor)
+        return
+    if args.command == "runs":
+        _runs(args, conn)
         return
     if args.command == "people":
         if args.action == "set":
