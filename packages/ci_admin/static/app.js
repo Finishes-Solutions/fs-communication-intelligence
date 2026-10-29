@@ -2499,8 +2499,8 @@ const b = text => h("strong", {}, text);
 
 let CONN_TAB = "claude";
 // Logos are static files (static/logos): Claude and ChatGPT from Simple Icons (CC0),
-// Copilot Studio a Microsoft Fluent bot icon (MIT) standing in for its logo.
-const PLATFORM_LOGO = { claude: "/logos/claude.svg", chatgpt: "/logos/chatgpt.svg", copilot: "/logos/copilot-studio.svg" };
+// Copilot Studio its own logo (supplied by Matthew, 96 px).
+const PLATFORM_LOGO = { claude: "/logos/claude.svg", chatgpt: "/logos/chatgpt.svg", copilot: "/logos/copilot-studio.png" };
 const PLATFORM_SUB = { claude: "Custom connector", chatgpt: "Custom MCP plugin", copilot: "Agent tool (MCP)" };
 const platformLogo = key => h("span", { class: "platform-logo" },
   PLATFORM_LOGO[key] ? h("img", { src: PLATFORM_LOGO[key], alt: "", width: "24", height: "24" }) : icon("plug"));

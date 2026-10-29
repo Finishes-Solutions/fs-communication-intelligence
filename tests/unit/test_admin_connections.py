@@ -73,6 +73,10 @@ def test_every_sidebar_page_is_served_and_the_platform_logos_exist() -> None:
     keys = re.findall(r'\["([a-z]+)", "[^"]+", "[a-z]+"\]', nav)
     assert "connections" in keys and len(keys) >= 10
     assert set(keys) <= set(PAGES)
-    for name in ("claude", "chatgpt", "copilot-studio"):
+    for name in ("claude", "chatgpt"):
         logo = (STATIC / "logos" / f"{name}.svg").read_text()
         assert logo.startswith("<svg") and "<script" not in logo
+    copilot = (STATIC / "logos" / "copilot-studio.png").read_bytes()
+    assert copilot.startswith(b"\x89PNG\r\n\x1a\n") and len(copilot) < 50_000
+    for logo in re.findall(r'"(/logos/[a-z-]+\.(?:svg|png))"', app):
+        assert (STATIC / logo.lstrip("/")).is_file(), logo
