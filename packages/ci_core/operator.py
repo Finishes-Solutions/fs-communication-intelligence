@@ -335,7 +335,9 @@ def remove_name(conn: Connection, actor: str, kind: str, canonical: str) -> None
 
 def _entity(conn: Connection, entity_id: int) -> dict[str, Any]:
     row = conn.execute(
-        "SELECT id, kind, name, name_override, merged_into, hidden FROM kg_entities WHERE id = %s",
+        "SELECT id, kind, name, name_override, merged_into, hidden,"
+        " to_jsonb(e) ->> 'detail_override' AS detail_override"  # NULL before migration 0020
+        " FROM kg_entities e WHERE id = %s",
         (entity_id,),
     ).fetchone()
     if row is None:
@@ -457,6 +459,33 @@ def reclassify_knowledge(
         {"from_kind": entry["kind"], "to_kind": kind, "into": target_id},
     )
     return target_id
+
+
+DETAIL_OF = {"person": "title", "term": "meaning", "organization": "domain"}
+
+
+def set_knowledge_detail(conn: Connection, actor: str, entity_id: int, detail: str | None) -> None:
+    """Set the detail every reader sees instead of what emails said: a person's title,
+    a term's meaning or an organization's domain. None or empty: back to the value
+    stated in the most messages. Needs migration 0020."""
+    entry = _entity(conn, entity_id)
+    if entry["merged_into"] is not None:
+        entry = _entity(conn, entry["merged_into"])
+    what = DETAIL_OF.get(entry["kind"])
+    if what is None:
+        raise OperatorError(f"a {entry['kind']} entry has no title, meaning or domain")
+    cleaned = " ".join((detail or "").split()) or None
+    if cleaned is not None and len(cleaned) > 200:
+        raise OperatorError(f"keep the {what} under 200 characters")
+    _touch(conn, actor, [entry["id"]], "detail_override = %s", (cleaned,))
+    audit(
+        conn,
+        actor,
+        "knowledge_set_detail",
+        "kg_entities",
+        str(entry["id"]),
+        {"kind": entry["kind"], "field": what, "cleared": cleaned is None},
+    )
 
 
 MAX_MERGE = 200

@@ -2102,6 +2102,16 @@ function entryView(d, holder) {
     toast(done || `Merged into ${target.name}`);
     navigate(`/knowledge?id=${target.entity_id}`);
   };
+  const DETAIL_LABEL = { person: "Title", term: "Meaning", organization: "Domain" };
+  const detailLabel = DETAIL_LABEL[e.kind];
+  const editDetail = guard(async () => {
+    const current = e.title || e.meaning || e.domain || "";
+    const value = await ask({ title: `Edit ${detailLabel}`,
+      text: `The ${detailLabel.toLowerCase()} every reader sees, including AI agents, instead of what emails said. Leave empty to go back to the one stated in the most emails.`,
+      input: { label: detailLabel, value: c.detail_override || current } });
+    if (value === null) return;
+    await post(`/api/knowledge/${id}/detail`, { detail: value }); toast(`${detailLabel} saved`); showEntry(id, holder);
+  });
   const merge = guard(async () => {
     const target = await pickEntry({ title: "Merge Into Another Entry",
       text: e.kind === "person"
@@ -2137,12 +2147,14 @@ function entryView(d, holder) {
         kindBadge(e.kind), h("span", { class: "muted small" }, `#${id} · ${num(e.messages)} messages · ${short(e.first_seen)} to ${short(e.last_seen)}`),
         h("div", { class: "actions" },
           h("button", { class: "btn sm", onclick: rename }, "Rename"),
+          detailLabel ? h("button", { class: "btn sm", onclick: editDetail }, `Edit ${detailLabel}`) : null,
           e.kind !== "person" ? h("button", { class: "btn sm", onclick: reclassify }, "Fix Kind…") : null,
           h("button", { class: "btn sm", onclick: merge }, "Merge Into…"),
           h("button", { class: "btn sm", onclick: hide }, icon("hidden"), "Hide")))),
     h("div", { class: "reader-section" }, h("dl", { class: "kv" }, [
       ["Also Written", (e.also_written || []).join(" · ")], ["Email", e.email], ["Title", e.title], ["Meaning", e.meaning], ["Domain", e.domain],
-      ["Display Name", c.name_override ? `${c.name_override} (set by an admin)` : null]]
+      ["Display Name", c.name_override ? `${c.name_override} (set by an admin)` : null],
+      [`${detailLabel || "Detail"} Set By`, c.detail_override ? "an admin (overrides what emails say)" : null]]
       .filter(([, v]) => v).flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)]))),
     (c.merged_from || []).length ? h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "Merged Into This Entry"),
       h("div", { class: "badges" }, c.merged_from.map(m => h("span", { class: "badge outline" }, `#${m.id} ${m.name}`,

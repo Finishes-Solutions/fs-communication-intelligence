@@ -63,6 +63,7 @@ from ci_core.operator import (
     merge_knowledge_many,
     reclassify_knowledge,
     rename_knowledge,
+    set_knowledge_detail,
     set_mode,
     set_person,
     unmerge_knowledge,
@@ -635,6 +636,8 @@ def build_admin_app(
                 hide_knowledge(conn, actor, entity_id, hidden=action == "hide")
             elif action == "rename":
                 rename_knowledge(conn, actor, entity_id, str(body.get("name") or "") or None)
+            elif action == "detail":
+                set_knowledge_detail(conn, actor, entity_id, str(body.get("detail") or "") or None)
             elif action == "reclassify":
                 into = reclassify_knowledge(
                     conn, actor, entity_id, str(body.get("kind") or ""), name_key

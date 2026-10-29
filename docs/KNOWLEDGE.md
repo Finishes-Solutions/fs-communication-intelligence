@@ -73,6 +73,10 @@ ci knowledge reclassify 57 organization
 ```
 
 ```bash
+ci knowledge set-detail 42 "CEO / Owner"
+```
+
+```bash
 ci knowledge hide 57
 ```
 
@@ -92,6 +96,8 @@ ci knowledge backfill
 * **Reclassify it.** This finds or creates an entry of the new kind with the same name (`ci knowledge reclassify ID KIND`, migration 0018 lets the operator role create it) and merges the wrong one into it. A person created this way has no email address.
 
 Either way the wrong entry stays, merged, so later emails where the AI repeats the mistake still land under the right kind. Unmerge undoes it.
+
+**Titles, meanings and domains** (Matthew, 2026-10-29, migration 0020). A person's title, a term's meaning and an organization's domain are the value stated in the most messages, with ties going to the latest. A single email that got it wrong no longer replaces it; for example, one showed Chuck Jr.'s signature title against Chuck Sr.'s address. An admin can set the value by hand: the console's **Edit Title / Meaning / Domain** button, or `ci knowledge set-detail ID "CEO"`. A hand-set value wins for every reader, including AI agents; `--clear` or an empty value goes back to what emails say. The prompt also tells the model to take a title only from that person's own signature or a statement about them.
 
 **Meetings** (Matthew, 2026-10-29, migration 0019). A fifth kind for recurring or named meetings and events, such as a weekly ops meeting, an OAC meeting or a closing. It has two facts: a meeting is **about** a property, and a person **attends** a meeting. Before this kind existed, the AI filed a meeting under a person. The same change tells the AI to name a person only when the email itself ties the name to the address (sender or recipient name, signature, "Name <address>"), never from a first name mentioned in passing. Both apply to mail processed from now on. Earlier mistakes are fixed with Fix Kind… (now offering Meeting), Merge or Hide.
 
