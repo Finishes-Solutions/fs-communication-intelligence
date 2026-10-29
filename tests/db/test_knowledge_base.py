@@ -16,6 +16,7 @@ from ci_core.operator import (
     exclude_participant,
     hide_knowledge,
     merge_knowledge,
+    merge_knowledge_many,
     reclassify_knowledge,
     rename_knowledge,
     unmerge_knowledge,
@@ -423,6 +424,62 @@ def test_reclassify_and_merge_across_kinds(ready: str) -> None:
             " ORDER BY id DESC LIMIT 1"
         ).fetchone()
     assert row is not None and row["details"]["to_kind"] == "person"
+
+
+def test_merge_many_spellings_into_one_all_or_nothing(ready: str) -> None:
+    """Several entries for one property (spellings the AI kept apart) become one entry
+    in a single change; one entry that can't be merged stops the whole change."""
+    ridge = entity_id(ready, "example ridge", "property")
+    commons = entity_id(ready, "example commons", "property")
+    jordan = entity_id(ready, "jordan.rivera@acme-sitework.example", "person")
+    with connect(dbname=ready) as conn:
+        extra = [
+            conn.execute(
+                "INSERT INTO kg_entities (kind, key, name) VALUES ('property', %s, %s)"
+                " RETURNING id",
+                (name_key("property", n), n),
+            ).fetchone()["id"]  # type: ignore[index]
+            for n in ("Example Ridge Ph 2", "Ex. Ridge")
+        ]
+        conn.commit()
+
+    def operator() -> Connection:
+        return connect(dbname=ready, role="ci_operator")
+
+    try:
+        with operator() as conn:
+            with pytest.raises(OperatorError, match=f"#{jordan} "):
+                merge_knowledge_many(conn, "pytest", [*extra, jordan, commons], ridge)
+            conn.rollback()
+        with connect(dbname=ready) as conn:
+            untouched = conn.execute(
+                "SELECT count(*) AS n FROM kg_entities WHERE merged_into IS NOT NULL"
+            ).fetchone()
+        assert untouched is not None and untouched["n"] == 0  # nothing half-merged
+
+        with operator() as conn:
+            # The target itself and duplicates in the list are skipped.
+            assert (
+                merge_knowledge_many(conn, "pytest", [*extra, commons, ridge, commons], ridge) == 3
+            )
+            assert merge_knowledge_many(conn, "pytest", [commons], ridge) == 0  # already one
+            with pytest.raises(OperatorError):
+                merge_knowledge_many(conn, "pytest", [], ridge)
+            conn.commit()
+        merged = find(ready, READER, "example", kind="property")
+        assert [e["entity_id"] for e in merged] == [ridge]
+        assert "Example Commons" in merged[0]["also_written"]
+    finally:
+        with connect(dbname=ready) as conn:
+            conn.execute(
+                "UPDATE kg_entities SET merged_into = NULL WHERE merged_into = %s", (ridge,)
+            )
+            conn.execute("DELETE FROM kg_entities WHERE id = ANY(%s)", (extra,))
+            conn.commit()
+    assert {e["entity_id"] for e in find(ready, READER, "example", kind="property")} >= {
+        ridge,
+        commons,
+    }
 
 
 def test_search_role_cannot_read_the_base_tables(ready: str) -> None:

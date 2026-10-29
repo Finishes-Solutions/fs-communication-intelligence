@@ -630,3 +630,13 @@ td.nowrap { white-space: nowrap; }
 .pick:hover, .pick:focus-visible { border-color: var(--line-strong); background: var(--hover); }
 .pick-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .kind-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin: 4px 0 12px; }
+.k-row { display: flex; align-items: stretch; border-bottom: 1px solid var(--line); }
+.k-row:last-child { border-bottom: 0; }
+.k-row .msg { border-bottom: 0; padding-left: 6px; }
+.k-check { display: flex; align-items: flex-start; padding: 15px 4px 0 16px; cursor: pointer; }
+.k-check input, .select-all input { width: 16px; height: 16px; margin: 0; cursor: pointer; accent-color: var(--primary); }
+.select-all { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.select-all h2 { margin: 0; }
+.select-bar { display: flex; align-items: center; gap: 8px; padding: 8px 16px; background: var(--subtle); border-bottom: 1px solid var(--line);
+  font-size: 13px; font-weight: 500; position: sticky; top: 0; z-index: 1; }
+.select-bar > span { margin-right: auto; }

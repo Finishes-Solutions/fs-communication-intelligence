@@ -60,6 +60,7 @@ from ci_core.operator import (
     list_participant_exclusions,
     list_people,
     merge_knowledge,
+    merge_knowledge_many,
     reclassify_knowledge,
     rename_knowledge,
     set_mode,
@@ -599,6 +600,18 @@ def build_admin_app(
             found["hidden"] = hidden_knowledge(conn)
         return found
 
+    def knowledge_merge_many(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        ids = body.get("ids")
+        if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):
+            raise HTTPException(400, "ids must be a list of entry numbers")
+        into = body.get("into")
+        if not isinstance(into, int):
+            raise HTTPException(400, "into must be an entry number")
+        with connector("ci_operator") as conn:
+            merged = merge_knowledge_many(conn, _actor(principal), ids, into)
+            conn.commit()
+            return {"merged": merged} | knowledge_entry(conn, into)
+
     def knowledge_entry_page(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
         entity_id = _int_path(request, "id")
         with connector("ci_search") as conn:
@@ -1069,6 +1082,7 @@ def build_admin_app(
         Route("/api/actionable", endpoint(actionable)),
         Route("/api/feedback/{id}", endpoint(feedback), methods=["GET", "PUT"]),
         Route("/api/knowledge", endpoint(knowledge_list)),
+        Route("/api/knowledge/merge", endpoint(knowledge_merge_many), methods=["POST"]),
         Route("/api/knowledge/{id}", endpoint(knowledge_entry_page)),
         Route("/api/knowledge/{id}/{action}", endpoint(knowledge_action), methods=["POST"]),
         Route("/api/review/next", endpoint(review_next)),
