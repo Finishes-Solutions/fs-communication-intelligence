@@ -2656,7 +2656,7 @@ async function connectionsPage() {
       step("Copilot Studio",
         para("Agent → ", b("Tools"), " → ", b("Add a tool"), " → ", b("New tool"), " → ", b("Model Context Protocol"),
           ". Paste the URL, choose ", b("OAuth 2.0"), " → ", b("Dynamic discovery"), " and click ", b("Create"),
-          ". In the tool's settings, set ", b("Credentials to use"), " to ", b("End user credentials"), ". Not tested yet.")),
+          ". In the tool's settings, set ", b("Credentials to use"), " to ", b("End user credentials"), ". Tested 2026-10-29.")),
       step("Sign in",
         para("A page asks to connect the app to FS Communication Intelligence; click ", b("Continue with Microsoft"),
           " and sign in. Only the people added under Who Can Connect get in; anyone else is refused by Microsoft."))) : null,
