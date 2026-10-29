@@ -619,10 +619,15 @@ def _listing(
     extra_where: str,
     extra: dict[str, Any],
     limit: int,
+    ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
+    """Newest first, copies collapsed. ``ids`` limits the listing to those emails
+    and lets every view read them by id; without it the planner builds every
+    email's classification before the limit."""
     auth = authorize(conn, principal)
     if auth.empty:
         return []
+    only = "WHERE {a}.communication_id = ANY(%(only_ids)s::uuid[])" if ids is not None else ""
     rows = conn.execute(
         f"""
         SELECT pc.id::text AS communication_id, pc.title, pc.occurred_at, pc.source_url,
@@ -632,13 +637,15 @@ def _listing(
                cl.yes_labels, cl.disposition, cl.summary, cl.action_text, cl.action_for,
                cl.due_text, cl.risk_text, cl.properties, cl.entities
         FROM {_PUBLISHED} pc
-        JOIN published_email_messages e ON e.communication_id = pc.id
-        LEFT JOIN published_classifications cl ON cl.communication_id = pc.id
+        JOIN (SELECT * FROM published_email_messages y {only.format(a="y")}) e
+          ON e.communication_id = pc.id
+        LEFT JOIN (SELECT * FROM published_classifications x {only.format(a="x")}) cl
+          ON cl.communication_id = pc.id
         WHERE {_scope("pc")} {extra_where}
         ORDER BY pc.occurred_at DESC
         LIMIT 500
         """,  # noqa: S608 - fragments are constants; values are bound parameters
-        _params(auth, filters) | extra,
+        _params(auth, filters) | extra | {"only_ids": ids},
     ).fetchall()
     seen: set[tuple[str, str]] = set()
     out = []
