@@ -338,8 +338,8 @@ az monitor app-insights query -g fs-communication-intelligence --app appi-fs-ci-
 
 A web page at `https://func-fs-ci-adm-dev-1026.azurewebsites.net/` for console admins (you, for now):
 
-- **Overview:** mode, schedule, backlog, message states and reasons, labels, attachment extraction, failures, and recent runs. Also **Requeue Failed**. An unscheduled capture is started from the CLI (`ci run-capture`).
-- **Schedule & Runs:** how often capture runs, its look-back, active hours, weekdays only, processing on/off. Below that, every run with its counts.
+- **Overview:** mode, schedule, backlog, message states and reasons, labels, attachment extraction, failures, and recent runs. Also **Requeue Failed**.
+- **Schedule & Runs:** how often capture runs, its look-back, active hours, weekdays only, processing on/off, and **Run Capture Now** (look back up to 93 days). Below that, every run with its counts.
 - **Mailboxes:** filter, approve or unapprove, exclude or un-exclude (with a reason), approve all enrolled, change mode, and exclude a person or domain in every mailbox.
 - **Messages:** search or list published mail by mailbox, sender, label and date. A message shows the AI summary, action and risk, labels, people, the body, and its **files**: preview (PDF, images, text), download, or the extracted text. Signature images and logos aren't processed or shown: every inline image, and any attached image of 100 KB or less. There's also an **Open in Outlook** link, which works only for mailboxes your account can open.
 - **Action Items:** the same list agents get from `list_actionable`, for any person or window. With a person profile (below), it shows that person's confident items plus a separate **Possible** list, and has a panel to edit profiles.

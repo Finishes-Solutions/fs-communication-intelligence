@@ -417,6 +417,7 @@ async function schedulePage() {
     prompt_shield_enabled: h("input", { type: "checkbox", checked: s.prompt_shield_enabled !== false }),
     masking_enabled: h("input", { type: "checkbox", checked: s.masking_enabled !== false }),
   };
+  const nowHours = h("input", { type: "number", min: "0.25", max: "2232", step: "0.25", value: s.capture_window_hours, style: "width:110px" });
   const save = guard(async () => {
     const body = {
       capture_enabled: f.capture_enabled.checked, capture_interval_min: Number(f.capture_interval_min.value),
@@ -443,6 +444,12 @@ async function schedulePage() {
         setting("Weekdays Only", "Skip Saturday and Sunday.", switchEl(f.weekdays_only)),
         setting("Processing", "Screen, classify, embed and publish captured mail.", switchEl(f.processing_enabled)))),
     note("The Azure app settings CAPTURE_ENABLED and PROCESSING_ENABLED are a hard off switch above this schedule."),
+    card({ title: "Run a Capture Now", sub: "Pulls mail from every eligible mailbox for the window you choose. Duplicates are skipped.", class: "spaced",
+      actions: [field("Look Back (Hours)", nowHours),
+        h("button", { class: "btn primary", style: "align-self:flex-end", onclick: guard(async () => {
+          await post("/api/runs/capture", { hours: Number(nowHours.value) });
+          toast("Capture requested; it starts within about 5 minutes."); route(); }) }, icon("play"), "Run Capture Now")] },
+      s.run_requested_at ? note(`A capture was requested at ${when(s.run_requested_at)} and has not started yet.`, "warn") : null),
     card({ title: "Paid Safety Checks", sub: "Billed per 1,000 characters. Turn off only while testing; changes apply from the next processing run.", flush: true, class: "spaced" },
       h("div", { class: "settings" },
         setting("Prompt-Injection Check", "Azure Prompt Shields. Off: email text reaches the classifier and AI agents without this check.", switchEl(f.prompt_shield_enabled)),
@@ -648,7 +655,7 @@ function aiBlock(m) {
     ["Due", m.due_ai], ["Project Risk", m.risk_ai], ["Properties", (m.properties_ai || []).join(" · ")],
     ["Entities", (m.entities_ai || []).join(" · ")]].filter(([, v]) => v);
   if (!rows.length) return null;
-  return h("div", { class: "ai" }, h("div", { class: "ai-head" }, icon("spark"), "AI Proposal"),
+  return h("div", { class: "ai" }, h("div", { class: "ai-head" }, icon("graph"), "AI Proposal"),
     h("dl", { class: "kv" }, rows.flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])));
 }
 
