@@ -202,3 +202,34 @@ def test_unrated_risks_count_as_unrated(stack: dict[str, Any]) -> None:
     assert data["matrix"]["rated"] == 0 and data["matrix"]["unrated"] == data["total"] > 0
     assert only["total"] == data["total"]
     assert not any("risk_rating_ai" in i for i in data["items"])
+
+
+@pytest.mark.parametrize(
+    "filters",
+    [
+        {},
+        {"impact": "high"},
+        {"likelihood": "unrated"},
+        {"category": "cat_payment_billing"},
+        {"property": "ridge"},
+        {"mailbox": "pat.example@finishessolutions.example"},
+        {"days": 7},
+    ],
+)
+def test_fast_and_view_paths_agree(
+    stack: dict[str, Any], monkeypatch: pytest.MonkeyPatch, filters: dict[str, Any]
+) -> None:
+    """The label-index path (migration 0021) and the old view path give the same
+    overview, so the page is right before and after the migration is applied."""
+    connector = stack["connect"]
+    rate_pending_risks(lambda: connector("ci_ingest"), FakeRiskRater())
+    args: dict[str, Any] = {"days": 366, "now": NOW} | filters
+    with connector("ci_search") as conn:
+        assert reports._has_label_lookup(conn)
+        fast = reports.risk_overview(conn, READER, **args)
+    monkeypatch.setattr(reports, "_has_label_lookup", lambda conn: False)
+    with connector("ci_search") as conn:
+        slow = reports.risk_overview(conn, READER, **args)
+    assert fast == slow
+    if not filters:
+        assert fast["total"] > 0 and fast["items"] and fast["top_properties"]
