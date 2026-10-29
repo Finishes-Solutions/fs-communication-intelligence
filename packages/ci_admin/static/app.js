@@ -2638,6 +2638,13 @@ async function connectionsPage() {
     pageHead("Connections", "Connect Claude, ChatGPT or Copilot Studio to company email through the MCP server. Each person signs in as themselves and sees only what their access allows."),
     d.missing.length ? note(`Not set up yet: ${d.missing.join(", ")}. Run bash scripts/azure/7-connections-page.sh in Cloud Shell, then reload this page.`, "warn") : null,
     quick,
+    card({ title: "Connector Icon", class: "spaced", sub: "Optional: upload one when adding the connector, if the platform offers an icon." },
+      h("div", { class: "icon-downloads" }, [["black", "White on black"], ["white", "Black on white"]].map(([key, label]) =>
+        h("div", { class: "icon-dl" },
+          h("img", { src: `/connector-icon-${key}.jpg`, alt: label, width: "64", height: "64" }),
+          h("div", {}, h("div", { class: "kv-label" }, label), h("div", { class: "muted small" }, "JPG, 1024 × 1024")),
+          h("a", { class: "btn sm", href: `/connector-icon-${key}.jpg`, download: `FS-Communication-Intelligence-${key}.jpg` },
+            icon("download"), "Download"))))),
     card({ title: "Connection Values", class: "spaced", sub: "For the manual setup. The same for every platform. IDs and addresses, not secrets." },
       kv(copyRow("MCP server URL", d.mcp_url),
         copyRow("Tenant ID", d.tenant_id),
