@@ -1,0 +1,55 @@
+"""The console's Connections page: the values each AI platform needs, no secrets."""
+
+from ci_admin.connections import connection_settings
+from ci_core.settings import Settings
+
+TENANT = "11111111-1111-1111-1111-111111111111"
+
+
+def settings(**overrides: object) -> Settings:
+    return Settings(
+        deployment_environment="development",
+        attachment_unsupported_policy="publish_partial",
+        search_api_app_id_uri="api://22222222-2222-2222-2222-222222222222",
+        **overrides,  # type: ignore[arg-type]
+    )
+
+
+def test_values_come_from_settings() -> None:
+    page = connection_settings(
+        settings(
+            search_public_url="https://srch.example.net/",
+            mcp_client_id_claude="claude-id",
+            mcp_client_id_chatgpt="chatgpt-id",
+            mcp_client_id_copilot="copilot-id",
+        ),
+        TENANT,
+    )
+    assert page["mcp_url"] == "https://srch.example.net/mcp"
+    assert page["authorization_url"] == (
+        f"https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/authorize"
+    )
+    assert page["token_url"] == f"https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/token"
+    assert page["scope"] == (
+        "api://22222222-2222-2222-2222-222222222222/Communications.Search offline_access"
+    )
+    assert page["resource"] == "api://22222222-2222-2222-2222-222222222222"
+    assert [(c["key"], c["client_id"]) for c in page["clients"]] == [
+        ("claude", "claude-id"),
+        ("chatgpt", "chatgpt-id"),
+        ("copilot", "copilot-id"),
+    ]
+    assert page["missing"] == []
+    assert not any("secret" in k for k in page) and not any(
+        "secret" in k for c in page["clients"] for k in c
+    )
+
+
+def test_unset_values_are_listed_as_missing() -> None:
+    page = connection_settings(settings(mcp_client_id_claude="claude-id"), TENANT)
+    assert page["mcp_url"] is None
+    assert page["missing"] == [
+        "SEARCH_PUBLIC_URL",
+        "MCP_CLIENT_ID_CHATGPT",
+        "MCP_CLIENT_ID_COPILOT",
+    ]

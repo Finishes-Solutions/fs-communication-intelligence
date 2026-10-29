@@ -279,6 +279,8 @@ More workers than about 16 do not help once embeddings are the limit. Mail that 
 
 ## 10. Connect Claude, ChatGPT and Copilot Studio
 
+The console's **Connections** page (under Lab) has these steps for each platform, with every value filled in and a Copy button. Fill it once with `bash scripts/azure/7-connections-page.sh` (it writes the search app's address and each platform's client ID to the console's app settings; IDs only, no secrets). It never shows a client secret: it gives the command that creates a new one for that platform (`az ad app credential reset --append`, so the other platforms' secrets keep working).
+
 All three use the values printed in step 6: **MCP server URL** `https://<search host>/mcp`, the Entra **authorization** and **token** URLs, scope `api://<API id>/Communications.Search offline_access`, and that platform's own **client ID and secret**. Each person signs in as themselves. The server then shows them only what their app role and grants allow, and every call is audited.
 
 | Platform | Where | Notes |
@@ -340,6 +342,7 @@ A web page at `https://func-fs-ci-adm-dev-1026.azurewebsites.net/` for console a
 
 - **Overview:** mode, schedule, backlog, message states and reasons, labels, attachment extraction, failures, and recent runs. Also **Requeue Failed**.
 - **Schedule & Runs:** how often capture runs, its look-back, active hours, weekdays only, processing on/off, and **Run Capture Now** (look back up to 93 days). Below that, every run with its counts.
+- **Connections** (under Lab): how to connect Claude, ChatGPT and Copilot Studio, with the MCP URL, sign-in URLs, scope and each platform's client ID ready to copy (§10). Needs `scripts/azure/7-connections-page.sh` once.
 - **Mailboxes:** filter, approve or unapprove, exclude or un-exclude (with a reason), approve all enrolled, change mode, and exclude a person or domain in every mailbox.
 - **Messages:** search or list published mail by mailbox, sender, label and date. A message shows the AI summary, action and risk, labels, people, the body, and its **files**: preview (PDF, images, text), download, or the extracted text. Signature images and logos aren't processed or shown: every inline image, and any attached image of 100 KB or less. There's also an **Open in Outlook** link, which works only for mailboxes your account can open.
 - **Action Items:** the same list agents get from `list_actionable`, for any person or window. With a person profile (below), it shows that person's confident items plus a separate **Possible** list, and has a panel to edit profiles.

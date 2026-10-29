@@ -681,3 +681,24 @@ svg.kmap.dim .km-label.show { display: block; }
 @media (prefers-reduced-motion: reduce) { .km-node { transition: none; } }
 .kmap-ctl { flex-wrap: wrap; max-width: 100%; }
 .kmap-controls .seg { max-width: 100%; overflow-x: auto; }
+
+/* ---------- connections ---------- */
+.kv-list { display: grid; gap: 10px; margin: 8px 0 4px; }
+.kv-row { display: grid; grid-template-columns: 200px minmax(0, 1fr) auto; gap: 12px; align-items: center; }
+.kv-label { font-size: 13px; font-weight: 500; }
+.kv-label .hint { font-weight: 400; font-size: 12px; color: var(--muted); }
+.kv-value { font: 12.5px/1.4 var(--mono); background: var(--subtle); border: 1px solid var(--line);
+  border-radius: var(--radius-sm); padding: 7px 10px; overflow-wrap: anywhere; min-width: 0; }
+span.kv-value { font-family: var(--sans); font-size: 13px; color: var(--muted); }
+.kv-value.missing { color: var(--warn-text); background: var(--warn-bg); border-color: transparent; }
+.cmd { display: flex; gap: 8px; align-items: flex-start; margin: 8px 0; }
+.cmd pre { flex: 1; min-width: 0; margin: 0; font: 12.5px/1.5 var(--mono); background: #0d0d0d; color: #f4f4f5;
+  border-radius: var(--radius-sm); padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.howto { margin: 16px 0 0; padding-left: 22px; display: grid; gap: 22px; }
+.howto > li::marker { font-weight: 600; }
+.step-title { font-weight: 600; margin-bottom: 6px; }
+.howto p { margin: 0 0 8px; color: var(--text-2); }
+@media (max-width: 700px) {
+  .kv-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .kv-label { grid-column: 1 / -1; }
+}

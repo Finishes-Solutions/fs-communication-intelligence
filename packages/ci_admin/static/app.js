@@ -73,6 +73,8 @@ const ICONS = {
   x: ["M18 6 6 18", "m6 6 12 12"],
   building: ["M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18z", "M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2", "M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2", "M10 6h4", "M10 10h4", "M10 14h4", "M10 18h4"],
   scale: ["m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1z", "m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1z", "M7 21h10", "M12 3v18", "M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"],
+  copy: ["M10 8h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2z", "M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2"],
+  plug: ["M12 22v-5", "M9 8V2", "M15 8V2", "M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"],
   up: ["m18 15-6-6-6 6"],
   down: ["m6 9 6 6 6-6"],
 };
@@ -2465,6 +2467,174 @@ function entryView(d, holder) {
     h("div", { class: "reader-section" }, h("p", { class: "muted small", style: "margin:0" }, d.note || "")));
 }
 
+// ---------- connections --------------------------------------------------------
+// How to connect Claude, ChatGPT and Copilot Studio to the MCP server
+// (docs/DEPLOY_AZURE.md §10). IDs and URLs only: client secrets are never shown here.
+
+function copyBtn(text) {
+  return h("button", { type: "button", class: "btn sm", title: "Copy", onclick: guard(async () => {
+    await navigator.clipboard.writeText(text); toast("Copied.");
+  }) }, icon("copy"), "Copy");
+}
+function copyRow(label, value, hint) {
+  return h("div", { class: "kv-row" },
+    h("div", { class: "kv-label" }, label, hint ? h("div", { class: "hint" }, hint) : null),
+    value ? h("code", { class: "kv-value" }, value) : h("span", { class: "kv-value missing" }, "Not set up yet"),
+    value ? copyBtn(value) : h("span"));
+}
+const kv = (...rows) => h("div", { class: "kv-list" }, ...rows);
+const cmdBlock = command => h("div", { class: "cmd" }, h("pre", {}, command), copyBtn(command));
+const step = (title, ...body) => h("li", {}, h("div", { class: "step-title" }, title), ...body);
+const para = (...parts) => h("p", {}, ...parts);
+const b = text => h("strong", {}, text);
+
+let CONN_TAB = "claude";
+async function connectionsPage() {
+  const d = await api("/api/connections");
+  const clients = Object.fromEntries(d.clients.map(c => [c.key, c]));
+  const id = c => c.client_id || "<client id>";
+  const secretCmd = c => `az ad app credential reset --id ${id(c)} --display-name ${c.key}-$(date +%Y%m%d) --append --years 1 --query password -o tsv`;
+  const callbackCmd = c => `az ad app update --id ${id(c)} --web-redirect-uris $(az ad app show --id ${id(c)} --query "web.redirectUris[]" -o tsv) "PASTE-THE-CALLBACK-URL-HERE"`;
+
+  const secretStep = c => step("Create a client secret",
+    para("Open Azure Cloud Shell (portal.azure.com, then the ", b(">_"), " icon at the top) and run this. It prints a new secret once. ",
+      "Paste it straight into the platform in the next step; don't save it, email it or paste it into a chat. Secrets made earlier keep working."),
+    cmdBlock(secretCmd(c)),
+    para(h("span", { class: "muted small" }, `Or in the portal: Microsoft Entra ID → App registrations → "${c.app_registration}" → Certificates & secrets → New client secret, then copy the Value (not the Secret ID).`)));
+  const callbackStep = (c, title, ...text) => step(title, ...text,
+    para("Add it to the app registration in Cloud Shell, replacing PASTE-THE-CALLBACK-URL-HERE. The command keeps the callbacks already there."),
+    cmdBlock(callbackCmd(c)));
+  const testStep = name => step("Test it",
+    para(`In a new chat, ask: "Use ${name} to list my 5 newest emails." The first time, sign in with your Finishes Microsoft account and accept. `,
+      "An empty answer means nothing was found in mail you are allowed to read."));
+
+  const guides = {
+    claude: () => {
+      const c = clients.claude;
+      return [
+        para("Claude Team or Enterprise: an organization Owner adds the connector once, then each person connects with their own sign-in. ",
+          "On a Pro or Max plan, add it yourself under Settings → Connectors."),
+        h("ol", { class: "howto" },
+          secretStep(c),
+          step("Add the connector in Claude",
+            para("Admin settings → ", b("Connectors"), " → ", b("Add custom connector"), ". Fill in:"),
+            kv(copyRow("Name", "FS Email", "Any name; people see it in Claude"),
+              copyRow("Remote MCP server URL", d.mcp_url),
+              copyRow("OAuth Client ID", c.client_id, "Under Advanced settings"),
+              h("div", { class: "kv-row" }, h("div", { class: "kv-label" }, "OAuth Client Secret", h("div", { class: "hint" }, "Under Advanced settings")),
+                h("span", { class: "kv-value" }, "The secret from step 1"), h("span"))),
+            para("Then click ", b("Add"), ".")),
+          callbackStep(c, "Only if sign-in fails with AADSTS50011",
+            para("Claude's callback ", h("code", {}, "https://claude.ai/api/mcp/auth_callback"), " is already registered. If Claude shows a different callback URL, add that one.")),
+          step("Each person connects",
+            para("Settings → ", b("Connectors"), " → FS Email → ", b("Connect"), ", then sign in with their Finishes Microsoft account. ",
+              "In a chat, switch it on from the tools menu.")),
+          testStep("FS Email")),
+      ];
+    },
+    chatgpt: () => {
+      const c = clients.chatgpt;
+      return [
+        para("Needs developer mode for custom MCP plugins. In a Business or Enterprise workspace, an admin may have to allow it first. ",
+          "These settings were tested on 2026-10-28."),
+        h("ol", { class: "howto" },
+          secretStep(c),
+          step("Add the server in ChatGPT",
+            para("Plugins → ", b("Add"), " → ", b("Add custom MCP server"), ". Fill in:"),
+            kv(copyRow("Server URL", d.mcp_url),
+              copyRow("Authentication", "OAuth")),
+            para("Open ", b("Advanced OAuth settings"), ":"),
+            kv(copyRow("Registration method", "User-Defined OAuth Client"),
+              copyRow("Client ID", c.client_id),
+              h("div", { class: "kv-row" }, h("div", { class: "kv-label" }, "Client secret"),
+                h("span", { class: "kv-value" }, "The secret from step 1"), h("span")),
+              copyRow("Token endpoint auth method", "client_secret_post"),
+              copyRow("Base scopes", d.scope),
+              copyRow("Auth URL", d.authorization_url, "Usually filled in already"),
+              copyRow("Token URL", d.token_url, "Usually filled in already"),
+              h("div", { class: "kv-row" }, h("div", { class: "kv-label" }, "Registration URL"),
+                h("span", { class: "kv-value" }, "Leave empty"), h("span")),
+              copyRow("Resource", d.resource, "Not the server URL"),
+              h("div", { class: "kv-row" }, h("div", { class: "kv-label" }, "PKCE / OIDC"),
+                h("span", { class: "kv-value" }, "PKCE ticked, OIDC unticked"), h("span")))),
+          callbackStep(c, "Register the callback URL before signing in",
+            para("The dialog shows a callback URL like ", h("code", {}, "https://chatgpt.com/connector/oauth/…"),
+              ". Each plugin has its own, and it changes if the plugin is deleted and added again.")),
+          step("Sign in",
+            para("Click ", b("Connect"), " and sign in with your Finishes Microsoft account.")),
+          testStep("the FS Email plugin")),
+        note("\"We couldn't connect your account\" after a successful sign-in means Resource is not the api:// value above, or OIDC is ticked.", "warn"),
+      ];
+    },
+    copilot: () => {
+      const c = clients.copilot;
+      return [
+        para("Done once by the agent's maker in Copilot Studio. Everyone who uses the agent then signs in as themselves."),
+        h("ol", { class: "howto" },
+          secretStep(c),
+          step("Add the MCP tool",
+            para("Open the agent → ", b("Tools"), " → ", b("Add a tool"), " → ", b("New tool"), " → ", b("Model Context Protocol"), ". Fill in:"),
+            kv(copyRow("Server name", "FS Email"),
+              copyRow("Server description", "Searches Finishes company email that the signed-in person may read."),
+              copyRow("Server URL", d.mcp_url),
+              copyRow("Authentication", "OAuth 2.0, Manual")),
+            kv(copyRow("Client ID", c.client_id),
+              h("div", { class: "kv-row" }, h("div", { class: "kv-label" }, "Client secret"),
+                h("span", { class: "kv-value" }, "The secret from step 1"), h("span")),
+              copyRow("Authorization URL", d.authorization_url),
+              copyRow("Token URL", d.token_url),
+              copyRow("Refresh URL", d.token_url, "Same as the token URL"),
+              copyRow("Scopes", d.scope)),
+            para("Then click ", b("Create"), ".")),
+          callbackStep(c, "Register the redirect URL",
+            para("After saving, Copilot Studio shows a ", b("Redirect URL"), ". Add it to the app registration.")),
+          step("Use each person's own sign-in",
+            para("Create the connection and add the tool to the agent. In the tool's settings, set ", b("Credentials to use"),
+              " to ", b("End user credentials"), ". Otherwise everyone using the agent searches as the maker.")),
+          testStep("FS Email")),
+      ];
+    },
+  };
+
+  const body = h("div", {});
+  const tabs = h("div", { class: "seg" });
+  const select = key => {
+    CONN_TAB = key;
+    tabs.querySelectorAll("button").forEach(x => x.classList.toggle("on", x.dataset.key === key));
+    body.replaceChildren(...guides[key]());
+  };
+  tabs.append(...d.clients.map(c => h("button", { type: "button", "data-key": c.key, onclick: () => select(c.key) }, c.title)));
+  select(CONN_TAB);
+
+  show(
+    pageHead("Connections", "Connect Claude, ChatGPT or Copilot Studio to company email through the MCP server. Each person signs in as themselves and sees only what their access allows."),
+    d.missing.length ? note(`Not set up yet: ${d.missing.join(", ")}. Run bash scripts/azure/7-connections-page.sh in Cloud Shell, then reload this page.`, "warn") : null,
+    card({ title: "Connection Values", sub: "The same for every platform. IDs and addresses, not secrets." },
+      kv(copyRow("MCP server URL", d.mcp_url),
+        copyRow("Tenant ID", d.tenant_id),
+        copyRow("Authorization URL", d.authorization_url),
+        copyRow("Token URL", d.token_url),
+        copyRow("Scopes", d.scope),
+        copyRow("Resource", d.resource, "ChatGPT only"),
+        ...d.clients.map(c => copyRow(`${c.title} client ID`, c.client_id, c.app_registration)))),
+    card({ title: "Who Can Connect", class: "spaced" },
+      para("Each person needs the search role. It lets them search ", b("every enrolled mailbox"),
+        ", so keep the list short. Without it, Microsoft refuses the sign-in (AADSTS50105). In Cloud Shell, from the repository folder:"),
+      cmdBlock("bash scripts/azure/people.sh add name@finishessolutions.com search"),
+      para(h("span", { class: "muted small" }, "bash scripts/azure/people.sh list shows who has access; remove takes it away."))),
+    card({ title: "Set Up", class: "spaced", actions: tabs }, body),
+    card({ title: "If It Doesn't Work", class: "spaced" },
+      kv(...[
+        ["AADSTS50011", "The platform's callback URL isn't registered. Add it (see the setup step)."],
+        ["AADSTS50105", "The person doesn't have the search role. Add it under Who Can Connect."],
+        ["AADSTS7000215", "Wrong client secret. Create a new one and paste its Value, not its Secret ID."],
+        ["AADSTS9010010", "The platform sent a resource Microsoft rejects. Note which platform and report it."],
+      ].map(([code, text]) => h("div", { class: "kv-row" }, h("div", { class: "kv-label" }, h("code", {}, code)), h("div", { class: "small" }, text), h("span")))),
+      para("What the server saw (requests and why a token was refused, never the token), from Cloud Shell:"),
+      cmdBlock(`az monitor app-insights query -g fs-communication-intelligence --app appi-fs-ci-dev --analytics-query "traces | where timestamp > ago(1h) and (message has 'token rejected' or message has 'mcp request') | project timestamp, message | order by timestamp desc | take 30" --query "tables[0].rows" -o tsv`)),
+  );
+}
+
 // ---------- router -----------------------------------------------------------
 
 const NAV = [
@@ -2476,11 +2646,11 @@ const NAV = [
   ["risks", "Risk Analysis", "alert"], ["knowledge", "Knowledge", "layers"], ["reports", "Reports", "report"],
   ["review", "Label Review", "review"],
   null,
-  ["lab", "Lab", "lab"],
+  ["lab", "Lab", "lab"], ["connections", "Connections", "plug"],
 ];
 const NAV_GROUPS = ["Operations", "Mail", "Insights", "Tools"];
 const PAGES = { overview, schedule: schedulePage, costs: costsPage, mailboxes: mailboxesPage, messages: messagesPage,
-  actionable: actionablePage, unpublished: unpublishedPage, lab: labPage,
+  actionable: actionablePage, unpublished: unpublishedPage, lab: labPage, connections: connectionsPage,
   risks: risksPage, knowledge: knowledgePage, reports: reportsPage, review: reviewPage, check: reviewPage, read: readerPage };
 
 function drawNav() {
