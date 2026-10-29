@@ -153,7 +153,7 @@ Watch progress (codes and counts only):
 ci stats
 ```
 
-Logs: portal → `func-fs-ci-ing-dev-1026` → **Monitoring → Logs** or **Log stream**. Each capture and processing pass is also recorded with its counts (`ci schedule show`, or **Schedule & Runs** in the console). Once the cause of a failure is fixed, requeue the failed messages; the process timer picks them up:
+Logs: portal → `func-fs-ci-ing-dev-1026` → **Monitoring → Logs** or **Log stream**. Each capture and processing pass is also recorded with its counts: `ci runs` lists the latest runs, the processing backlog and failed messages (`ci runs --failed` for failures only), `ci schedule show` says whether a capture is due, and **Schedule & Runs** in the console shows the same and exports it as CSV. Once the cause of a failure is fixed, requeue the failed messages; the process timer picks them up:
 
 ```bash
 ci process --retry-failed --limit 0

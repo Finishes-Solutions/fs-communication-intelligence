@@ -53,3 +53,33 @@ def test_failed_command_commits_nothing(capsys: pytest.CaptureFixture[str]) -> N
     assert "--reason" in capsys.readouterr().err
     with connect() as conn:
         assert conn.execute("SELECT count(*) AS n FROM audit_events").fetchone() == before
+
+
+def test_runs_lists_recent_runs_backlog_and_failures(capsys: pytest.CaptureFixture[str]) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM ops_runs")
+        conn.execute(
+            "INSERT INTO ops_runs (kind, trigger, window_hours, started_at, finished_at, status,"
+            " counts, error_code) VALUES"
+            " ('capture', 'schedule', 2, '2026-10-29 13:00Z', '2026-10-29 13:01:30Z',"
+            "  'succeeded', '{\"stored\": 12, \"mailboxes\": 40}', NULL),"
+            " ('process', 'schedule', NULL, '2026-10-29 13:05Z', '2026-10-29 13:05:20Z',"
+            "  'failed', '{}', 'AzureServiceError'),"
+            " ('process', 'manual', NULL, '2026-10-29 13:10Z', NULL, 'running', '{}', NULL)"
+        )
+        conn.commit()
+    assert main(["runs"]) == 0
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    assert lines[0].startswith("STARTED (") and "STATUS" in lines[0]
+    assert "running" in lines[1]  # newest first
+    assert "error=AzureServiceError" in lines[2]
+    assert "mailboxes=40, stored=12" in lines[3] and "1.5 min" in lines[3]
+    assert lines[3].startswith("2026-10-29 08:00:00")  # shown in the schedule's time zone
+    assert "waiting to be processed:" in out
+    assert main(["runs", "--failed", "--limit", "5"]) == 0
+    failed = capsys.readouterr().out
+    assert "AzureServiceError" in failed and "succeeded" not in failed
+    with connect() as conn:
+        conn.execute("DELETE FROM ops_runs")
+        conn.commit()
