@@ -2630,8 +2630,7 @@ async function connectionsPage() {
       step("Sign in",
         para("A page asks to connect the app to FS Communication Intelligence; click ", b("Continue with Microsoft"),
           " and sign in. Only the people added under Who Can Connect get in; anyone else is refused by Microsoft."))) : null,
-    d.quick_connect
-      ? note("A Claude connector added earlier with a client ID and secret stops working once Quick Connect is on: remove it and add it again with only the URL.", "warn")
+    d.quick_connect ? null
       : note("Quick Connect is off. To turn it on, run bash scripts/azure/8-mcp-broker.sh in Cloud Shell. Until then, use the manual setup below.", "warn"));
 
   show(
