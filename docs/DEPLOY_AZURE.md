@@ -432,6 +432,14 @@ bash scripts/azure/people.sh add someone@finishessolutions.com
 
 `add` grants both the admin console and search from Claude, ChatGPT and Copilot; add `console` or `search` after the address for just one. `remove` takes the same arguments. Both kinds of access show everyone's captured mail, so keep the list short.
 
+**Opening links without the console** (`files`, role `Communications.Files`). Use this for someone who should open the email and file links in MCP results or on a monday board, but not use the console:
+
+```bash
+bash scripts/azure/people.sh add chuckc@finishesetc.net files
+```
+
+They sign in on the read-only email page (`/read/<id>`) and can read that email and download its files, and nothing else in the console. Which emails open still follows their search role: with `search`, every enrolled mailbox. The first `add … files` creates the role on the search API registration. Attachment files are not malware-scanned yet (§12), so grant this sparingly.
+
 ### Action items in two steps, and person profiles
 
 1. **Step 1, the classifier,** tags whether an email asks *someone* to act (`action_required`, `approval_required`). It is told to say no for FYI, newsletters, marketing, automated notifications and requests to a whole group.
