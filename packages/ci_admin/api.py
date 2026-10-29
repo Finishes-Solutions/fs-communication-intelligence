@@ -963,6 +963,9 @@ def build_admin_app(
                 days=_int(request, "days", 30, 1, 366),
                 mailbox=(q.get("mailbox") or "").strip().lower() or None,
                 category=q.get("category") or None,
+                property=(q.get("property") or "").strip() or None,
+                impact=q.get("impact") or None,
+                likelihood=q.get("likelihood") or None,
                 tz=_time_zone(),
             )
 

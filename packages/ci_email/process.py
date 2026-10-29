@@ -852,6 +852,10 @@ def _requeue(conn: Connection, versions: list[Any]) -> int:
         "kg_relations",
     ):
         conn.execute(f"DELETE FROM {table} WHERE version_id = ANY(%s)", (versions,))  # noqa: S608
+    if required(conn.execute("SELECT to_regclass('ci.risk_ratings') IS NOT NULL AS ok").fetchone())[
+        "ok"
+    ]:
+        conn.execute("DELETE FROM risk_ratings WHERE version_id = ANY(%s)", (versions,))
     conn.execute(
         "UPDATE communication_versions SET processing_state = 'fetched', hold_reason_code = NULL,"
         " last_error_code = NULL WHERE id = ANY(%s)",

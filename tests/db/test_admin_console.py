@@ -28,9 +28,11 @@ from ci_email.process import (
     requeue_failed_attachments,
     store_missing_originals,
 )
+from ci_email.risk_ratings import rate_pending_risks
 from ci_processing.classification import FakeClassifier
 from ci_processing.embedding import FakeEmbedder
 from ci_processing.originals import DirectoryStore
+from ci_processing.risk_rating import FakeRiskRater
 from ci_processing.routing import FakePersonRouter
 from ci_processing.screening import FakeScreener
 from ci_retrieval.entra import EntraTokenVerifier
@@ -680,6 +682,21 @@ def test_risk_overview(client: TestClient, database_ready: str) -> None:
     assert row is not None and len(row["details"]["result_ids"]) == data["total"]
     blind = client.get("/api/risks?days=366", headers=auth(roles=[ADMIN_ROLE])).json()
     assert blind["total"] == 0 and blind["items"] == []
+    # The matrix and the property views (ratings come from the processing run).
+    rate_pending_risks(lambda: connect(dbname=database_ready, role="ci_ingest"), FakeRiskRater())
+    data = client.get("/api/risks?days=366", headers=auth()).json()
+    assert data["matrix"]["rated"] == data["total"] and len(data["matrix"]["cells"]) == 9
+    cell = next(c for c in data["matrix"]["cells"] if c["risks"])
+    narrowed = client.get(
+        f"/api/risks?days=366&impact={cell['impact']}&likelihood={cell['likelihood']}",
+        headers=auth(),
+    ).json()
+    assert narrowed["total"] == cell["risks"] and narrowed["matrix"] == data["matrix"]
+    name = data["top_properties"][0]["property"]
+    by_property = client.get(f"/api/risks?days=366&property={name}", headers=auth()).json()
+    assert 0 < by_property["total"] <= data["total"]
+    bad = client.get("/api/risks?impact=severe", headers=auth())
+    assert bad.status_code == 400
 
 
 def test_reports_by_property_and_action_items_match_the_page(client: TestClient) -> None:
