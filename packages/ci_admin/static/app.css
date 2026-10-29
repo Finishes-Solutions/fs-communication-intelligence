@@ -702,3 +702,7 @@ span.kv-value { font-family: var(--sans); font-size: 13px; color: var(--muted); 
   .kv-row { grid-template-columns: minmax(0, 1fr) auto; }
   .kv-label { grid-column: 1 / -1; }
 }
+.icon-downloads { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.icon-dl { display: flex; align-items: center; gap: 14px; border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; }
+.icon-dl img { width: 64px; height: 64px; border-radius: 12px; border: 1px solid var(--line); flex: none; }
+.icon-dl a { margin-left: auto; }
