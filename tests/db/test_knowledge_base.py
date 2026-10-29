@@ -584,6 +584,42 @@ def test_title_is_the_most_stated_unless_an_admin_set_it(ready: str) -> None:
             conn.commit()
 
 
+def test_knowledge_graph_nodes_links_and_connectors(ready: str) -> None:
+    with connect(dbname=ready, role="ci_search") as conn:
+        graph = kb.knowledge_graph(conn, READER, limit=40, min_shared=1)
+        nobody = kb.knowledge_graph(conn, NOBODY, limit=40, min_shared=1)
+        orgs = kb.knowledge_graph(conn, READER, kinds=["organization"], min_shared=1)
+    ids = {n["entity_id"] for n in graph["nodes"]}
+    assert graph["nodes"] and graph["links"]
+    assert all(x["source"] in ids and x["target"] in ids for x in graph["links"])
+    assert all(x["shared"] >= 1 for x in graph["links"])
+    assert max(n["connector"] for n in graph["nodes"]) == 1.0
+    assert all(0 <= n["connector"] <= 1 for n in graph["nodes"])
+    degree = {i: 0 for i in ids}
+    for x in graph["links"]:
+        degree[x["source"]] += 1
+        degree[x["target"]] += 1
+    assert {n["entity_id"]: n["links"] for n in graph["nodes"]} == degree
+    # A fact between two nodes rides on their link.
+    assert any("lender" in x["facts"] for x in graph["links"])
+    assert nobody["nodes"] == [] and nobody["links"] == []
+    assert {n["kind"] for n in orgs["nodes"]} == {"organization"}
+
+    bank = entity_id(ready, "community bank", "organization")
+    with connect(dbname=ready, role="ci_search") as conn:
+        around = kb.knowledge_graph(conn, READER, focus=bank, min_shared=1)
+    focus = [n for n in around["nodes"] if n["focus"]]
+    assert [n["entity_id"] for n in focus] == [bank]
+    assert any(bank in (x["source"], x["target"]) for x in around["links"])
+
+
+def test_betweenness_scores_the_bridge() -> None:
+    # a - b - c, and b - d: every path between a, c and d runs through b.
+    score = kb._betweenness([1, 2, 3, 4], [(1, 2), (2, 3), (2, 4)])
+    assert score == {1: 0.0, 2: 1.0, 3: 0.0, 4: 0.0}
+    assert kb._betweenness([1, 2], []) == {1: 0.0, 2: 0.0}
+
+
 def test_search_role_cannot_read_the_base_tables(ready: str) -> None:
     import psycopg
 

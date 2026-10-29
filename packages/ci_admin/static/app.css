@@ -640,3 +640,44 @@ td.nowrap { white-space: nowrap; }
 .select-bar { display: flex; align-items: center; gap: 8px; padding: 8px 16px; background: var(--subtle); border-bottom: 1px solid var(--line);
   font-size: 13px; font-weight: 500; position: sticky; top: 0; z-index: 1; }
 .select-bar > span { margin-right: auto; }
+
+/* ---------- knowledge map ---------- */
+.kmap-toolbar { display: flex; flex-direction: column; gap: 12px; padding: 14px 18px; }
+.kmap-kinds { display: flex; flex-wrap: wrap; gap: 8px; }
+.kmap-kind { font: inherit; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px;
+  border: 1px solid var(--line-strong); border-radius: 999px; background: var(--surface); color: var(--muted); cursor: pointer; }
+.kmap-kind.on { color: var(--text); border-color: var(--text-2); }
+.kmap-kind:not(.on) .key { opacity: 0.3; }
+.kmap-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; }
+.kmap-ctl { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin: 0; }
+.kmap-find { width: 180px; }
+.kmap-focus { display: flex; }
+.kmap-layout { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 20px; align-items: start; margin-top: 20px; }
+.kmap-layout > .card { margin-top: 0; }
+.kmap-stage { min-height: 420px; display: flex; flex-direction: column; justify-content: center; }
+.kmap-wrap { position: relative; }
+svg.kmap { width: 100%; height: auto; display: block; touch-action: none; cursor: grab; background: var(--surface);
+  border-radius: var(--radius) var(--radius) 0 0; }
+svg.kmap:active { cursor: grabbing; }
+.km-link { stroke: var(--chart-base); stroke-opacity: 0.45; }
+.km-link.fact { stroke: var(--text-2); stroke-opacity: 0.55; }
+.km-node { stroke: var(--surface); stroke-width: 2; cursor: pointer; transition: opacity 120ms; }
+.km-node.focus { stroke: var(--text); stroke-width: 3; }
+.km-node:focus-visible { outline: none; stroke: var(--text); stroke-width: 3; }
+.km-label { font-family: var(--sans); fill: var(--text); paint-order: stroke; stroke: var(--surface);
+  stroke-linejoin: round; pointer-events: none; }
+.km-label.hidden { display: none; }
+svg.kmap.dim .km-node:not(.on) { opacity: 0.18; }
+svg.kmap.dim .km-link:not(.on) { stroke-opacity: 0.06; }
+svg.kmap.dim .km-link.on { stroke: var(--text); stroke-opacity: 0.8; }
+svg.kmap.dim .km-label { display: none; }
+svg.kmap.dim .km-label.show { display: block; }
+.kmap-tip { transform: translate(-50%, -100%); min-width: 200px; }
+.kmap-zoom { position: absolute; right: 12px; top: 12px; display: flex; gap: 4px; }
+.kmap-zoom .btn { min-width: 32px; justify-content: center; background: var(--surface); }
+.kmap-table { border-top: 1px solid var(--line); }
+.kmap-table summary { cursor: pointer; padding: 12px 18px; font-size: 13px; color: var(--muted); }
+@media (max-width: 1100px) { .kmap-layout { grid-template-columns: minmax(0, 1fr); } }
+@media (prefers-reduced-motion: reduce) { .km-node { transition: none; } }
+.kmap-ctl { flex-wrap: wrap; max-width: 100%; }
+.kmap-controls .seg { max-width: 100%; overflow-x: auto; }
