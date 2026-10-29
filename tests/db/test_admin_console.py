@@ -3,6 +3,7 @@ comes only through the caller's own grants. Tokens are signed with a throwaway
 RSA key standing in for Entra's; everything else is the production code path.
 """
 
+import re
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -154,6 +155,20 @@ def latest_audit(database: str, action: str) -> dict[str, Any] | None:
 )
 def test_only_admins_get_in(client: TestClient, headers: dict[str, str], status: int) -> None:
     assert client.get("/api/overview", headers=headers).status_code == status
+
+
+def test_api_calls_are_timed_without_query_text(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("INFO", logger="ci.admin")
+    assert client.get("/api/overview", headers=auth()).status_code == 200
+    client.get("/api/messages?q=very-private-search-words", headers=auth())
+    client.get("/overview")  # pages are not timed, only API calls
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("admin request")]
+    assert any(re.fullmatch(r"admin request GET /api/overview -> 200 in \d+ ms", m) for m in lines)
+    assert any(m.startswith("admin request GET /api/messages -> 200") for m in lines)
+    assert len(lines) == 2
+    assert not any("very-private" in r.getMessage() for r in caplog.records)
 
 
 def test_page_and_sign_in_config_are_public_and_locked_down(client: TestClient) -> None:
