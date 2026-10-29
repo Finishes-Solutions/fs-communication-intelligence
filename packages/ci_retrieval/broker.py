@@ -320,7 +320,12 @@ class EntraBroker:
             }
         )
         response = RedirectResponse(to_entra, status_code=303)
-        response.delete_cookie(_COOKIE, path="/", secure=True, httponly=True, samesite="lax")
+        # Cleared with Max-Age=0 only. Starlette's delete_cookie also writes an
+        # Expires date, and Azure's Python worker crashed converting that response
+        # (the process exited, the browser got a bare HTTP 500; 2026-10-29).
+        response.set_cookie(
+            _COOKIE, "", max_age=0, secure=True, httponly=True, samesite="lax", path="/"
+        )
         return response
 
     async def callback_route(self, request: Request) -> Response:

@@ -41,6 +41,7 @@ const ICONS = {
   inbox: ["M22 12h-6l-2 3h-4l-2-3H2", "M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"],
   mail: ["M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z", "m22 6-10 7L2 6"],
   check: ["m9 11 3 3L22 4", "M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"],
+  tick: ["M20 6 9 17l-5-5"],
   hidden: ["M9.88 9.88a3 3 0 1 0 4.24 4.24", "M10.73 5.08A10.4 10.4 0 0 1 12 5c7 0 10 7 10 7a13.2 13.2 0 0 1-1.67 2.68",
     "M6.61 6.61A13.5 13.5 0 0 0 2 12s3 7 10 7a9.7 9.7 0 0 0 5.39-1.61", "M2 2l20 20"],
   lab: ["M9 3h6", "M10 3v6.5L4.5 19a1.5 1.5 0 0 0 1.3 2h12.4a1.5 1.5 0 0 0 1.3-2L14 9.5V3", "M7 15h10"],
@@ -2497,6 +2498,12 @@ const para = (...parts) => h("p", {}, ...parts);
 const b = text => h("strong", {}, text);
 
 let CONN_TAB = "claude";
+// Logos are static files (static/logos): Claude and ChatGPT from Simple Icons (CC0),
+// Copilot Studio a Microsoft Fluent bot icon (MIT) standing in for its logo.
+const PLATFORM_LOGO = { claude: "/logos/claude.svg", chatgpt: "/logos/chatgpt.svg", copilot: "/logos/copilot-studio.svg" };
+const PLATFORM_SUB = { claude: "Custom connector", chatgpt: "Custom MCP plugin", copilot: "Agent tool (MCP)" };
+const platformLogo = key => h("span", { class: "platform-logo" },
+  PLATFORM_LOGO[key] ? h("img", { src: PLATFORM_LOGO[key], alt: "", width: "24", height: "24" }) : icon("plug"));
 async function connectionsPage() {
   const d = await api("/api/connections");
   const clients = Object.fromEntries(d.clients.map(c => [c.key, c]));
@@ -2604,14 +2611,29 @@ async function connectionsPage() {
     },
   };
 
+  // One card per platform, with its logo; the chosen one is outlined, ticked and named
+  // in the guide's heading, so it is clear whose steps are showing.
   const body = h("div", {});
-  const tabs = h("div", { class: "seg" });
+  const heading = h("div", { class: "platform-heading" });
+  const picker = h("div", { class: "platforms", role: "group", "aria-label": "Platform" });
   const select = key => {
     CONN_TAB = key;
-    tabs.querySelectorAll("button").forEach(x => x.classList.toggle("on", x.dataset.key === key));
+    picker.querySelectorAll("button").forEach(x => {
+      const on = x.dataset.key === key;
+      x.classList.toggle("on", on);
+      x.setAttribute("aria-pressed", String(on));
+    });
+    const c = clients[key];
+    heading.replaceChildren(platformLogo(key), h("span", {}, `Setting up ${c ? c.title : key}`));
     body.replaceChildren(...guides[key]());
   };
-  tabs.append(...d.clients.map(c => h("button", { type: "button", "data-key": c.key, onclick: () => select(c.key) }, c.title)));
+  picker.append(...d.clients.filter(c => guides[c.key]).map(c => h("button",
+    { type: "button", class: "platform", "data-key": c.key, "aria-pressed": "false", onclick: () => select(c.key) },
+    platformLogo(c.key),
+    h("span", { class: "platform-text" }, h("span", { class: "platform-name" }, c.title),
+      h("span", { class: "platform-sub" }, PLATFORM_SUB[c.key] || "")),
+    h("span", { class: "platform-check", "aria-hidden": "true" }, icon("tick")))));
+  if (!clients[CONN_TAB]) CONN_TAB = d.clients[0] ? d.clients[0].key : "claude";
   select(CONN_TAB);
 
   const quick = card({ title: "Quick Connect", sub: "Paste one link; each person signs in with their Microsoft 365 account." },
@@ -2658,7 +2680,7 @@ async function connectionsPage() {
         ", so keep the list short. Without it, Microsoft refuses the sign-in (AADSTS50105). In Cloud Shell, from the repository folder:"),
       cmdBlock("bash scripts/azure/people.sh add name@finishessolutions.com search"),
       para(h("span", { class: "muted small" }, "bash scripts/azure/people.sh list shows who has access; remove takes it away."))),
-    card({ title: d.quick_connect ? "Manual Setup (Only If Quick Connect Fails)" : "Set Up", class: "spaced", actions: tabs }, body),
+    card({ title: d.quick_connect ? "Manual Setup (Only If Quick Connect Fails)" : "Set Up", sub: "Choose the platform to connect.", class: "spaced" }, picker, heading, body),
     card({ title: "If It Doesn't Work", class: "spaced" },
       kv(...[
         ["AADSTS50011", "The platform's callback URL isn't registered. Add it (see the setup step)."],

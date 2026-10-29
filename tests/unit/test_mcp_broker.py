@@ -182,6 +182,11 @@ def sign_in(
         "/oauth/consent", data={"request": query(consent_url)["request"], "csrf": csrf}
     )
     assert to_ms.status_code == 303
+    # The consent cookie is cleared without an Expires date: Azure's Python worker
+    # crashed converting one (the browser saw a bare HTTP 500).
+    cleared = to_ms.headers["set-cookie"].lower()
+    assert "max-age=0" in cleared and "expires" not in cleared
+    assert "expires" not in page.headers["set-cookie"].lower()
     ms = query(to_ms.headers["location"])
     assert to_ms.headers["location"].startswith(f"{LOGIN}/authorize?")
     assert ms["client_id"] == BROKER_ID and ms["redirect_uri"] == f"{BASE}/oauth/callback"
