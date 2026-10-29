@@ -1932,7 +1932,7 @@ async function readerPage() {
     return;
   }
   show(h("div", { class: "reader-page" },
-    h("div", { class: "reader-bar" }, h("span", { class: "muted small" }, "Email Intelligence · read-only view"),
+    h("div", { class: "reader-bar" }, h("span", { class: "muted small" }, "FS Communication Intelligence · read-only view"),
       h("a", { href: "/overview", target: "_self", class: "btn sm ghost" }, "Open Console")),
     card({}, messageView(id, m, { readOnly: true }))));
   const wanted = pageParams().get("file");
@@ -2728,7 +2728,7 @@ async function render() {
     nav.hidden = true; who.replaceChildren();
     main().replaceChildren(h("div", { class: "signin" }, h("div", { class: "signin-card" },
       h("div", { class: "brand-mark" }, icon("graph")),
-      h("h1", {}, "Email Intelligence"),
+      h("h1", {}, "FS Communication Intelligence"),
       h("p", {}, isReader()
         ? "Sign in with your Finishes Solutions account to read this email. Only console admins can open it."
         : "Sign in with your Finishes Solutions account. Only console admins get in."),
