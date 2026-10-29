@@ -2649,7 +2649,7 @@ async function connectionsPage() {
             h("span", { class: "kv-value" }, "Register automatically"), h("span")),
           h("div", { class: "kv-row" }, h("div", { class: "kv-label" }, "Request headers"), h("span", { class: "kv-value" }, "None"), h("span"))),
         para("Click ", b("Add"), ", then ", b("Connect"), ". \"Use Claude's published identity\" is not supported by this server. ",
-          "A warning that some checks were skipped because the server took longer than 5 seconds is harmless: the server was waking up.")),
+          "A warning that some checks were skipped because the server took longer than 5 seconds is harmless: the server was waking up. Tested 2026-10-29.")),
       step("ChatGPT",
         para("Plugins → ", b("Add"), " → ", b("Add custom MCP server"), ". Paste the URL, choose ", b("OAuth"),
           ", leave the advanced settings as they are and connect. Tested 2026-10-29.")),
