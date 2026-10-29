@@ -10,7 +10,7 @@ import pytest
 
 from ci_cli.main import main
 from ci_cli.seed import seed
-from ci_core.db import AppRole, Connection, connect
+from ci_core.db import AppRole, Connection, connect, required
 from ci_core.operator import (
     OperatorError,
     exclude_participant,
@@ -611,6 +611,100 @@ def test_knowledge_graph_nodes_links_and_connectors(ready: str) -> None:
     focus = [n for n in around["nodes"] if n["focus"]]
     assert [n["entity_id"] for n in focus] == [bank]
     assert any(bank in (x["source"], x["target"]) for x in around["links"])
+
+
+def _knowledge_reads(db: str) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    with connect(dbname=db, role="ci_search") as conn:
+        for who, principal in (("reader", READER), ("pat", PAT_OWN), ("nobody", NOBODY)):
+            listed = kb.find_knowledge(conn, principal, limit=100)
+            out[f"{who}:list"] = listed
+            out[f"{who}:query"] = kb.find_knowledge(conn, principal, "example", limit=100)
+            out[f"{who}:person"] = kb.find_knowledge(conn, principal, kind="person")
+            out[f"{who}:since"] = kb.find_knowledge(
+                conn, principal, since=datetime(2026, 10, 20, tzinfo=UTC)
+            )
+            for e in listed["results"]:
+                out[f"{who}:profile:{e['entity_id']}"] = kb.get_profile(
+                    conn, principal, e["entity_id"]
+                )
+                out[f"{who}:focus:{e['entity_id']}"] = kb.knowledge_graph(
+                    conn, principal, focus=e["entity_id"], min_shared=1
+                )
+            out[f"{who}:graph"] = kb.knowledge_graph(conn, principal, limit=40, min_shared=1)
+            out[f"{who}:graph-orgs"] = kb.knowledge_graph(
+                conn, principal, kinds=["organization", "property"], min_shared=2
+            )
+    return out
+
+
+def test_fast_and_view_paths_agree(ready: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The index-first functions (migration 0022) and the views give the same
+    answers, so the pages are right before and after the migration is applied."""
+    with connect(dbname=ready, role="ci_search") as conn:
+        assert kb._Source(conn).fast
+    fast = _knowledge_reads(ready)
+
+    class Views(kb._Source):
+        def __init__(self, conn: Connection) -> None:
+            super().__init__(conn)
+            self.fast = False
+
+    monkeypatch.setattr(kb, "_Source", Views)
+    slow = _knowledge_reads(ready)
+    assert fast.keys() == slow.keys()
+    for key in fast:
+        assert fast[key] == slow[key], key
+    assert fast["reader:list"]["results"] and fast["reader:graph"]["links"]
+    assert any(v and v.get("facts") for k, v in fast.items() if ":profile:" in k)
+
+
+def test_fast_functions_return_only_published_mail(ready: str) -> None:
+    """An email withdrawn from publication (here excluded as an item) disappears
+    from the 0022 functions, even when its id is passed directly, as from the views."""
+    labels = ["action_required", "approval_required", "project_related", "invoice_receipt"]
+    with connect(dbname=ready) as conn:
+        target = required(
+            conn.execute(
+                "SELECT c.id, c.connection_id, c.native_id, min(coalesce(e.merged_into, e.id))"
+                " AS entity_id FROM communications c"
+                " JOIN kg_mentions m ON m.version_id = c.active_version_id"
+                " JOIN kg_entities e ON e.id = m.entity_id"
+                " JOIN published_classifications x ON x.communication_id = c.id"
+                " WHERE x.yes_labels && %s::text[]"
+                " GROUP BY c.id ORDER BY c.id LIMIT 1",
+                (labels,),
+            ).fetchone()
+        )
+
+        def seen() -> tuple[bool, bool, bool]:
+            conn.execute("SET ROLE ci_search")
+            try:
+                mentions = conn.execute(
+                    "SELECT 1 FROM published_kg_mentions_of(%s::bigint[])"
+                    " WHERE communication_id = %s",
+                    ([target["entity_id"]], target["id"]),
+                ).fetchall()
+                near = conn.execute(
+                    "SELECT 1 FROM published_kg_mentions_of(NULL, %s) WHERE communication_id = %s",
+                    (target["entity_id"], target["id"]),
+                ).fetchall()
+                hits = conn.execute(
+                    "SELECT 1 FROM published_label_hits(%s::uuid[], %s::text[])",
+                    ([target["id"]], labels),
+                ).fetchall()
+            finally:
+                conn.execute("RESET ROLE")
+            return bool(mentions), bool(near), bool(hits)
+
+        assert seen() == (True, True, True)
+        conn.execute(
+            "INSERT INTO exclusions (exclusion_kind, connection_id, native_id, reason_code,"
+            " created_by) VALUES ('item', %s, %s, 'test', 'pytest')",
+            (target["connection_id"], target["native_id"]),
+        )
+        assert seen() == (False, False, False)
+        conn.rollback()
 
 
 def test_betweenness_scores_the_bridge() -> None:

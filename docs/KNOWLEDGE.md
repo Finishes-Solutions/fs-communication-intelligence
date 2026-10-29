@@ -42,7 +42,7 @@ Everything is computed per caller from the messages their grants allow, using th
 
 - A `Communications.Reader.Own` user sees only entries, spellings, counts and facts from their own mailbox. An entry seen only in someone else's mailbox doesn't exist for them, and its id finds nothing.
 - A person whose address or domain is excluded as a participant (`ci scope exclude --participant`) is never shown, even when their name appears in another email's body.
-- `ci_search` can read only the `published_kg_*` views, never the base tables.
+- `ci_search` can read only the `published_kg_*` views and the read functions of migration 0022, which return the same published rows faster, never the base tables.
 - Copies of one message in several mailboxes count once.
 
 ## Using it
