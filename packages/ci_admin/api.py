@@ -45,7 +45,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ci_admin import billing, calibration, costs, lab, models, reports
 from ci_core import ops
-from ci_core.db import Connection, connect
+from ci_core.db import Connection, connect, required
 from ci_core.operator import (
     OperatorError,
     approve_all_enrolled,
@@ -416,10 +416,17 @@ def build_admin_app(
                 ops.update_schedule(conn, _actor(principal), **body)
                 conn.commit()
             current = ops.read_schedule(conn)
+            reviewed = required(
+                conn.execute(
+                    "SELECT count(DISTINCT communication_id) AS n FROM label_feedback"
+                    " WHERE subject_kind = 'label'"
+                ).fetchone()
+            )["n"]
             return {
                 "schedule": current.public(),
                 "intervals": list(ops.INTERVALS),
                 "next": ops.capture_decision(current, datetime.now(UTC)).reason,
+                "reviewed_emails": reviewed,  # available as classifier examples
             }
 
     def run_now(request: Request, principal: Principal, body: dict[str, Any]) -> Any:

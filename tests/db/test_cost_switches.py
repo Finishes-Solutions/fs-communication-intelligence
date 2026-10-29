@@ -145,7 +145,10 @@ def test_restrict_policy_ignores_the_switches(db: str) -> None:
         schedule = ops.read_schedule(conn)
     off = replace(schedule, prompt_shield_enabled=False, masking_enabled=False)
     base = configured()
-    assert with_switches(base, restrict, off) is base
+    applied = with_switches(base, restrict, off)
+    assert applied.screener is base.screener and applied.redactor is base.redactor
+    assert not applied.masking_disabled
+    assert applied.review_examples == schedule.review_examples  # not a paid check
 
 
 def test_schedule_reads_with_unknown_columns(db: str) -> None:

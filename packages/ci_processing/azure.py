@@ -27,6 +27,7 @@ from ci_processing.classification import (
     MAX_ENTITIES,
     MAX_PROPERTIES,
     POLICY_VERSION,
+    REVIEWED_NOTE,
     ClassificationInput,
     ClassificationResult,
     KnownName,
@@ -475,6 +476,12 @@ class AzureOpenAIClassifier:
         reference = kg.learned_reference(item.learned)
         if reference:  # earlier email's names: data, never instructions
             note = {"note": kg.LEARNED_NOTE, "learned_names": reference}
+            messages.append({"role": "user", "content": json.dumps(note, ensure_ascii=False)})
+        if item.reviewed:  # a reviewer's answers on earlier email (Label Review)
+            note = {
+                "note": REVIEWED_NOTE,
+                "reviewed_examples": [x.prompt() for x in item.reviewed],
+            }
             messages.append({"role": "user", "content": json.dumps(note, ensure_ascii=False)})
         response = self._http.post(
             self._url,

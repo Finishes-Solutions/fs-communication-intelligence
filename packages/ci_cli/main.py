@@ -237,6 +237,12 @@ def _parser() -> argparse.ArgumentParser:
             const=False,
             help=f"paid {name} check off while testing (redo later: ci process --rescreen)",
         )
+    sset.add_argument(
+        "--review-examples",
+        dest="review_examples",
+        type=int,
+        help="reviewed emails shown to the classifier as examples per email (0-12, 0 = off)",
+    )
     people = sub.add_parser("people", help="whose action items get a per-person check")
     people_action = people.add_subparsers(dest="action", required=True)
     people_action.add_parser("list")
@@ -357,6 +363,7 @@ def _schedule(args: argparse.Namespace, conn: Connection, actor: str) -> None:
                 "processing_enabled",
                 "prompt_shield_enabled",
                 "masking_enabled",
+                "review_examples",
             )
             if getattr(args, k) is not None
         }
@@ -380,6 +387,11 @@ def _schedule(args: argparse.Namespace, conn: Connection, actor: str) -> None:
     print(
         f"prompt-injection check: {'on' if s.prompt_shield_enabled else 'OFF'},"
         f" masking: {'on' if s.masking_enabled else 'OFF'}"
+    )
+    print(
+        f"learning from Label Review: {s.review_examples} reviewed emails per classification"
+        if s.review_examples
+        else "learning from Label Review: off"
     )
     print(f"last capture started: {s.last_capture_started_at or 'never'}")
     if s.run_requested_at:

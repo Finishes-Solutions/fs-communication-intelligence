@@ -19,6 +19,7 @@ per call; tool arguments can only narrow results):
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
 from datetime import UTC, date, datetime, time, timedelta
@@ -118,7 +119,7 @@ def build_server(
         return _day(day, "until_date") + timedelta(days=1) if day else None
 
     def linked(data: dict[str, Any]) -> dict[str, Any]:
-        result: dict[str, Any] = with_links(data, view_base)
+        result: dict[str, Any] = fit(with_links(data, view_base))
         return result
 
     @server.tool(
@@ -188,7 +189,7 @@ def build_server(
 
     @server.tool(
         description="List recent authorized emails, newest first, optionally by mailbox, "
-        "sender or label (e.g. cat_payment_billing)." + _DATES + _NAMES + _LINKS + _TRUST
+        "sender or label (e.g. cat_payment_billing)." + _DATES + _NAMES + _PAGING + _LINKS + _TRUST
     )
     def list_email(
         mailbox: str | None = None,
@@ -200,7 +201,9 @@ def build_server(
         property: str | None = None,
         entity: str | None = None,
         limit: int = 25,
+        offset: int = 0,
     ) -> dict[str, Any]:
+        limit, offset = max(1, min(limit, 100)), max(0, min(offset, 100))
         with connector() as conn:
             found = retrieval.list_email(
                 conn,
@@ -214,9 +217,9 @@ def build_server(
                     property=property,
                     entity=entity,
                 ),
-                limit,
+                min(offset + limit, 100),
             )
-        return linked(found)
+        return linked(page(found, ("results",), offset, limit))
 
     @server.tool(
         description="Emails that ask a person to act or approve, plus project risks (schedule "
@@ -227,12 +230,18 @@ def build_server(
         "per-person check decides which emails are really theirs (it tells apart people with "
         "similar names, e.g. Chuck Sr. and Chuck Jr.): `actions` are its confident answers and "
         "`possible` the ones it was unsure about; treat `possible` as needing confirmation."
+        + _PAGING
         + _LINKS
         + _TRUST
     )
     def list_actionable(
-        person: str | None = None, hours: float = 24, include_risks: bool = True, limit: int = 50
+        person: str | None = None,
+        hours: float = 24,
+        include_risks: bool = True,
+        limit: int = 25,
+        offset: int = 0,
     ) -> dict[str, Any]:
+        limit, offset = max(1, min(limit, 100)), max(0, min(offset, MAX_OFFSET))
         with connector() as conn:
             found = retrieval.list_actionable(
                 conn,
@@ -240,9 +249,9 @@ def build_server(
                 person=person,
                 hours=hours,
                 include_risks=include_risks,
-                limit=limit,
+                limit=offset + limit,
             )
-        return linked(found)
+        return linked(page(found, ("actions", "possible", "risks"), offset, limit))
 
     @server.tool(
         description="Read the whole conversation an email belongs to, oldest first: every"
@@ -412,6 +421,65 @@ def _day(value: str, name: str) -> datetime:
 
 
 NOT_FOUND = "Not found in authorized, indexed mail."
+
+# Agent platforms cut off or set aside long tool results (Copilot saved a 50-item
+# list_actionable to a file it then couldn't open), so every result stays under
+# this many characters of JSON; longer lists are trimmed from the end and say so.
+MAX_RESPONSE_CHARS = 24_000
+MAX_OFFSET = 175
+_PAGING = (
+    " Results are newest first and kept short for agent platforms: when `trimmed` is"
+    " present, call again with `offset` (the number already shown) for the next emails,"
+    " or narrow the request (fewer hours, a person, a label)."
+)
+
+
+def page(data: dict[str, Any], keys: tuple[str, ...], offset: int, limit: int) -> dict[str, Any]:
+    """Skips the first ``offset`` emails of each list in ``keys`` and keeps ``limit``."""
+    out = dict(data)
+    for key in keys:
+        if isinstance(out.get(key), list):
+            out[key] = out[key][offset : offset + limit]
+    if offset:
+        out["offset"] = offset
+    return out
+
+
+def _size(data: Any) -> int:
+    return len(json.dumps(data, default=str, separators=(",", ":")))
+
+
+def fit(data: Any, budget: int = MAX_RESPONSE_CHARS) -> Any:
+    """Trims the longest lists of emails until the result fits ``budget``; records
+    what was left out under ``trimmed`` so the agent can ask for the rest."""
+    if not isinstance(data, dict) or _size(data) <= budget:
+        return data
+    out = dict(data)
+    lists = [
+        k
+        for k, v in out.items()
+        if isinstance(v, list) and v and all(isinstance(x, dict) for x in v)
+    ]
+    shown = {k: len(out[k]) for k in lists}
+    base = out.get("offset", 0) if isinstance(out.get("offset"), int) else 0
+    while lists and _size(out) > budget:
+        longest = max(lists, key=lambda k: len(out[k]))
+        if not out[longest]:
+            break
+        out[longest] = out[longest][:-1]
+    trimmed = {
+        k: {"shown": len(out[k]), "left_out": shown[k] - len(out[k]),
+            "next_offset": base + len(out[k])}
+        for k in lists
+        if len(out[k]) < shown[k]
+    }  # fmt: skip
+    if trimmed:
+        out["trimmed"] = trimmed
+        out["trimmed_note"] = (
+            "Some emails were left out to keep this answer short. Call again with offset set"
+            " to next_offset to see them, or narrow the request."
+        )
+    return out
 
 
 def with_links(data: Any, base: str | None, parent: str | None = None) -> Any:
