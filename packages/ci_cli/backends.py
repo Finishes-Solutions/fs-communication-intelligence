@@ -175,8 +175,10 @@ def processing_backends(settings: Settings) -> Backends:
 
 
 def with_switches(configured: Backends, settings: Settings, schedule: Schedule) -> Backends:
-    """Apply the admin console's switches for the paid checks (testing only). They
-    apply under SENSITIVE_DATA_POLICY=mask; restrict keeps its full PII check."""
+    """Apply the admin console's switches: how many reviewed emails the classifier
+    sees as examples, and the paid checks (testing only; they apply under
+    SENSITIVE_DATA_POLICY=mask, restrict keeps its full PII check)."""
+    configured = replace(configured, review_examples=schedule.review_examples)
     if settings.sensitive_data_policy is not SensitiveDataPolicy.MASK:
         return configured
     if not schedule.prompt_shield_enabled:

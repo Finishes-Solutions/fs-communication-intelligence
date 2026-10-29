@@ -34,6 +34,7 @@ import psycopg
 from ci_core.db import Connection, required
 from ci_email import knowledge_store
 from ci_email.graph import GraphClient, GraphError
+from ci_email.review_examples import ReviewCache, pick_examples
 from ci_processing.azure import AzureServiceError
 from ci_processing.chunking import chunk_text
 from ci_processing.classification import (
@@ -93,6 +94,10 @@ class Backends:
     prefilter_allow_domains: frozenset[str] = frozenset()
     # Names learned from earlier mail, shown to the classifier (ci_email.knowledge_store).
     learned: knowledge_store.LearnedCache = field(default_factory=knowledge_store.LearnedCache)
+    # Reviewed emails shown to the classifier as examples (ci_email.review_examples);
+    # how many per call comes from ops_settings.review_examples, 0 = none.
+    review_examples: int = 0
+    reviews: ReviewCache = field(default_factory=ReviewCache)
 
 
 def _sha(text: str) -> str:
@@ -696,6 +701,12 @@ def process_version(conn: Connection, job: dict[str, Any], backends: Backends) -
                 for a in attachments[:CLASSIFY_MAX_ATTACHMENTS]
             ),
             learned=_learned(conn, backends),
+            reviewed=pick_examples(
+                backends.reviews.get(conn) if backends.review_examples else [],
+                backends.review_examples,
+                sender=sender,
+                exclude=str(job["communication_id"]),
+            ),
         )
         result, reused_from = _classify(conn, backends, item)
         outcome = classification_outcome(result, mask_sensitive=backends.redactor is not None)

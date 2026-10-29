@@ -47,6 +47,8 @@ class Schedule:
     # Azure OpenAI chat deployment for classification (migration 0014); None keeps
     # the app setting AZURE_OPENAI_CHAT_DEPLOYMENT.
     chat_deployment: str | None = None
+    # Reviewed emails shown to the classifier per call (migration 0023); 0 = off.
+    review_examples: int = 6
 
     def public(self) -> dict[str, Any]:
         data = asdict(self)
@@ -107,6 +109,7 @@ _EDITABLE = {
     "prompt_shield_enabled",
     "masking_enabled",
     "chat_deployment",
+    "review_examples",
 }
 DEPLOYMENT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
@@ -129,6 +132,9 @@ def update_schedule(conn: Connection, actor: str, **changes: Any) -> Schedule:
         raise OperatorError("window must be between 0 and 744 hours")
     if proposed.capture_window_hours * 60 < proposed.capture_interval_min:
         raise OperatorError("the window must cover the interval, or mail between runs is missed")
+    examples = proposed.review_examples
+    if isinstance(examples, bool) or not isinstance(examples, int) or not 0 <= examples <= 12:
+        raise OperatorError("review examples must be a whole number from 0 to 12")
     if not 0 <= proposed.active_start_hour < proposed.active_end_hour <= 24:
         raise OperatorError("active hours must satisfy 0 <= start < end <= 24")
     try:

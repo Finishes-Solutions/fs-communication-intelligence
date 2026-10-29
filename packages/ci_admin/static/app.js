@@ -415,6 +415,9 @@ async function schedulePage() {
     processing_enabled: h("input", { type: "checkbox", checked: s.processing_enabled }),
     prompt_shield_enabled: h("input", { type: "checkbox", checked: s.prompt_shield_enabled !== false }),
     masking_enabled: h("input", { type: "checkbox", checked: s.masking_enabled !== false }),
+    review_examples: h("select", {}, [0, 2, 4, 6, 8, 10, 12].concat(
+      [0, 2, 4, 6, 8, 10, 12].includes(s.review_examples) ? [] : [s.review_examples]).map(n =>
+      h("option", { value: n, selected: n === s.review_examples }, n === 0 ? "Off" : `${n} examples per email`))),
   };
   const nowHours = h("input", { type: "number", min: "0.25", max: "2232", step: "0.25", value: s.capture_window_hours, style: "width:110px" });
   const save = guard(async () => {
@@ -424,6 +427,7 @@ async function schedulePage() {
       active_end_hour: Number(f.active_end_hour.value), weekdays_only: f.weekdays_only.checked,
       time_zone: f.time_zone.value.trim(), processing_enabled: f.processing_enabled.checked,
       prompt_shield_enabled: f.prompt_shield_enabled.checked, masking_enabled: f.masking_enabled.checked,
+      review_examples: Number(f.review_examples.value),
     };
     await post("/api/schedule", body, "PUT");
     toast("Schedule saved."); route();
@@ -453,6 +457,10 @@ async function schedulePage() {
       h("div", { class: "settings" },
         setting("Prompt-Injection Check", "Azure Prompt Shields. Off: email text reaches the classifier and AI agents without this check.", switchEl(f.prompt_shield_enabled)),
         setting("Mask Sensitive Numbers and Credentials", "Azure AI Language. Off: nothing is masked, and mail the classifier marks as holding ID, bank or card numbers or credentials is restricted (hidden) instead.", switchEl(f.masking_enabled)))),
+    card({ title: "Learning from Label Review", flush: true, class: "spaced",
+      sub: `The AI sees some of your reviewed emails, with your answers, as examples when it classifies new mail. ${num(sch.reviewed_emails || 0)} reviewed so far.` },
+      h("div", { class: "settings" },
+        setting("Examples per Email", "Corrections come first (where you disagreed with the AI), from the same sender's domain when there are any. Each example adds roughly 150 to 250 input tokens per email; Off stops it. Applies from the next processing run; mail already classified keeps its labels.", f.review_examples))),
     (s.prompt_shield_enabled === false || s.masking_enabled === false)
       ? note("A safety check is off. Mail processed now is recorded; run ci process --rescreen --limit 0 to redo it with the checks on.", "warn") : null,
     card({ title: "Run History", sub: `${(runs.runs || []).length} most recent runs`, flush: true, class: "spaced",
