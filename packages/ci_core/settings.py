@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import field_validator, model_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -179,6 +179,14 @@ class Settings(BaseSettings):
     mcp_client_id_claude: str | None = None
     mcp_client_id_chatgpt: str | None = None
     mcp_client_id_copilot: str | None = None
+    # OAuth broker (ci_retrieval.broker): platforms connect with only the MCP URL.
+    # On when both are set (scripts/azure/8-mcp-broker.sh); the secret comes from Key
+    # Vault through an app-setting reference, never from the repository.
+    mcp_broker_client_id: str | None = None
+    mcp_broker_client_secret: SecretStr | None = None
+    # More allowed return addresses (comma-separated https URLs; one ending in "/" is a
+    # prefix), for a platform whose callback isn't in broker.ALLOWED_REDIRECTS.
+    mcp_broker_extra_redirects: str = ""
 
     # Cost page: Azure Cost Management for this resource group (the admin
     # console's identity needs Cost Management Reader there).

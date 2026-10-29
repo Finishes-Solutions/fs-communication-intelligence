@@ -2614,10 +2614,31 @@ async function connectionsPage() {
   tabs.append(...d.clients.map(c => h("button", { type: "button", "data-key": c.key, onclick: () => select(c.key) }, c.title)));
   select(CONN_TAB);
 
+  const quick = card({ title: "Quick Connect", sub: "Paste one link; each person signs in with their Microsoft 365 account." },
+    kv(copyRow("MCP server URL", d.mcp_url)),
+    d.quick_connect ? h("ol", { class: "howto" },
+      step("Claude",
+        para("Settings → ", b("Connectors"), " → ", b("Add custom connector"), ". Name it FS Email, paste the URL, leave ",
+          b("Advanced settings"), " empty and click ", b("Add"), ". Then ", b("Connect"), ".")),
+      step("ChatGPT",
+        para("Plugins → ", b("Add"), " → ", b("Add custom MCP server"), ". Paste the URL, choose ", b("OAuth"),
+          ", leave the advanced settings as they are and connect.")),
+      step("Copilot Studio",
+        para("Agent → ", b("Tools"), " → ", b("Add a tool"), " → ", b("New tool"), " → ", b("Model Context Protocol"),
+          ". Paste the URL, choose ", b("OAuth 2.0"), " → ", b("Dynamic discovery"), " and click ", b("Create"),
+          ". In the tool's settings, set ", b("Credentials to use"), " to ", b("End user credentials"), ".")),
+      step("Sign in",
+        para("A page asks to connect the app to FS Email; click ", b("Continue with Microsoft"),
+          " and sign in. Only the people added under Who Can Connect get in; anyone else is refused by Microsoft."))) : null,
+    d.quick_connect
+      ? note("A Claude connector added earlier with a client ID and secret stops working once Quick Connect is on: remove it and add it again with only the URL.", "warn")
+      : note("Quick Connect is off. To turn it on, run bash scripts/azure/8-mcp-broker.sh in Cloud Shell. Until then, use the manual setup below.", "warn"));
+
   show(
     pageHead("Connections", "Connect Claude, ChatGPT or Copilot Studio to company email through the MCP server. Each person signs in as themselves and sees only what their access allows."),
     d.missing.length ? note(`Not set up yet: ${d.missing.join(", ")}. Run bash scripts/azure/7-connections-page.sh in Cloud Shell, then reload this page.`, "warn") : null,
-    card({ title: "Connection Values", sub: "The same for every platform. IDs and addresses, not secrets." },
+    quick,
+    card({ title: "Connection Values", class: "spaced", sub: "For the manual setup. The same for every platform. IDs and addresses, not secrets." },
       kv(copyRow("MCP server URL", d.mcp_url),
         copyRow("Tenant ID", d.tenant_id),
         copyRow("Authorization URL", d.authorization_url),
@@ -2630,7 +2651,7 @@ async function connectionsPage() {
         ", so keep the list short. Without it, Microsoft refuses the sign-in (AADSTS50105). In Cloud Shell, from the repository folder:"),
       cmdBlock("bash scripts/azure/people.sh add name@finishessolutions.com search"),
       para(h("span", { class: "muted small" }, "bash scripts/azure/people.sh list shows who has access; remove takes it away."))),
-    card({ title: "Set Up", class: "spaced", actions: tabs }, body),
+    card({ title: d.quick_connect ? "Manual Setup (Only If Quick Connect Fails)" : "Set Up", class: "spaced", actions: tabs }, body),
     card({ title: "If It Doesn't Work", class: "spaced" },
       kv(...[
         ["AADSTS50011", "The platform's callback URL isn't registered. Add it (see the setup step)."],

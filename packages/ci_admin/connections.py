@@ -48,4 +48,7 @@ def connection_settings(settings: Settings, tenant: str) -> dict[str, Any]:
         "resource": api_uri,
         "clients": clients,
         "missing": missing,
+        # The sign-in broker (scripts/azure/8-mcp-broker.sh): platforms then need only
+        # the MCP URL. Its client ID is set on this app too, so the page can tell.
+        "quick_connect": bool(settings.mcp_broker_client_id),
     }
