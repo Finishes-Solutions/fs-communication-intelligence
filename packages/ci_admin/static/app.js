@@ -44,6 +44,7 @@ const ICONS = {
   hidden: ["M9.88 9.88a3 3 0 1 0 4.24 4.24", "M10.73 5.08A10.4 10.4 0 0 1 12 5c7 0 10 7 10 7a13.2 13.2 0 0 1-1.67 2.68",
     "M6.61 6.61A13.5 13.5 0 0 0 2 12s3 7 10 7a9.7 9.7 0 0 0 5.39-1.61", "M2 2l20 20"],
   lab: ["M9 3h6", "M10 3v6.5L4.5 19a1.5 1.5 0 0 0 1.3 2h12.4a1.5 1.5 0 0 0 1.3-2L14 9.5V3", "M7 15h10"],
+  graph: [ring(6, 6, 2.5), ring(18, 6, 2.5), ring(12, 18, 2.5), "M8.5 6h7", "m7.12 8.24 3.76 7.52", "m16.88 8.24-3.76 7.52"],
   spark: ["M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z", "M19 3v4", "M21 5h-4"],
   search: [ring(11, 11, 8), "m21 21-4.3-4.3"],
   refresh: ["M21 12a9 9 0 1 1-3-6.7L21 8", "M21 3v5h-5"],
@@ -2513,12 +2514,12 @@ async function render() {
   const shell = document.getElementById("shell");
   const nav = document.getElementById("tabs");
   const who = document.getElementById("who");
-  document.getElementById("brand-mark").replaceChildren(icon("spark"));
+  document.getElementById("brand-mark").replaceChildren(icon("graph"));
   if (!token()) {
     shell.classList.add("signed-out");
     nav.hidden = true; who.replaceChildren();
     main().replaceChildren(h("div", { class: "signin" }, h("div", { class: "signin-card" },
-      h("div", { class: "brand-mark" }, icon("spark")),
+      h("div", { class: "brand-mark" }, icon("graph")),
       h("h1", {}, "Email Intelligence"),
       h("p", {}, isReader()
         ? "Sign in with your Finishes Solutions account to read this email. Only console admins can open it."
