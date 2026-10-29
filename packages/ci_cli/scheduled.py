@@ -25,11 +25,14 @@ from ci_core.settings import Settings
 from ci_email.capture import capture_window
 from ci_email.inventory import sync_inventory
 from ci_email.process import process_all, record_usage, store_missing_originals
+from ci_email.risk_ratings import rate_pending_risks
 
 log = logging.getLogger("ci.scheduled")
 # A processing run still 'running' this long after its time budget was stopped
 # without recording its end (restart, deploy, host time limit).
 STALE_RUN_GRACE_MINUTES = 60
+# Rating risk emails after processing (ci_email.risk_ratings): at most this long per run.
+RISK_RATING_SECONDS = 120.0
 
 
 def _connect(role: AppRole | None) -> Connection:
@@ -133,10 +136,9 @@ def run_processing(settings: Settings) -> dict[str, int] | None:
     status, error = "succeeded", None
     configured = None
     try:
+        modelled = backends.with_model(settings, schedule)
         configured = backends.with_switches(
-            backends.processing_backends(backends.with_model(settings, schedule)),
-            settings,
-            schedule,
+            backends.processing_backends(modelled), settings, schedule
         )
         counts = dict(
             process_all(
@@ -148,6 +150,13 @@ def run_processing(settings: Settings) -> dict[str, int] | None:
             )
         )
         counts.update(store_missing_originals(lambda: connect(role="ci_ingest"), configured))
+        counts.update(
+            rate_pending_risks(
+                lambda: connect(role="ci_ingest"),
+                backends.risk_rater(modelled, configured.meter),
+                max_seconds=RISK_RATING_SECONDS,
+            )
+        )
     except Exception as exc:
         counts, status, error = {}, "failed", type(exc).__name__[:60]
         log.exception("processing failed")

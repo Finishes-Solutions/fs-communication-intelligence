@@ -350,6 +350,10 @@ def test_threads_stats_risks_and_date_filters(app: Any, database_ready: str) -> 
         risks = call_tool(client, token(), "risk_overview", {"days": 365, "item_limit": 2})
         assert risks["total"] >= 1 and len(risks["items"]) <= 2
         assert risks["items"][0]["view_url"].startswith("https://admin.example/read/")
+        assert len(risks["matrix"]["cells"]) == 9  # unrated here: no rating step ran
+        assert risks["matrix"]["unrated"] == risks["total"]
+        unrated = call_tool(client, token(), "risk_overview", {"days": 365, "impact": "unrated"})
+        assert unrated["total"] == risks["total"]
 
         found = call_tool(client, token(), "find_knowledge", {"query": "northfield"})
         org = next(r for r in found["results"] if r["kind"] == "organization")

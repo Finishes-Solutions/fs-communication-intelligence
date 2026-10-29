@@ -26,7 +26,7 @@ function h(tag, attrs, ...children) {
     else if (k === "checked") el.checked = !!v;
     else el.setAttribute(k, v === true ? "" : String(v));
   }
-  for (const c of children.flat()) {
+  for (const c of children.flat(Infinity)) {
     if (c === null || c === undefined || c === false) continue;
     el.append(c instanceof Node ? c : document.createTextNode(String(c)));
   }
@@ -1107,13 +1107,149 @@ function periodLabel(iso) {
 
 // ---------- risk analysis ------------------------------------------------------
 
+// ---------- risk charts (inline SVG built with the DOM; no chart library) ------------
+
+const LEVELS = ["low", "medium", "high"];
+// Impact x likelihood (1-9) to a band. Counts are always printed, so color never stands alone.
+function riskBand(score) {
+  if (!score) return { name: "Unrated", tone: "r0" };
+  return score >= 9 ? { name: "Critical", tone: "r4" } : score >= 6 ? { name: "High", tone: "r3" }
+    : score >= 3 ? { name: "Medium", tone: "r2" } : { name: "Low", tone: "r1" };
+}
+const rank = level => LEVELS.indexOf(level) + 1;
+function ratingBadge(r) {
+  const x = r.risk_rating_ai;
+  if (!x) return badge("Not rated yet", "outline");
+  const band = riskBand(rank(x.impact) * rank(x.likelihood));
+  return h("span", { class: `badge risk-badge ${band.tone}`, title: x.reason || "" },
+    `${band.name} risk · ${nice(x.impact)} impact, ${nice(x.likelihood)} likelihood`);
+}
+
+function riskMatrix(m, picked, onPick) {
+  const cell = c => {
+    const band = riskBand(rank(c.impact) * rank(c.likelihood));
+    const on = picked.impact === c.impact && picked.likelihood === c.likelihood;
+    return h("button", {
+      type: "button", class: `rm-cell ${band.tone}${on ? " on" : ""}${c.risks ? "" : " zero"}`,
+      title: `${nice(c.impact)} impact, ${nice(c.likelihood)} likelihood: ${num(c.risks)} risk${c.risks === 1 ? "" : "s"} (${band.name})`,
+      "aria-pressed": on ? "true" : "false",
+      onclick: () => onPick(on ? {} : { impact: c.impact, likelihood: c.likelihood }),
+    }, h("span", { class: "rm-num" }, num(c.risks)), h("span", { class: "rm-band" }, band.name));
+  };
+  const rows = [...LEVELS].reverse();
+  return h("div", { class: "rm" },
+    h("div", { class: "rm-ylabel" }, "Impact →"),
+    h("div", { class: "rm-grid" },
+      rows.map(i => [h("div", { class: "rm-axis y" }, nice(i)),
+        ...LEVELS.map(l => cell(m.cells.find(c => c.impact === i && c.likelihood === l) || { impact: i, likelihood: l, risks: 0 }))]),
+      h("div", {}), ...LEVELS.map(l => h("div", { class: "rm-axis x" }, nice(l)))),
+    h("div", { class: "rm-xlabel" }, "Likelihood →"));
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+function svg(tag, attrs, ...children) {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) if (v !== null && v !== undefined) el.setAttribute(k, String(v));
+  for (const c of children.flat(Infinity)) if (c) el.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  return el;
+}
+// Fixed slot per category, so a filter never repaints a category (series-1..7 in app.css).
+const CAT_ORDER = ["cat_development_construction", "cat_payment_billing", "cat_leasing_operations",
+  "cat_compliance_legal", "cat_capital_finance", "cat_vendor_performance", "cat_general_governance"];
+const catSlot = label => (CAT_ORDER.indexOf(label) + 8) % 8 || 8;
+
+function categoryTrend(cs, onPick) {
+  const cats = cs.categories, periods = cs.periods;
+  if (!cats.length || !periods.length) return emptyState("No Categories", "No risk in this period has a category.", "chart");
+  const W = 720, H = 240, L = 34, R = 12, T = 12, B = 26;
+  const max = Math.max(1, ...cats.flatMap(c => c.counts));
+  const step = Math.max(1, Math.ceil(max / 4));
+  const top = step * Math.ceil(max / step);
+  const x = i => periods.length === 1 ? L + (W - L - R) / 2 : L + (i * (W - L - R)) / (periods.length - 1);
+  const y = v => T + (H - T - B) * (1 - v / top);
+  const grid = [];
+  for (let v = 0; v <= top; v += step) {
+    grid.push(svg("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), class: v ? "grid" : "base" }),
+      svg("text", { x: L - 6, y: y(v) + 4, class: "tick", "text-anchor": "end" }, num(v)));
+  }
+  const every = Math.ceil(periods.length / 8);
+  const ticks = periods.map((p, i) => i % every ? null :
+    svg("text", { x: x(i), y: H - 6, class: "tick", "text-anchor": "middle" }, periodLabel(p)));
+  const lines = cats.map(c => svg("polyline", {
+    class: `series s${catSlot(c.label)}`, fill: "none",
+    points: c.counts.map((v, i) => `${x(i)},${y(v)}`).join(" "),
+  }));
+  const dots = periods.length <= 20 ? cats.flatMap(c => c.counts.map((v, i) => v
+    ? svg("circle", { cx: x(i), cy: y(v), r: 4, class: `dot s${catSlot(c.label)}` }) : null)) : [];
+  // One hover column per period: a crosshair and every category's count.
+  const tip = h("div", { class: "chart-tip", hidden: true });
+  const cross = svg("line", { y1: T, y2: H - B, class: "cross", visibility: "hidden" });
+  const half = periods.length > 1 ? (W - L - R) / (periods.length - 1) / 2 : (W - L - R) / 2;
+  const hits = periods.map((p, i) => {
+    const r = svg("rect", { x: x(i) - half, y: T, width: half * 2, height: H - T - B, class: "hit" });
+    r.addEventListener("mouseenter", () => {
+      cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("visibility", "visible");
+      tip.replaceChildren(h("div", { class: "tip-head" }, `${periods.length > 14 ? "Week of " : ""}${periodLabel(p)}`),
+        ...cats.filter(c => c.counts[i]).sort((a, b) => b.counts[i] - a.counts[i]).map(c =>
+          h("div", { class: "tip-row" }, h("span", { class: `key s${catSlot(c.label)}` }), labelEl(c.label), h("b", {}, num(c.counts[i])))));
+      if (tip.childElementCount === 1) tip.append(h("div", { class: "muted small" }, "No categorized risks"));
+      tip.hidden = false;
+      tip.style.cssText = `left:${(x(i) / W) * 100}%`;
+    });
+    return r;
+  });
+  const chart = svg("svg", { viewBox: `0 0 ${W} ${H}`, class: "trend", role: "img",
+    "aria-label": "Project risks per period by category" }, grid, ticks, lines, dots, cross, hits);
+  const wrap = h("div", { class: "trend-wrap" }, chart, tip);
+  wrap.addEventListener("mouseleave", () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); });
+  const legend = h("div", { class: "trend-legend" }, cats.map(c => h("button", { type: "button", class: "linkish legend-item", onclick: () => onPick(c.label) },
+    h("span", { class: `key s${catSlot(c.label)}` }), labelEl(c.label), h("span", { class: "muted" }, num(c.counts.reduce((a, b) => a + b, 0))))));
+  return h("div", {}, wrap, legend);
+}
+
+function propertyHeatmap(hm, onPick) {
+  if (!hm.rows.length) return emptyState("No Property Names", "The AI found no property or project names in these risks.", "building");
+  const max = Math.max(1, ...hm.rows.flatMap(r => r.counts));
+  const showNums = hm.periods.length <= 16;
+  const every = Math.ceil(hm.periods.length / 10);
+  const level = n => n ? Math.min(6, 1 + Math.floor((n / max) * 5.999)) : 0;
+  return h("div", { class: "heat-wrap" }, h("div", { class: "heat", style: `grid-template-columns:minmax(120px,200px) repeat(${hm.periods.length},minmax(14px,1fr))` },
+    h("div", {}), hm.periods.map((p, i) => h("div", { class: "heat-col" }, i % every ? "" : periodLabel(p))),
+    hm.rows.map(r => [
+      h("button", { type: "button", class: "linkish heat-name", title: r.property, onclick: () => onPick(r.property) }, r.property),
+      r.counts.map((n, i) => h("div", { class: `heat-cell q${level(n)}`, title: `${r.property}, ${periodText(hm.periods, i)}: ${num(n)} risk${n === 1 ? "" : "s"}` },
+        showNums && n ? num(n) : "")),
+    ])),
+  h("div", { class: "heat-scale" }, h("span", { class: "muted small" }, "Fewer"),
+    [0, 1, 2, 3, 4, 5, 6].map(q => h("span", { class: `heat-cell q${q}` })), h("span", { class: "muted small" }, `More (max ${num(max)})`)));
+}
+function periodText(periods, i) { return (periods.length > 14 ? "week of " : "") + periodLabel(periods[i]); }
+
+function topProperties(rows, onPick) {
+  return table([
+    ["Property / Project", r => h("button", { class: "linkish", onclick: () => onPick(r.property) }, r.property)],
+    ["Risks", r => num(r.risks), "num"],
+    ["vs Before", r => {
+      const d = r.risks - r.previous;
+      return h("span", { class: d > 0 ? "delta up" : d < 0 ? "delta down" : "muted", title: `${num(r.previous)} in the period before` },
+        d > 0 ? `▲ ${num(d)}` : d < 0 ? `▼ ${num(-d)}` : "—");
+    }, "num"],
+    ["High Impact", r => num(r.high_impact), "num"],
+    ["Worst", r => { const b = riskBand(r.worst_score); return h("span", { class: `badge risk-badge ${b.tone}` }, b.name); }],
+    ["Last Risk", r => new Date(r.last_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }), "nowrap"],
+  ], rows, null, emptyState("No Property Names", "The AI found no property or project names in these risks.", "building"));
+}
+
 async function risksPage() {
   const p = pageParams();
   const days = p.get("days") || "30";
   const mailbox = p.get("mailbox") || "";
   const category = p.get("category") || "";
+  const property = p.get("property") || "";
+  const impact = p.get("impact") || "";
+  const likelihood = p.get("likelihood") || "";
   const go = changes => {
-    const q = new URLSearchParams({ days, mailbox, category, ...changes });
+    const q = new URLSearchParams({ days, mailbox, category, property, impact, likelihood, ...changes });
     for (const [k, v] of [...q]) if (!v) q.delete(k);
     navigate("/risks?" + q);
   };
@@ -1121,7 +1257,7 @@ async function risksPage() {
     h("button", { class: v === days ? "on" : "", onclick: () => go({ days: v }) }, t)));
   const mb = h("input", { placeholder: "All mailboxes", value: mailbox, style: "width:220px" });
   const [d, m] = await Promise.all([
-    api("/api/risks?" + new URLSearchParams({ days, mailbox, category })),
+    api("/api/risks?" + new URLSearchParams({ days, mailbox, category, property, impact, likelihood })),
     api("/api/calibration").catch(() => null),
   ]);
   const quality = m && m.labels.find(x => x.label === "project_risk");
@@ -1129,6 +1265,8 @@ async function risksPage() {
   const change = d.previous_total ? Math.round(((d.total - d.previous_total) / d.previous_total) * 100) : null;
   const unit = Number(days) <= 14 ? "day" : "week";
   const signals = d.co_signals || {};
+  const matrix = d.matrix || { rated: 0, unrated: 0, cells: [] };
+  const severe = matrix.cells.filter(c => rank(c.impact) * rank(c.likelihood) >= 6).reduce((a, c) => a + c.risks, 0);
   const detail = h("div", { class: "card reader" }, h("div", { class: "placeholder" },
     h("div", { class: "empty" }, h("div", { class: "i-wrap" }, icon("alert")), h("div", { class: "empty-title" }, "Select a Risk"),
       h("div", { class: "small" }, "The full message opens here."))));
@@ -1136,6 +1274,10 @@ async function risksPage() {
     columns: ["received_at", "mailbox", "sender", "sender_domain", "subject", "risk_ai", "labels", "action_ai", "due_ai", "web_link"] });
   const clickable = (rows, key, label) => rows.map(r => [h("button", { class: "linkish", onclick: () => go({ [key]: r[label] }) },
     key === "category" ? labelEl(r[label]) : r[label]), r.risks, "warn"]);
+  const chip = (text, clear) => h("span", { class: "badge warn" }, text,
+    h("button", { class: "chip-x", type: "button", "aria-label": "Clear filter", onclick: () => go(clear) }, icon("x")));
+  const cellName = impact || likelihood
+    ? `${impact ? nice(impact) + " impact" : "Any impact"}, ${likelihood ? nice(likelihood) + " likelihood" : "any likelihood"}` : "";
   const feed = d.items.length ? h("div", { class: "items" }, d.items.map(r => {
     const el = h("button", { class: "item", type: "button" },
       h("span", { class: "item-icon warn" }, icon("alert")),
@@ -1143,35 +1285,46 @@ async function risksPage() {
         h("div", { class: "item-title" }, r.subject || "(no subject)"),
         h("div", { class: "item-sub" }, `${r.sender || "?"} → ${r.mailbox}`),
         h("div", { class: "item-text" }, r.risk_ai || "No risk description."),
-        h("div", { class: "badges", style: "margin-top:8px" }, labelBadges(r.labels.filter(l => l.startsWith("cat_") || ["urgent", "approval_required"].includes(l))))),
+        r.risk_rating_ai && r.risk_rating_ai.reason ? h("div", { class: "item-text muted" }, "Rating: ", r.risk_rating_ai.reason) : null,
+        h("div", { class: "badges", style: "margin-top:8px" }, ratingBadge(r),
+          labelBadges(r.labels.filter(l => l.startsWith("cat_") || ["urgent", "approval_required"].includes(l))))),
       h("div", { class: "msg-time" }, short(r.received_at)));
     el.addEventListener("click", () => {
       main().querySelectorAll(".item.on").forEach(x => x.classList.remove("on"));
       el.classList.add("on"); showMessage(r.communication_id, detail);
     });
     return el;
-  })) : emptyState("No Project Risks", "Nothing labelled as a project risk in this period.", "shield");
+  })) : emptyState("No Project Risks", "Nothing labelled as a project risk matches these filters.", "shield");
 
   show(
     pageHead("Risk Analysis", "Emails the classifier marked as a risk to a project or property: schedule, cost, disputes, liens, inspections, safety, quality, financing or non-performance.",
       seg, ...exportButtons(exportBody)),
     card({}, h("form", { class: "toolbar", onsubmit: e => { e.preventDefault(); go({ mailbox: mb.value.trim() }); } },
       searchBox(mb), h("button", { class: "btn", type: "submit" }, "Filter"),
-      category ? h("span", { class: "badge warn" }, "Category: ", labelEl(category),
-        h("button", { class: "chip-x", "aria-label": "Clear category", onclick: () => go({ category: "" }) }, icon("x"))) : null,
+      category ? chip(h("span", {}, "Category: ", labelEl(category)), { category: "" }) : null,
+      property ? chip(`Property: ${property}`, { property: "" }) : null,
+      cellName ? chip(cellName, { impact: "", likelihood: "" }) : null,
       mailbox ? h("button", { class: "btn sm ghost", type: "button", onclick: () => go({ mailbox: "" }) }, "Clear Mailbox") : null)),
     h("div", { class: "grid" },
       stat("Project Risks", "alert", num(d.total), `Last ${days} days`),
       stat("Change", change === null ? "chart" : change >= 0 ? "up" : "down",
         change === null ? (d.total ? "New" : "—") : `${change > 0 ? "+" : ""}${change}%`, `${num(d.previous_total)} in the ${days} days before`),
+      stat("High or Critical", "shield", num(severe), matrix.unrated ? `${num(matrix.unrated)} not rated yet` : "AI rating, from the matrix"),
       stat("Also Urgent", "zap", num(signals.urgent || 0), "Due today or next business day"),
-      stat("Need Approval", "check", num(signals.approval_required || 0), `${num(signals.action_required || 0)} need another action`),
-      stat("Top Company", "users", d.by_company[0] ? d.by_company[0].domain : "—", d.by_company[0] ? `${num(d.by_company[0].risks)} risk${d.by_company[0].risks === 1 ? "" : "s"}` : "No risks")),
-    card({ title: unit === "day" ? "Risks per Day" : "Risks per Week", sub: "Counted once per message, even when several mailboxes hold a copy." },
-      columnChart(d.series.map(s => [periodLabel(s.period), s.risks]))),
+      stat("Need Approval", "check", num(signals.approval_required || 0), `${num(signals.action_required || 0)} need another action`)),
     h("div", { class: "cols" },
-      card({ title: "By Category", sub: "Click one to filter. A risk can be in several categories." },
-        bars(clickable(d.by_category, "category", "label"), emptyState("No Categories", null, "layers"))),
+      card({ title: "Risk Matrix", sub: "Impact × likelihood, rated by AI from each email. Click a cell to filter; click it again to clear." },
+        riskMatrix(matrix, { impact, likelihood }, sel => go({ impact: sel.impact || "", likelihood: sel.likelihood || "" })),
+        matrix.unrated ? note(`${num(matrix.unrated)} risk email${matrix.unrated === 1 ? " is" : "s are"} not rated yet. Ratings are added by each processing run.`, "warn") : null),
+      card({ title: unit === "day" ? "Risks per Day" : "Risks per Week", sub: "Counted once per message, even when several mailboxes hold a copy." },
+        columnChart(d.series.map(s => [periodLabel(s.period), s.risks])))),
+    card({ title: "Trend by Category", sub: `Risks per ${unit} in each category. A risk can be in several categories. Click a name to filter.` },
+      categoryTrend(d.category_series || { periods: [], categories: [] }, label => go({ category: label }))),
+    card({ title: "Property Heatmap", sub: `Risks per ${unit} for the 10 properties with the most. Darker means more. Click a name to filter.` },
+      propertyHeatmap(d.heatmap || { periods: [], rows: [] }, name => go({ property: name }))),
+    h("div", { class: "cols" },
+      card({ title: "Top Properties at Risk", sub: `Names as written in the email, or the registry's canonical name. "vs Before" compares with the ${days} days before.`, flush: true },
+        topProperties(d.top_properties || [], name => go({ property: name }))),
       card({ title: "By Company", sub: "Sender's email domain, top 10." },
         bars(d.by_company.map(r => [r.domain, r.risks, "warn"]), emptyState("No Senders", null, "users")))),
     h("div", { class: "cols" },
@@ -1184,11 +1337,9 @@ async function risksPage() {
           enough ? null : note(`Only ${num(quality.judged)} checked so far; these numbers settle after about ${m.min_sample}.`, "warn"))
           : h("div", {}, h("p", { class: "muted", style: "margin:0 0 12px" }, "Not measured yet. Until you review some emails, treat these counts as the classifier's guess."),
             h("a", { class: "btn sm", href: "/review?source=risks" }, icon("review"), "Review Project Risks")))),
-    card({ title: "By Property / Project", sub: "Names as written in the email, or the registry's canonical name. Top 15." },
-      bars(d.by_property.map(r => [r.property, r.risks, "warn"]), emptyState("No Property Names", "The AI found no property or project names in these risks.", "building"))),
     h("div", { class: "inbox", style: "margin-top:20px" },
       card({ title: "Risk Feed", actions: badge(num(d.items.length), "warn"), flush: true }, feed), detail),
-    note("Built from the yes/no Project Risk label and the AI's one-line description. There is no project name, risk type or severity yet, so nothing is grouped by those. AI proposals, not decisions."));
+    note("Built from the Project Risk label, the AI's one-line description and its impact and likelihood rating. The ratings are the AI's reading of each email on its own: uncalibrated proposals, not assessments. The CSV export ignores the property and matrix filters."));
 }
 
 // ---------- reports --------------------------------------------------------------

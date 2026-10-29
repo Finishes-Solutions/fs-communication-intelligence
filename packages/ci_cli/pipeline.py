@@ -30,6 +30,7 @@ from ci_email.process import (
     requeue_unscreened,
     retry_failed,
 )
+from ci_email.risk_ratings import rate_pending_risks
 from ci_processing.chunking import CHUNKER_VERSION
 from ci_processing.classification import POLICY_VERSION
 from ci_retrieval import knowledge as kb
@@ -212,15 +213,22 @@ def process(args: argparse.Namespace) -> None:
         return
     with connect(role="ci_ingest") as conn:
         schedule = ops.read_schedule(conn)
-    configured = backends.with_switches(
-        backends.processing_backends(backends.with_model(settings, schedule)), settings, schedule
-    )
+    modelled = backends.with_model(settings, schedule)
+    configured = backends.with_switches(backends.processing_backends(modelled), settings, schedule)
     try:
         counts = process_all(
             lambda: connect(role="ci_ingest"),
             configured,
             limit=args.limit,
             workers=args.workers,
+        )
+        # Impact and likelihood of project-risk emails, for the Risk page's matrix.
+        counts.update(
+            rate_pending_risks(
+                lambda: connect(role="ci_ingest"),
+                backends.risk_rater(modelled, configured.meter),
+                workers=args.workers,
+            )
         )
     finally:
         if configured.meter is not None:

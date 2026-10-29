@@ -49,13 +49,31 @@ REVIEW_MODES = ("random", "uncertain", "label")
 MAX_ROWS = 5000
 CATEGORY_PREFIX = "cat_"
 CO_SIGNALS = ("urgent", "approval_required", "action_required", "invoice_receipt")
+RATING_LEVELS = ("low", "medium", "high")
+UNRATED = "unrated"
+_RANK = "CASE {c} WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 END"
+# Impact x likelihood, 1-9; NULL when unrated.
+_SCORE = f"({_RANK.format(c='m.risk_impact')} * {_RANK.format(c='m.risk_likelihood')})"
 
 _RISK_WHERE = "AND cl.yes_labels && %(risk_labels)s::text[]"
 
 
-def _messages(extra_where: str, keep_copies: bool = False) -> str:
-    """Authorized, filtered messages; one row per message unless ``keep_copies``."""
+def _messages(extra_where: str, keep_copies: bool = False, ratings: bool = False) -> str:
+    """Authorized, filtered messages; one row per message unless ``keep_copies``.
+
+    ``ratings``: join the AI risk ratings (migration 0017); without it the rating
+    columns are NULL."""
     copy = ", pc.id" if keep_copies else ""
+    if ratings:
+        rated = (
+            "rr.impact AS risk_impact, rr.likelihood AS risk_likelihood, rr.reason AS risk_reason"
+        )
+        rating_join = "LEFT JOIN published_risk_ratings rr ON rr.communication_id = pc.id"
+    else:
+        rated = (
+            "NULL::text AS risk_impact, NULL::text AS risk_likelihood, NULL::text AS risk_reason"
+        )
+        rating_join = ""
     return f"""
         SELECT DISTINCT ON (coalesce(e.internet_message_id, pc.id::text),
                             coalesce(e.content_fingerprint, ''){copy})
@@ -71,10 +89,12 @@ def _messages(extra_where: str, keep_copies: bool = False) -> str:
                coalesce(cl.entities, '{{}}') AS entities,
                (SELECT count(*) FROM published_email_attachments a
                  WHERE a.communication_id = pc.id
-                   AND a.extraction_status <> 'skipped') AS attachments
+                   AND a.extraction_status <> 'skipped') AS attachments,
+               {rated}
         FROM {_PUBLISHED} pc
         JOIN published_email_messages e ON e.communication_id = pc.id
         LEFT JOIN published_classifications cl ON cl.communication_id = pc.id
+        {rating_join}
         WHERE {_scope("pc")} {extra_where}
         ORDER BY coalesce(e.internet_message_id, pc.id::text),
                  coalesce(e.content_fingerprint, ''){copy}, pc.occurred_at DESC, pc.id
@@ -103,8 +123,16 @@ def _dataset_where(
     return "", extra
 
 
+def _has_ratings(conn: Connection) -> bool:
+    """True once migration 0017 (AI risk ratings) is applied."""
+    row = conn.execute(
+        "SELECT to_regclass('ci.published_risk_ratings') IS NOT NULL AS ok"
+    ).fetchone()
+    return bool(row and row["ok"])
+
+
 def _row(r: dict[str, Any]) -> dict[str, Any]:
-    return {
+    row = {
         "communication_id": r["communication_id"],
         "received_at": r["occurred_at"].isoformat(),
         "mailbox": r["mailbox_address"],
@@ -124,6 +152,13 @@ def _row(r: dict[str, Any]) -> dict[str, Any]:
         "attachments": int(r["attachments"]),
         "web_link": r["source_url"],
     }
+    if r.get("risk_impact"):
+        row["risk_rating_ai"] = {
+            "impact": r["risk_impact"],
+            "likelihood": r["risk_likelihood"],
+            "reason": r["risk_reason"],
+        }
+    return row
 
 
 def report_rows(
@@ -237,6 +272,15 @@ def report_groups(
     return {"dataset": dataset, "group_by": group_by, "groups": groups}
 
 
+def _level(value: str | None, name: str) -> str | None:
+    if value is None or not value.strip():
+        return None
+    value = value.strip().lower()
+    if value not in (*RATING_LEVELS, UNRATED):
+        raise ValueError(f"{name} must be low, medium, high or unrated")
+    return value
+
+
 def risk_overview(
     conn: Connection,
     principal: Principal,
@@ -244,21 +288,28 @@ def risk_overview(
     days: int = 30,
     mailbox: str | None = None,
     category: str | None = None,
+    property: str | None = None,
+    impact: str | None = None,
+    likelihood: str | None = None,
     tz: str = "America/Chicago",
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Project-risk emails in a window, with counts by period, category, property,
-    company and mailbox.
+    company and mailbox, and the impact x likelihood matrix.
 
-    Built from stored labels, the AI's one-line risk text and the property names
-    it extracted (as written in the email, or the registry's canonical name).
-    There is no risk type or severity, so nothing here groups by those.
+    Built from stored labels, the AI's one-line risk text, the property names it
+    extracted (as written in the email, or the registry's canonical name) and the
+    AI's impact and likelihood rating of each risk email (migration 0017). The
+    ratings are uncalibrated AI proposals; emails not rated yet count as unrated.
+    ``impact``/``likelihood`` (low, medium, high or unrated) narrow everything
+    except the matrix, which always shows every cell of the other filters.
     """
     days = max(1, min(days, 366))
+    impact, likelihood = _level(impact, "impact"), _level(likelihood, "likelihood")
     end = now or datetime.now(UTC)
     start, prev_start = end - timedelta(days=days), end - timedelta(days=2 * days)
     auth = authorize(conn, principal)
-    current = Filters(mailbox=mailbox, since=start, until=end, label=category)
+    current = Filters(mailbox=mailbox, since=start, until=end, label=category, property=property)
     out: dict[str, Any] = {
         "days": days,
         "since": start.isoformat(),
@@ -270,55 +321,90 @@ def risk_overview(
         "by_mailbox": [],
         "by_property": [],
         "co_signals": {},
+        "matrix": {"rated": 0, "unrated": 0, "cells": []},
+        "category_series": {"periods": [], "categories": []},
+        "heatmap": {"periods": [], "rows": []},
+        "top_properties": [],
         "items": [],
     }
     if not auth.empty:
-        base = _params(auth, current) | {
-            "risk_labels": list(RISK_LABELS),
-            "tz": tz,
-            "signals": list(CO_SIGNALS),
-            "cat": CATEGORY_PREFIX + "%",
-            "unit": "day" if days <= 14 else "week",
-        }
-        risky = f"({_messages(_RISK_WHERE)}) m"
+        ratings = _has_ratings(conn)
+        rating = {"impact": impact, "likelihood": likelihood}
+        base = (
+            _params(auth, current)
+            | rating
+            | {
+                "risk_labels": list(RISK_LABELS),
+                "tz": tz,
+                "signals": list(CO_SIGNALS),
+                "cat": CATEGORY_PREFIX + "%",
+                "unit": "day" if days <= 14 else "week",
+            }
+        )
+        every = f"({_messages(_RISK_WHERE, ratings=ratings)}) m"
+        risky = f"""(SELECT * FROM {every}
+            WHERE (%(impact)s::text IS NULL OR coalesce(m.risk_impact, 'unrated') = %(impact)s)
+              AND (%(likelihood)s::text IS NULL
+                   OR coalesce(m.risk_likelihood, 'unrated') = %(likelihood)s)) m"""  # noqa: S608
         out["total"] = required(
             conn.execute(f"SELECT count(*) AS n FROM {risky}", base).fetchone()  # noqa: S608
         )["n"]
-        previous = _params(
-            auth, Filters(mailbox=mailbox, since=prev_start, until=start, label=category)
+        previous = (
+            _params(
+                auth,
+                Filters(
+                    mailbox=mailbox,
+                    since=prev_start,
+                    until=start,
+                    label=category,
+                    property=property,
+                ),
+            )
+            | rating
+            | {"risk_labels": list(RISK_LABELS)}
         )
         out["previous_total"] = required(
-            conn.execute(
-                f"SELECT count(*) AS n FROM {risky}",  # noqa: S608
-                previous | {"risk_labels": list(RISK_LABELS)},
-            ).fetchone()
+            conn.execute(f"SELECT count(*) AS n FROM {risky}", previous).fetchone()  # noqa: S608
         )["n"]
-        out["series"] = [
-            {"period": r["period"], "risks": int(r["n"])}
+        periods = [
+            r["period"]
             for r in conn.execute(
-                # Every period in the window, including the ones with no risks.
-                f"""
-                WITH counts AS (
-                    SELECT date_trunc(%(unit)s, m.occurred_at AT TIME ZONE %(tz)s) AS p,
-                           count(*) AS n
-                    FROM {risky} GROUP BY 1)
-                SELECT g::date::text AS period, coalesce(c.n, 0) AS n
-                FROM generate_series(date_trunc(%(unit)s, %(since)s AT TIME ZONE %(tz)s),
-                                     date_trunc(%(unit)s, %(until)s AT TIME ZONE %(tz)s),
-                                     ('1 ' || %(unit)s)::interval) g
-                LEFT JOIN counts c ON c.p = g
-                ORDER BY 1
-                """,  # noqa: S608 - fragments are constants; values are bound parameters
+                "SELECT g::date::text AS period FROM generate_series("
+                " date_trunc(%(unit)s, %(since)s AT TIME ZONE %(tz)s),"
+                " date_trunc(%(unit)s, %(until)s AT TIME ZONE %(tz)s),"
+                " ('1 ' || %(unit)s)::interval) g ORDER BY 1",
                 base,
             ).fetchall()
         ]
-        out["by_category"] = [
-            {"label": r["label"], "risks": int(r["n"])}
+        period_of = "date_trunc(%(unit)s, m.occurred_at AT TIME ZONE %(tz)s)::date::text"
+
+        def per_period(key: str, join: str = "", where: str = "") -> dict[str, dict[str, int]]:
+            """Counts per (key, period) over the filtered risk emails."""
+            grid: dict[str, dict[str, int]] = {}
             for r in conn.execute(
-                f"SELECT l AS label, count(*) AS n FROM {risky}, unnest(m.yes_labels) l"  # noqa: S608
-                " WHERE l LIKE %(cat)s GROUP BY 1 ORDER BY 2 DESC, 1",
+                f"SELECT {key} AS key, {period_of} AS period, count(*) AS n"  # noqa: S608
+                f" FROM {risky}{join} {where} GROUP BY 1, 2",
                 base,
-            ).fetchall()
+            ).fetchall():
+                grid.setdefault(r["key"], {})[r["period"]] = int(r["n"])
+            return grid
+
+        totals = per_period("''")
+        out["series"] = [{"period": p, "risks": totals.get("", {}).get(p, 0)} for p in periods]
+        by_cat = per_period("l", ", unnest(m.yes_labels) l", "WHERE l LIKE %(cat)s")
+        out["category_series"] = {
+            "periods": periods,
+            "categories": sorted(
+                (
+                    {"label": label, "counts": [counts.get(p, 0) for p in periods]}
+                    for label, counts in by_cat.items()
+                ),
+                key=lambda c: (-sum(c["counts"]), c["label"]),
+            ),
+        }
+        out["by_category"] = [
+            {"label": c["label"], "risks": sum(c["counts"])}
+            for c in out["category_series"]["categories"]
         ]
         out["by_company"] = [
             {"domain": r["domain"], "risks": int(r["n"])}
@@ -328,14 +414,48 @@ def risk_overview(
                 base,
             ).fetchall()
         ]
-        out["by_property"] = [
-            {"property": r["property"], "risks": int(r["n"])}
+        top = conn.execute(
+            f"""
+            SELECT p AS property, count(*) AS n,
+                   count(*) FILTER (WHERE m.risk_impact = 'high') AS high_impact,
+                   max({_SCORE}) AS worst, max(m.occurred_at) AS last_at
+            FROM {risky}, unnest(m.properties) p
+            GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 15
+            """,  # noqa: S608 - fragments are constants; values are bound parameters
+            base,
+        ).fetchall()
+        out["by_property"] = [{"property": r["property"], "risks": int(r["n"])} for r in top]
+        before = {
+            r["property"]: int(r["n"])
             for r in conn.execute(
                 f"SELECT p AS property, count(*) AS n FROM {risky}, unnest(m.properties) p"  # noqa: S608
-                " GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 15",
-                base,
+                " WHERE p = ANY(%(names)s::text[]) GROUP BY 1",
+                previous | {"names": [r["property"] for r in top]},
             ).fetchall()
+        }
+        out["top_properties"] = [
+            {
+                "property": r["property"],
+                "risks": int(r["n"]),
+                "previous": before.get(r["property"], 0),
+                "high_impact": int(r["high_impact"]),
+                "worst_score": int(r["worst"]) if r["worst"] is not None else None,
+                "last_at": r["last_at"].isoformat(),
+            }
+            for r in top[:10]
         ]
+        base["names"] = [r["property"] for r in top[:10]]
+        heat = per_period("p", ", unnest(m.properties) p", "WHERE p = ANY(%(names)s::text[])")
+        out["heatmap"] = {
+            "periods": periods,
+            "rows": [
+                {
+                    "property": r["property"],
+                    "counts": [heat.get(r["property"], {}).get(p, 0) for p in periods],
+                }
+                for r in top[:10]
+            ],
+        }
         out["by_mailbox"] = [
             {"mailbox": r["mailbox_address"], "risks": int(r["n"])}
             for r in conn.execute(
@@ -351,6 +471,26 @@ def risk_overview(
                 " WHERE l = ANY(%(signals)s::text[]) GROUP BY 1",
                 base,
             ).fetchall()
+        }
+        # The matrix ignores the impact/likelihood filter so every cell stays visible.
+        cells = {
+            (r["impact"], r["likelihood"]): int(r["n"])
+            for r in conn.execute(
+                f"SELECT coalesce(m.risk_impact, 'unrated') AS impact,"  # noqa: S608
+                f" coalesce(m.risk_likelihood, 'unrated') AS likelihood, count(*) AS n"
+                f" FROM {every} GROUP BY 1, 2",
+                base,
+            ).fetchall()
+        }
+        unrated = sum(n for (i, _), n in cells.items() if i == UNRATED)
+        out["matrix"] = {
+            "rated": sum(cells.values()) - unrated,
+            "unrated": unrated,
+            "cells": [
+                {"impact": i, "likelihood": li, "risks": cells.get((i, li), 0)}
+                for i in reversed(RATING_LEVELS)
+                for li in RATING_LEVELS
+            ],
         }
         items = conn.execute(
             f"SELECT m.* FROM {risky} ORDER BY m.occurred_at DESC LIMIT 200",  # noqa: S608

@@ -305,18 +305,35 @@ def build_server(
         " emails versus the previous period, a trend by day or week, the top categories,"
         " properties, companies (sender domains) and mailboxes, which other signals came"
         " with them (urgent, approval needed, invoice), and the newest risk emails with the"
-        " AI's one-line risk. category narrows to one cat_ label, e.g."
-        " cat_development_construction." + _LINKS + _TRUST
+        " AI's one-line risk. Also an impact x likelihood matrix (3x3 counts plus unrated),"
+        " a trend per category, a property x period heatmap and the top properties with the"
+        " previous period's count. Impact and likelihood (risk_rating_ai on each item) are"
+        " AI ratings from the email text alone, uncalibrated: present them as the AI's"
+        " assessment, never as fact. category narrows to one cat_ label, e.g."
+        " cat_development_construction; property is a partial name match; impact and"
+        " likelihood take low, medium, high or unrated (the matrix ignores those two)."
+        + _LINKS
+        + _TRUST
     )
     def risk_overview(
         days: int = 30,
         mailbox: str | None = None,
         category: str | None = None,
+        property: str | None = None,
+        impact: str | None = None,
+        likelihood: str | None = None,
         item_limit: int = 25,
     ) -> dict[str, Any]:
         with connector() as conn:
             found = reports.risk_overview(
-                conn, principal_of(), days=days, mailbox=mailbox, category=category
+                conn,
+                principal_of(),
+                days=days,
+                mailbox=mailbox,
+                category=category,
+                property=property,
+                impact=impact,
+                likelihood=likelihood,
             )
         items = found["items"]
         top = max(0, min(item_limit, 200))

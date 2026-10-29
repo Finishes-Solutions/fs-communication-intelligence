@@ -42,7 +42,9 @@ def test_first_run_inventories_then_refuses_until_mailboxes_are_approved(
     captured = run_capture(load_settings())
     assert captured is not None and captured["new_version"] == 20
     processed = run_processing(load_settings())
-    assert processed is not None and sum(processed.values()) == 20
+    assert processed is not None
+    rated = processed.pop("risks_rated", 0)  # the risk-matrix rating step, after processing
+    assert sum(processed.values()) == 20 and rated > 0
     again = run_capture(load_settings())
     assert again is not None and again.get("new_version", 0) == 0
 
