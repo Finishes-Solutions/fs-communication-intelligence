@@ -25,6 +25,7 @@ import json
 import logging
 import re
 import secrets
+import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -163,6 +164,38 @@ class SecurityHeaders:
             await send(message)
 
         await self.app(scope, receive, with_headers)
+
+
+class RequestTiming:
+    """One log line per API call: method, path, status and milliseconds, so slow
+    pages can be found in Application Insights. Never the query string (it can
+    hold search text), headers or bodies."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or not str(scope.get("path", "")).startswith("/api/"):
+            await self.app(scope, receive, send)
+            return
+        status: list[int] = []
+        started = time.monotonic()
+
+        async def sending(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                status.append(int(message["status"]))
+            await send(message)
+
+        try:
+            await self.app(scope, receive, sending)
+        finally:
+            log.info(
+                "admin request %s %s -> %s in %d ms",
+                scope.get("method"),
+                scope.get("path"),
+                status[0] if status else "error",
+                (time.monotonic() - started) * 1000,
+            )
 
 
 def _role_connect(role: str) -> Connection:
@@ -1043,4 +1076,6 @@ def build_admin_app(
         Route("/read/{id}", page),  # the read-only email page MCP results link to
         Mount("/", StaticFiles(directory=STATIC, html=True)),
     ]
-    return Starlette(routes=routes, middleware=[Middleware(SecurityHeaders)])
+    return Starlette(
+        routes=routes, middleware=[Middleware(RequestTiming), Middleware(SecurityHeaders)]
+    )
