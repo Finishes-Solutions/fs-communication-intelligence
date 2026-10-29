@@ -622,3 +622,11 @@ td.nowrap { white-space: nowrap; }
   .rm-num { font-size: 20px; }
   .rm-band { font-size: 10px; letter-spacing: 0; }
 }
+
+/* ---------- knowledge corrections ---------- */
+.pick-list { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; margin: 4px 0 12px; }
+.pick { font: inherit; text-align: left; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
+.pick:hover, .pick:focus-visible { border-color: var(--line-strong); background: var(--hover); }
+.pick-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.kind-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin: 4px 0 12px; }

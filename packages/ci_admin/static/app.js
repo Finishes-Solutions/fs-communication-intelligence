@@ -1933,7 +1933,7 @@ async function knowledgePage() {
     card({}, h("form", { class: "toolbar", onsubmit: e => { e.preventDefault(); go(); } },
       searchBox(q), kind, h("button", { class: "btn primary", type: "submit" }, "Search"))),
     h("div", { class: "inbox" }, list, detail),
-    note("Built automatically, without approval. A fact one sender stated once is marked in yellow: check its email before relying on it. Merge, rename or hide entries that are wrong; every change is audited and can be undone.", "warn"));
+    note("Built automatically, without approval. A fact one sender stated once is marked in yellow: check its email before relying on it. Fix the kind of, merge, rename or hide entries that are wrong; every change is audited and can be undone.", "warn"));
   const d = await api("/api/knowledge?" + new URLSearchParams(Object.fromEntries(
     [["q", p.get("q") || ""], ["kind", p.get("kind") || ""]].filter(([, v]) => v))));
   const open = id => showEntry(id, detail);
@@ -1955,8 +1955,68 @@ async function knowledgePage() {
     (d.hidden || []).length ? h("div", { class: "card-body" }, h("div", { class: "section-title" }, "Hidden Entries"),
       table([["Entry", x => `#${x.id} ${x.name}`], ["Kind", x => KIND_TEXT[x.kind] || x.kind],
         ["", x => h("button", { class: "btn sm", onclick: guard(async () => { await post(`/api/knowledge/${x.id}/unhide`); toast("Shown again"); route(); }) }, "Unhide")]],
-      d.hidden)) : null);
+      d.hidden)) : "");
   if (p.get("id")) open(p.get("id"));
+}
+
+// A dialog that searches knowledge entries by name and resolves with the picked
+// entry, the extra choice's value, or null when cancelled.
+function pickEntry({ title, text, query, kind, kinds, exclude, extra }) {
+  return new Promise(resolve => {
+    const dlg = h("dialog", {});
+    const done = v => { dlg.close(); dlg.remove(); resolve(v); };
+    const box = h("input", { class: "wide", value: query || "", placeholder: "Name, spelling or email address" });
+    const results = h("div", { class: "pick-list" });
+    let seq = 0;
+    const search = async () => {
+      const mine = ++seq;
+      results.replaceChildren(h("div", { class: "muted small" }, "Searching…"));
+      try {
+        const d = await api("/api/knowledge?" + new URLSearchParams(Object.fromEntries(
+          [["q", box.value.trim()], ["kind", kind || ""]].filter(([, v]) => v))));
+        if (mine !== seq) return;
+        const rows = d.results.filter(r => r.entity_id !== exclude && (!kinds || kinds.includes(r.kind)));
+        results.replaceChildren(...(rows.length ? rows.slice(0, 12).map(r => h("button", { type: "button", class: "pick", onclick: () => done(r) },
+          h("div", { class: "pick-top" }, h("b", {}, r.name), kindBadge(r.kind)),
+          h("div", { class: "muted small" }, [`#${r.entity_id}`, `${num(r.messages)} msgs`, entrySub(r)].filter(Boolean).join(" · "))))
+          : [h("div", { class: "muted small" }, "No matches. Try another spelling or part of the name.")]));
+      } catch (e) {
+        if (mine === seq) results.replaceChildren(h("div", { class: "status-failed small" }, e.message));
+      }
+    };
+    let timer = null;
+    box.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(search, 250); });
+    dlg.append(h("form", { class: "dlg", onsubmit: e => { e.preventDefault(); search(); } },
+      h("h2", {}, title), text ? h("p", {}, text) : null,
+      field("Search", box), results,
+      h("div", { class: "actions" },
+        extra ? h("button", { type: "button", class: "btn", onclick: () => done(extra.value) }, extra.label) : null,
+        h("button", { type: "button", class: "btn", onclick: () => done(null) }, "Cancel"))));
+    dlg.addEventListener("cancel", e => { e.preventDefault(); done(null); });
+    document.body.append(dlg);
+    dlg.showModal();
+    box.focus();
+    search();
+  });
+}
+
+// Fix the kind the AI gave an entry: merge it into the right person, or count it as a
+// property, organization or term (an entry of that kind is created when none exists).
+function chooseKind(e) {
+  return new Promise(resolve => {
+    const dlg = h("dialog", {});
+    const done = v => { dlg.close(); dlg.remove(); resolve(v); };
+    const options = Object.keys(KIND_TEXT).filter(k => k !== e.kind);
+    dlg.append(h("form", { class: "dlg", onsubmit: ev => ev.preventDefault() },
+      h("h2", {}, `What Is “${e.name}”?`),
+      h("p", {}, `The AI filed it as ${(KIND_TEXT[e.kind] || e.kind).toLowerCase()}. Pick what it really is. Its emails and facts move with it, later emails that repeat the mistake follow the fix, and Unmerge undoes it.`),
+      h("div", { class: "kind-choices" }, options.map(k => h("button", { type: "button", class: "btn", onclick: () => done(k) },
+        icon(KIND_ICON[k] || "layers"), KIND_TEXT[k]))),
+      h("div", { class: "actions" }, h("button", { type: "button", class: "btn", onclick: () => done(null) }, "Cancel"))));
+    dlg.addEventListener("cancel", ev => { ev.preventDefault(); done(null); });
+    document.body.append(dlg);
+    dlg.showModal();
+  });
 }
 
 async function showEntry(id, holder) {
@@ -1979,11 +2039,32 @@ function entryView(d, holder) {
     if (name === null) return;
     await post(`/api/knowledge/${id}/rename`, { name }); toast("Renamed"); showEntry(id, holder);
   });
+  const mergeInto = async (target, done) => {
+    await post(`/api/knowledge/${id}/merge`, { into: target.entity_id });
+    toast(done || `Merged into ${target.name}`);
+    navigate(`/knowledge?id=${target.entity_id}`);
+  };
   const merge = guard(async () => {
-    const into = await ask({ title: "Merge Into Another Entry", text: `“${e.name}” will count as the other entry from now on (same kind only). Find its number (#) in the list. Undo with Unmerge.`,
-      input: { label: "Entry number", placeholder: "e.g. 42" } });
-    if (into === null) return;
-    await post(`/api/knowledge/${id}/merge`, { into: Number(into.replace("#", "")) }); toast("Merged"); route();
+    const target = await pickEntry({ title: "Merge Into Another Entry",
+      text: e.kind === "person"
+        ? `“${e.name}” will count as the person you pick from now on. Undo with Unmerge.`
+        : `“${e.name}” will count as the entry you pick from now on, and shows as that entry's kind. Undo with Unmerge.`,
+      query: e.name, exclude: id, kinds: e.kind === "person" ? ["person"] : null });
+    if (target) await mergeInto(target);
+  });
+  const reclassify = guard(async () => {
+    const kind = await chooseKind(e);
+    if (!kind) return;
+    if (kind === "person") {
+      const target = await pickEntry({ title: `Which Person Is “${e.name}”?`,
+        text: "Pick the person to merge it into. People are known by email address; if they have none yet, make a person by name only.",
+        query: e.name, kind: "person", exclude: id, extra: { label: "Person Without Email", value: "by_name" } });
+      if (!target) return;
+      if (target !== "by_name") return mergeInto(target, `Now counted as ${target.name}`);
+    }
+    const r = await post(`/api/knowledge/${id}/reclassify`, { kind });
+    toast(`Now a ${(KIND_TEXT[kind] || kind).toLowerCase()}`);
+    navigate(`/knowledge?id=${r.now_counts_as}`);
   });
   const hide = guard(async () => {
     if (!await ask({ title: "Hide Entry", text: `“${e.name}” and every fact that names it disappear for every reader, including AI agents. Unhide it from the list later.`, confirm: "Hide", danger: true })) return;
@@ -1998,6 +2079,7 @@ function entryView(d, holder) {
         kindBadge(e.kind), h("span", { class: "muted small" }, `#${id} · ${num(e.messages)} messages · ${short(e.first_seen)} to ${short(e.last_seen)}`),
         h("div", { class: "actions" },
           h("button", { class: "btn sm", onclick: rename }, "Rename"),
+          e.kind !== "person" ? h("button", { class: "btn sm", onclick: reclassify }, "Fix Kind…") : null,
           h("button", { class: "btn sm", onclick: merge }, "Merge Into…"),
           h("button", { class: "btn sm", onclick: hide }, icon("hidden"), "Hide")))),
     h("div", { class: "reader-section" }, h("dl", { class: "kv" }, [
@@ -2093,7 +2175,7 @@ async function render() {
   const name = store.get("who") || "Signed in";
   who.replaceChildren(
     CFG && CFG.environment ? h("div", { class: "env" }, h("span", { class: "dot " + (CFG.environment === "production" ? "good" : "info") }),
-      `${nice(CFG.environment)} environment`) : null,
+      `${nice(CFG.environment)} environment`) : "",
     labelModeSwitch(),
     h("div", { class: "who" }, h("span", { class: "avatar" }, initials(name)),
       h("div", { class: "who-text", style: "min-width:0" }, h("div", { class: "who-name" }, name), h("div", { class: "who-role" }, "Console admin")),

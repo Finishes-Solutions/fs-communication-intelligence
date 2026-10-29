@@ -885,6 +885,17 @@ def test_knowledge_page_profiles_and_corrections(client: TestClient, database_re
     assert client.post(f"{url}/unmerge", headers=auth()).status_code == 400  # not merged
     assert client.post(f"{url}/explode", headers=auth()).status_code == 404
     assert client.get("/api/knowledge/abc", headers=auth()).status_code == 404
+    # Fix Kind: the organization becomes a term, then goes back with Unmerge.
+    bad = client.post(f"{url}/reclassify", headers=auth(), json={"kind": "planet"})
+    assert bad.status_code == 400
+    fixed = client.post(f"{url}/reclassify", headers=auth(), json={"kind": "term"}).json()
+    assert fixed["merged_into"] == fixed["now_counts_as"] != firm["entity_id"]
+    as_term = client.get("/api/knowledge?q=northfield&kind=term", headers=auth()).json()
+    assert [r["entity_id"] for r in as_term["results"]] == [fixed["now_counts_as"]]
+    assert latest_audit(database_ready, "knowledge_reclassify") is not None
+    assert client.post(f"{url}/unmerge", headers=auth()).status_code == 200
+    back = client.get("/api/knowledge?q=northfield&kind=organization", headers=auth()).json()
+    assert [r["entity_id"] for r in back["results"]] == [firm["entity_id"]]
 
 
 def test_lab_shows_what_an_email_would_teach(client: TestClient) -> None:
