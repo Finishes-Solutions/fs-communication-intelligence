@@ -1,5 +1,9 @@
 // Admin console. Plain JavaScript, no build step and no third-party code.
 // Sign-in: Entra authorization code + PKCE (public SPA client, no secret).
+// The access token is kept in localStorage until it expires, so a link opened
+// in a new tab (view_url/download_url from an AI client) reuses it; without
+// one, the page first asks Entra silently (prompt=none), which succeeds when
+// the browser is already signed in to Microsoft, and shows the button only if not.
 // Every value from the API is rendered with textContent, never as HTML: email
 // subjects, bodies and AI text are untrusted.
 "use strict";
@@ -9,6 +13,12 @@ const store = {
   get(k) { try { return sessionStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { sessionStorage.setItem(k, v); } catch { /* private mode */ } },
   del(k) { try { sessionStorage.removeItem(k); } catch { /* private mode */ } },
+};
+// Shared by every tab of this site: the token, its expiry and the signed-in name.
+const keep = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode */ } },
+  del(k) { try { localStorage.removeItem(k); } catch { /* private mode */ } },
 };
 let CFG = null;
 let LABELS = [];
@@ -267,26 +277,39 @@ function randomString() { return b64url(crypto.getRandomValues(new Uint8Array(48
 function authority() { return `https://login.microsoftonline.com/${CFG.tenant_id}/oauth2/v2.0`; }
 function redirectUri() { return location.origin + "/"; }
 
-async function signIn() {
+// silent: no Microsoft page at all (prompt=none); Entra answers with an error
+// instead when the browser has no Microsoft session, and the button is shown.
+// Not after Sign Out, and not twice in a tab once it has failed.
+const canSignInSilently = () => !keep.get("signed_out") && !store.get("silent_failed");
+async function signIn(silent = false) {
+  if (!silent) { keep.del("signed_out"); store.del("silent_failed"); }
   const verifier = randomString();
   const state = randomString();
   const challenge = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
   store.set("pkce_verifier", verifier);
   store.set("pkce_state", state);
   store.set("return_path", location.pathname === "/" ? "/overview" : location.pathname + location.search);
+  if (silent) store.set("silent", "1"); else store.del("silent");
   const q = new URLSearchParams({
     client_id: CFG.client_id, response_type: "code", redirect_uri: redirectUri(),
     response_mode: "query", scope: `${CFG.scope} openid profile`, state,
-    code_challenge: challenge, code_challenge_method: "S256", prompt: "select_account",
+    code_challenge: challenge, code_challenge_method: "S256", prompt: silent ? "none" : "select_account",
   });
+  // The last account used here, so a browser signed in to several picks the right one.
+  const hint = keep.get("who") || "";
+  if (silent && hint.includes("@")) q.set("login_hint", hint);
   location.assign(`${authority()}/authorize?${q}`);
 }
 
 async function finishSignIn(params) {
   const state = store.get("pkce_state");
   const verifier = store.get("pkce_verifier");
-  store.del("pkce_state"); store.del("pkce_verifier");
+  const silent = store.get("silent");
+  store.del("pkce_state"); store.del("pkce_verifier"); store.del("silent");
   history.replaceState(null, "", store.get("return_path") || "/overview");
+  // A silent attempt that needs the user (login_required, interaction_required,
+  // consent_required...) is not an error: the sign-in button is shown instead.
+  if (params.get("error") && silent) { store.set("silent_failed", "1"); return; }
   if (params.get("error")) throw new Error(params.get("error_description") || params.get("error"));
   if (!state || params.get("state") !== state) throw new Error("Sign-in state did not match; try again.");
   const res = await fetch(`${authority()}/token`, {
@@ -299,19 +322,21 @@ async function finishSignIn(params) {
   });
   const body = await res.json();
   if (!res.ok) throw new Error(body.error_description || "Token request failed");
-  store.set("token", body.access_token);
-  store.set("token_exp", String(Date.now() + (body.expires_in - 120) * 1000));
+  keep.set("token", body.access_token);
+  keep.set("token_at", String(Date.now()));
+  keep.set("token_exp", String(Date.now() + (body.expires_in - 120) * 1000));
+  store.del("silent_failed");
   if (body.id_token) {
     try {
       const claims = JSON.parse(atob(body.id_token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
-      store.set("who", claims.preferred_username || claims.name || "");
+      keep.set("who", claims.preferred_username || claims.name || "");
     } catch { /* display only */ }
   }
 }
 
 function token() {
-  const t = store.get("token");
-  return t && Number(store.get("token_exp") || 0) > Date.now() ? t : null;
+  const t = keep.get("token");
+  return t && Number(keep.get("token_exp") || 0) > Date.now() ? t : null;
 }
 // The token's app roles, for display only (the API enforces every check):
 // people with only Communications.Files see the read-only page without the console link.
@@ -322,18 +347,31 @@ function isAdmin() {
     return (claims.roles || []).includes("Communications.Admin");
   } catch { return false; }
 }
-function signOut() { ["token", "token_exp", "who"].forEach(store.del); history.replaceState(null, "", "/"); render(); }
+function signOut() {
+  ["token", "token_at", "token_exp", "who"].forEach(keep.del);
+  keep.set("signed_out", "1"); // no silent sign-in until the button is used
+  history.replaceState(null, "", "/"); render();
+}
+// No token (expired) or a refused one: sign in again, silently when possible.
+// A token refused within a minute of being issued is not retried (no redirect loop).
+async function reSignIn() {
+  const fresh = Date.now() - Number(keep.get("token_at") || 0) < 60000;
+  keep.del("token");
+  if (fresh) throw new Error("The server refused your sign-in. Sign out and sign in again, or ask Matthew or Cody.");
+  await signIn(canSignInSilently());
+  throw new Error("signing in");
+}
 
 async function api(path, options = {}) {
   const t = token();
-  if (!t) { await signIn(); throw new Error("signing in"); }
+  if (!t) { await signIn(canSignInSilently()); throw new Error("signing in"); }
   const res = await fetch(path, {
     // Reads stop when the user leaves the page; changes (POST, PUT...) always finish.
     signal: (options.method || "GET") === "GET" ? current.ctl.signal : undefined,
     ...options,
     headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json", ...(options.headers || {}) },
   });
-  if (res.status === 401) { store.del("token"); await signIn(); throw new Error("signing in"); }
+  if (res.status === 401) await reSignIn();
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
   return body;
@@ -784,7 +822,7 @@ function kb(bytes) { return bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} 
 
 async function fetchFile(id, fileId) {
   const t = token();
-  if (!t) { await signIn(); throw new Error("signing in"); }
+  if (!t) { await signIn(canSignInSilently()); throw new Error("signing in"); }
   const res = await fetch(`/api/messages/${encodeURIComponent(id)}/files/${fileId}`, { headers: { Authorization: `Bearer ${t}` } });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
   return res.arrayBuffer();
@@ -1100,7 +1138,7 @@ const pct = x => x === null || x === undefined ? "—" : `${Math.round(x * 100)}
 // POSTs with the bearer token and saves the response as a file (exports are never opened as pages).
 async function downloadPost(path, body) {
   const t = token();
-  if (!t) { await signIn(); throw new Error("signing in"); }
+  if (!t) { await signIn(canSignInSilently()); throw new Error("signing in"); }
   const res = await fetch(path, {
     method: "POST", headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
@@ -2768,6 +2806,11 @@ async function render() {
   const nav = document.getElementById("tabs");
   const who = document.getElementById("who");
   document.getElementById("brand-mark").replaceChildren(icon("graph"));
+  if (!token() && canSignInSilently()) {
+    main().replaceChildren(h("p", { class: "muted", style: "padding:24px" }, "Signing in…"));
+    await signIn(true);
+    return;
+  }
   if (!token()) {
     shell.classList.add("signed-out");
     nav.hidden = true; who.replaceChildren();
@@ -2777,7 +2820,7 @@ async function render() {
       h("p", {}, isReader()
         ? "Sign in with your Finishes Solutions account to read this email. Only people given access can open it."
         : "Sign in with your Finishes Solutions account. Only console admins get in."),
-      h("button", { class: "btn primary lg block", onclick: signIn },
+      h("button", { class: "btn primary lg block", onclick: () => signIn() },
         h("span", { class: "ms-logo" }, h("span"), h("span"), h("span"), h("span")), "Sign In with Microsoft"))));
     return;
   }
@@ -2785,7 +2828,7 @@ async function render() {
   shell.classList.toggle("reader-only", isReader());
   drawNav();
   nav.hidden = false;
-  const name = store.get("who") || "Signed in";
+  const name = keep.get("who") || "Signed in";
   who.replaceChildren(
     CFG && CFG.environment ? h("div", { class: "env" }, h("span", { class: "dot " + (CFG.environment === "production" ? "good" : "info") }),
       `${nice(CFG.environment)} environment`) : "",

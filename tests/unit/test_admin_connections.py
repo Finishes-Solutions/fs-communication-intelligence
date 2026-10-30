@@ -80,3 +80,15 @@ def test_every_sidebar_page_is_served_and_the_platform_logos_exist() -> None:
     assert copilot.startswith(b"\x89PNG\r\n\x1a\n") and len(copilot) < 50_000
     for logo in re.findall(r'"(/logos/[a-z-]+\.(?:svg|png))"', app):
         assert (STATIC / logo.lstrip("/")).is_file(), logo
+
+
+def test_links_from_ai_clients_reuse_an_existing_sign_in() -> None:
+    """view_url/download_url open in a new tab: the token must be shared across tabs
+    and a missing one first requested silently, or every link asks to sign in again."""
+    from ci_admin.api import STATIC
+
+    app = (STATIC / "app.js").read_text()
+    assert 'keep.set("token", body.access_token)' in app and "localStorage.getItem" in app
+    assert 'prompt: silent ? "none" : "select_account"' in app
+    assert 'if (params.get("error") && silent) { store.set("silent_failed", "1"); return; }' in app
+    assert 'keep.set("signed_out", "1")' in app
