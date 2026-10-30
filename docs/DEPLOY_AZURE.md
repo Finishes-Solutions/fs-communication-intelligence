@@ -438,7 +438,7 @@ bash scripts/azure/people.sh add someone@finishessolutions.com
 bash scripts/azure/people.sh add chuckc@finishesetc.net files
 ```
 
-They sign in on the read-only email page (`/read/<id>`) and can read that email and download its files, and nothing else in the console. Which emails open still follows their search role: with `search`, every enrolled mailbox. The first `add … files` creates the role on the search API registration. Attachment files are not malware-scanned yet (§12), so grant this sparingly.
+They sign in on the read-only email page (`/read/<id>`) and can read that email and download its files, and nothing else in the console. Opening a link does not ask them to sign in again when the browser is already signed in to Microsoft (for example from connecting the AI platform in that browser): the page signs in silently, and a second link reuses the same sign-in until it expires (about an hour), then renews it silently. They see the Microsoft sign-in only when the browser has no Microsoft session, after they used Sign Out, or when the AI platform opens links in a different browser than the one they signed in with. Which emails open still follows their search role: with `search`, every enrolled mailbox. The first `add … files` creates the role on the search API registration. Attachment files are not malware-scanned yet (§12), so grant this sparingly.
 
 ### Action items in two steps, and person profiles
 
