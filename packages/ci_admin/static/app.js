@@ -279,17 +279,45 @@ function redirectUri() { return location.origin + "/"; }
 
 // silent: no Microsoft page at all (prompt=none); Entra answers with an error
 // instead when the browser has no Microsoft session, and the button is shown.
-// Not after Sign Out, and not twice in a tab once it has failed.
-const canSignInSilently = () => !keep.get("signed_out") && !store.get("silent_failed");
+// Not after Sign Out, and not again for 10 minutes once it has failed. In-app
+// browsers (ChatGPT's) can lose sessionStorage on the way to Microsoft and back,
+// so the sign-in in flight is kept in localStorage too, keyed by its state, and
+// the page to return to travels in the state itself.
+const SILENT_ERRORS = ["login_required", "interaction_required", "consent_required", "account_selection_required"];
+let silentFailedNow = false; // this page load, in case neither storage works
+const canSignInSilently = () => !keep.get("signed_out") && !silentFailedNow
+  && Date.now() - Number(keep.get("silent_failed_at") || 0) > 600000;
+let signInNote = null; // why the sign-in page is shown, when there is a reason
+function saveFlow(state, flow) {
+  let keys = [];
+  try { keys = Object.keys(localStorage); } catch { /* private mode */ }
+  for (const k of keys.filter(x => x.startsWith("flow:"))) {
+    try { if (Date.now() - JSON.parse(keep.get(k)).at > 900000) keep.del(k); } catch { keep.del(k); }
+  }
+  const v = JSON.stringify({ ...flow, at: Date.now() });
+  keep.set("flow:" + state, v); store.set("flow:" + state, v);
+}
+function takeFlow(state) {
+  const v = keep.get("flow:" + state) || store.get("flow:" + state);
+  keep.del("flow:" + state); store.del("flow:" + state);
+  try { return v ? JSON.parse(v) : null; } catch { return null; }
+}
+// The state is "<random>.<return path, base64url>", so the right page opens even
+// when no storage survived; only paths on this site are accepted back.
+function returnPathOf(state) {
+  try {
+    const b = (state || "").split(".")[1] || "";
+    const path = decodeURIComponent(escape(atob(b.replace(/-/g, "+").replace(/_/g, "/"))));
+    return /^\/(?!\/)/.test(path) ? path : null;
+  } catch { return null; }
+}
 async function signIn(silent = false) {
-  if (!silent) { keep.del("signed_out"); store.del("silent_failed"); }
+  if (!silent) { keep.del("signed_out"); keep.del("silent_failed_at"); }
   const verifier = randomString();
-  const state = randomString();
+  const ret = location.pathname === "/" ? "/overview" : location.pathname + location.search;
+  const state = randomString() + "." + b64url(new TextEncoder().encode(ret));
   const challenge = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
-  store.set("pkce_verifier", verifier);
-  store.set("pkce_state", state);
-  store.set("return_path", location.pathname === "/" ? "/overview" : location.pathname + location.search);
-  if (silent) store.set("silent", "1"); else store.del("silent");
+  saveFlow(state, { verifier, silent });
   const q = new URLSearchParams({
     client_id: CFG.client_id, response_type: "code", redirect_uri: redirectUri(),
     response_mode: "query", scope: `${CFG.scope} openid profile`, state,
@@ -301,17 +329,24 @@ async function signIn(silent = false) {
   location.assign(`${authority()}/authorize?${q}`);
 }
 
+// Returns quietly when the sign-in page should be shown instead (signInNote says why).
 async function finishSignIn(params) {
-  const state = store.get("pkce_state");
-  const verifier = store.get("pkce_verifier");
-  const silent = store.get("silent");
-  store.del("pkce_state"); store.del("pkce_verifier"); store.del("silent");
-  history.replaceState(null, "", store.get("return_path") || "/overview");
-  // A silent attempt that needs the user (login_required, interaction_required,
-  // consent_required...) is not an error: the sign-in button is shown instead.
-  if (params.get("error") && silent) { store.set("silent_failed", "1"); return; }
-  if (params.get("error")) throw new Error(params.get("error_description") || params.get("error"));
-  if (!state || params.get("state") !== state) throw new Error("Sign-in state did not match; try again.");
+  const state = params.get("state") || "";
+  const flow = takeFlow(state);
+  history.replaceState(null, "", returnPathOf(state) || "/overview");
+  // A silent attempt that needs the user (no Microsoft session in this browser)
+  // is not an error: the sign-in button is shown instead. Decided by the error
+  // code, which only prompt=none produces, not by stored state.
+  if (SILENT_ERRORS.includes(params.get("error"))) {
+    silentFailedNow = true; keep.set("silent_failed_at", String(Date.now()));
+    return;
+  }
+  if (params.get("error")) { signInNote = params.get("error_description") || params.get("error"); return; }
+  if (!flow) {
+    signInNote = "This browser lost the sign-in in progress. Sign in again; if it keeps happening, copy the link below into your browser.";
+    return;
+  }
+  const verifier = flow.verifier;
   const res = await fetch(`${authority()}/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -325,7 +360,7 @@ async function finishSignIn(params) {
   keep.set("token", body.access_token);
   keep.set("token_at", String(Date.now()));
   keep.set("token_exp", String(Date.now() + (body.expires_in - 120) * 1000));
-  store.del("silent_failed");
+  keep.del("silent_failed_at");
   if (body.id_token) {
     try {
       const claims = JSON.parse(atob(body.id_token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
@@ -2801,12 +2836,27 @@ async function route() {
   }
 }
 
+// For links opened inside an app's own browser (ChatGPT, Teams...), which has no
+// Microsoft session of its own: the same link in the person's browser usually opens
+// without signing in. A page cannot make the app open its link elsewhere.
+function openElsewhere() {
+  const url = location.origin + location.pathname + location.search;
+  const box = h("input", { class: "copy-url", readonly: true, value: url, "aria-label": "Link to this email", onfocus: e => e.target.select() });
+  return h("div", { class: "open-elsewhere" },
+    h("p", { class: "muted small" }, "Opened inside an app? Its browser is not signed in to Microsoft. Copy this link into Edge, Chrome or Safari, where you are already signed in, or sign in here once."),
+    h("div", { class: "copy-row" }, box,
+      h("button", { class: "btn sm", type: "button", onclick: async () => {
+        try { await navigator.clipboard.writeText(url); toast("Link copied"); }
+        catch { box.focus(); box.select(); toast("Press Copy on the selected link"); }
+      } }, icon("copy"), "Copy Link")));
+}
+
 async function render() {
   const shell = document.getElementById("shell");
   const nav = document.getElementById("tabs");
   const who = document.getElementById("who");
   document.getElementById("brand-mark").replaceChildren(icon("graph"));
-  if (!token() && canSignInSilently()) {
+  if (!token() && canSignInSilently() && !signInNote) {
     main().replaceChildren(h("p", { class: "muted", style: "padding:24px" }, "Signing in…"));
     await signIn(true);
     return;
@@ -2820,8 +2870,10 @@ async function render() {
       h("p", {}, isReader()
         ? "Sign in with your Finishes Solutions account to read this email. Only people given access can open it."
         : "Sign in with your Finishes Solutions account. Only console admins get in."),
+      signInNote ? h("p", { class: "status-failed small" }, signInNote) : null,
       h("button", { class: "btn primary lg block", onclick: () => signIn() },
-        h("span", { class: "ms-logo" }, h("span"), h("span"), h("span"), h("span")), "Sign In with Microsoft"))));
+        h("span", { class: "ms-logo" }, h("span"), h("span"), h("span"), h("span")), "Sign In with Microsoft"),
+      isReader() ? openElsewhere() : null)));
     return;
   }
   shell.classList.remove("signed-out");
