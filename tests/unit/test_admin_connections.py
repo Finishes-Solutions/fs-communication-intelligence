@@ -90,5 +90,11 @@ def test_links_from_ai_clients_reuse_an_existing_sign_in() -> None:
     app = (STATIC / "app.js").read_text()
     assert 'keep.set("token", body.access_token)' in app and "localStorage.getItem" in app
     assert 'prompt: silent ? "none" : "select_account"' in app
-    assert 'if (params.get("error") && silent) { store.set("silent_failed", "1"); return; }' in app
+    # In-app browsers (ChatGPT's) can drop sessionStorage on the round trip: a silent
+    # failure is recognised by its error code, the sign-in in flight is also kept in
+    # localStorage, the page to return to travels in the state, and a lost sign-in
+    # shows the button instead of trying again (no redirect loop).
+    assert 'SILENT_ERRORS.includes(params.get("error"))' in app
+    assert 'keep.set("flow:" + state, v)' in app and "returnPathOf(state)" in app
+    assert "canSignInSilently() && !signInNote" in app
     assert 'keep.set("signed_out", "1")' in app
