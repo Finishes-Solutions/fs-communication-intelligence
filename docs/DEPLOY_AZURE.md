@@ -440,6 +440,26 @@ bash scripts/azure/people.sh add chuckc@finishesetc.net files
 
 They sign in on the read-only email page (`/read/<id>`) and can read that email and download its files, and nothing else in the console. Opening a link does not ask them to sign in again when the browser is already signed in to Microsoft (for example from connecting the AI platform in that browser): the page signs in silently, and a second link reuses the same sign-in until it expires (about an hour), then renews it silently. They see the Microsoft sign-in only when the browser has no Microsoft session, after they used Sign Out, or when the AI platform opens links in a different browser than the one they signed in with. Apps that open links in their own built-in browser (the ChatGPT app, Teams) are such a browser: it has no Microsoft session of its own, so the page shows Sign In with Microsoft and a **Copy Link** box. Signing in there once is usually remembered by that app's browser for later links; pasting the link into Edge, Chrome or Safari opens it without signing in. A web page cannot make the app open its link in the external browser. Which emails open still follows their search role: with `search`, every enrolled mailbox. The first `add … files` creates the role on the search API registration. Attachment files are not malware-scanned yet (§12), so grant this sparingly.
 
+**Keeping some mail from one person** (reader limits, migration 0024). A limit hides matching mail from one reader in every AI tool, list, count, risk chart, knowledge result and email/file link, in every mailbox, **except emails that reader is on** (sender, to, cc or bcc) or that sit in their own mailbox. It only narrows what their role allows. Add limits in the console (**Mailboxes & Scope**, card **Reader Limits**) or with `ci limit add READER KIND VALUE --reason CODE`:
+
+| Hide by | Value | Hides |
+|---|---|---|
+| Mailbox | an address | every copy stored in that mailbox |
+| Person on the email | an address | every email with that person as sender or recipient |
+| Domain | `example.com` | mailboxes and senders/recipients in that domain or its subdomains |
+| Words in the email | words | the subject or an AI-found company name contains them, or the body or attachment text has them as a phrase |
+
+The set for Will (2026-11-02: everything except PNS Capital and Chuck's personal or private business, except emails he is on), reader `wille@finishessolutions.com`, reason `private_business`:
+
+| Hide by | Value |
+|---|---|
+| Mailbox | `chuckc@finishesetc.net` (and each other address of Chuck's) |
+| Person on the email | `chuckc@finishesetc.net` (and each other address of Chuck's) |
+| Domain | `pns-capital.com` |
+| Words in the email | `pns capital` |
+
+Give the reader `search` and `files`, never `console`: the console shows all mail and does not apply limits. Limits are matched by the reader's sign-in address; while any limit exists, a sign-in without an address gets no results at all. "Words in the email" errs toward hiding (a newsletter that mentions PNS Capital is hidden too), and private mail that names no listed mailbox, person, domain or words is **not** hidden: add a limit for it. After adding limits, check with the reader (or `ci search` signed in as them) that a known PNS email is not found.
+
 ### Action items in two steps, and person profiles
 
 1. **Step 1, the classifier,** tags whether an email asks *someone* to act (`action_required`, `approval_required`). It is told to say no for FYI, newsletters, marketing, automated notifications and requests to a whole group.

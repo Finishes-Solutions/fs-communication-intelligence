@@ -60,9 +60,11 @@ from ci_core.operator import (
     hidden_knowledge,
     hide_knowledge,
     knowledge_entry,
+    limit_reader,
     list_mailboxes,
     list_participant_exclusions,
     list_people,
+    list_reader_limits,
     merge_knowledge,
     merge_knowledge_many,
     reclassify_knowledge,
@@ -466,6 +468,7 @@ def build_admin_app(
             return {
                 "mailboxes": [m.__dict__ for m in list_mailboxes(conn)],
                 "participant_exclusions": list_participant_exclusions(conn),
+                "reader_limits": list_reader_limits(conn),
             }
 
     def mailbox_action(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
@@ -495,6 +498,16 @@ def build_admin_app(
                 )
             elif action == "unexclude-participant":
                 exclude_participant(conn, str(body.get("pattern") or ""), actor, revoke=True)
+            elif action in ("limit-reader", "unlimit-reader"):
+                limit_reader(
+                    conn,
+                    str(body.get("reader") or ""),
+                    str(body.get("kind") or ""),
+                    str(body.get("value") or ""),
+                    actor,
+                    reason=body.get("reason"),
+                    revoke=action == "unlimit-reader",
+                )
             else:
                 raise HTTPException(404, "unknown action")
             conn.commit()

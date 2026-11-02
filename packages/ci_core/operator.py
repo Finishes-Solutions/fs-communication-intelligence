@@ -217,6 +217,83 @@ def exclude_participant(
     audit(conn, actor, "participant_exclude", "exclusion", row["id"], {"reason_code": reason})
 
 
+READER_LIMIT_KINDS = ("mailbox", "person", "domain", "term")
+
+
+def list_reader_limits(conn: Connection) -> list[dict[str, Any]]:
+    """Active per-reader limits (migration 0024), by reader; none before it is applied."""
+    found = conn.execute("SELECT to_regclass('ci.reader_restrictions') AS t").fetchone()
+    if not found or not found["t"]:
+        return []
+    return conn.execute(
+        "SELECT id::text, reader_address, kind, value, reason_code, created_by, created_at"
+        " FROM reader_restrictions WHERE revoked_at IS NULL"
+        " ORDER BY reader_address, kind, value"
+    ).fetchall()
+
+
+def _limit_value(kind: str, value: str) -> str:
+    v = value.strip().lower()
+    if kind in ("mailbox", "person"):
+        if not _ADDRESS.match(v):
+            raise OperatorError(f"a {kind} limit needs an email address")
+    elif kind == "domain":
+        v = v.removeprefix("@")
+        if not _DOMAIN.match(v):
+            raise OperatorError("a domain limit needs a domain like example.com")
+    elif kind == "term":
+        if not 3 <= len(v) <= 200:
+            raise OperatorError("a term limit needs 3 to 200 characters")
+    else:
+        raise OperatorError(f"kind must be one of {', '.join(READER_LIMIT_KINDS)}")
+    return v
+
+
+def limit_reader(
+    conn: Connection,
+    reader: str,
+    kind: str,
+    value: str,
+    actor: str,
+    *,
+    reason: str | None = None,
+    revoke: bool = False,
+) -> None:
+    """Hide matching mail from one reader, except mail they are on (migration 0024)."""
+    who = reader.strip().lower()
+    if not _ADDRESS.match(who):
+        raise OperatorError("the reader must be their sign-in email address")
+    v = _limit_value(kind, value)
+    if revoke:
+        updated = conn.execute(
+            "UPDATE reader_restrictions SET revoked_at = now(), revoked_by = %s"
+            " WHERE reader_address = %s AND kind = %s AND value = %s AND revoked_at IS NULL"
+            " RETURNING id::text",
+            (actor, who, kind, v),
+        ).fetchall()
+        if not updated:
+            raise OperatorError(f"no active {kind} limit {v} for {who}")
+        audit(conn, actor, "reader_limit_remove", "reader_restriction", updated[0]["id"])
+        return
+    if reason is None:
+        raise OperatorError("a limit needs a reason code")
+    row = conn.execute(
+        "INSERT INTO reader_restrictions (reader_address, kind, value, reason_code, created_by)"
+        " VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING RETURNING id::text",
+        (who, kind, v, _reason(reason), actor),
+    ).fetchone()
+    if row is None:
+        raise OperatorError(f"{who} already has the {kind} limit {v}")
+    audit(
+        conn,
+        actor,
+        "reader_limit_add",
+        "reader_restriction",
+        row["id"],
+        {"reader": who, "kind": kind, "reason_code": reason},
+    )
+
+
 def approve_all_enrolled(conn: Connection, dataset: Dataset, actor: str) -> int:
     """Approve every reachable (``enrolled``) mailbox not yet approved; exclusions still win."""
     column = {"test": "test_approved", "production": "production_approved"}[dataset]

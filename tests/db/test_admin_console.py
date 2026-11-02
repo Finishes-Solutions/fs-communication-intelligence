@@ -35,6 +35,7 @@ from ci_processing.originals import DirectoryStore
 from ci_processing.risk_rating import FakeRiskRater
 from ci_processing.routing import FakePersonRouter
 from ci_processing.screening import FakeScreener
+from ci_retrieval import search as retrieval
 from ci_retrieval.entra import EntraTokenVerifier
 from ci_retrieval.identity import READER_ALL
 
@@ -70,6 +71,12 @@ def token(**overrides: Any) -> str:
 
 def auth(**overrides: Any) -> dict[str, str]:
     return {"Authorization": f"Bearer {token(**overrides)}"}
+
+
+@pytest.fixture(autouse=True)
+def fixture_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Action-item windows ("hours" back) end on the fixtures' date, not today."""
+    monkeypatch.setattr(retrieval, "utcnow", lambda: datetime(2026, 10, 28, tzinfo=UTC))
 
 
 @pytest.fixture(scope="module")

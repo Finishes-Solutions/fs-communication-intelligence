@@ -18,6 +18,11 @@ The database comes from the standard ``PG*`` environment variables; locally,
     ci mode set test|production|paused [--note TEXT]
     ci grant add --me | --user OBJECT_ID      let a person read the enrolled corpus
     ci grant list | ci grant revoke --user OBJECT_ID
+    ci limit list                             per-reader limits (also in the console)
+    ci limit add READER mailbox|person|domain|term VALUE --reason CODE
+                                              hide matching mail from that reader, except
+                                              mail they are on
+    ci limit remove READER KIND VALUE
 
     ci capture --hours 24                     store mail received in the last N hours
     ci process [--limit N] [--retry-failed]   extract, screen, classify, embed, publish
@@ -84,16 +89,19 @@ from ci_cli.seed import seed
 from ci_core import ops
 from ci_core.db import Connection, connect
 from ci_core.operator import (
+    READER_LIMIT_KINDS,
     OperatorError,
     add_name,
     approve_mailbox,
     exclude_mailbox,
     exclude_participant,
     hide_knowledge,
+    limit_reader,
     list_mailboxes,
     list_names,
     list_participant_exclusions,
     list_people,
+    list_reader_limits,
     merge_knowledge_many,
     reclassify_knowledge,
     remove_name,
@@ -138,6 +146,17 @@ def _parser() -> argparse.ArgumentParser:
     target.add_argument("--participant")
     exclude.add_argument("--reason")
     exclude.add_argument("--revoke", action="store_true")
+
+    limit = sub.add_parser("limit", help="hide some mail from one reader")
+    limit_action = limit.add_subparsers(dest="action", required=True)
+    limit_action.add_parser("list")
+    for name in ("add", "remove"):
+        la = limit_action.add_parser(name)
+        la.add_argument("reader", help="the reader's sign-in address")
+        la.add_argument("kind", choices=list(READER_LIMIT_KINDS))
+        la.add_argument("value", help="address, domain or term")
+        if name == "add":
+            la.add_argument("--reason", required=True)
 
     mode = sub.add_parser("mode").add_subparsers(dest="action", required=True)
     mode.add_parser("show")
@@ -512,6 +531,21 @@ def _run(args: argparse.Namespace, conn: Connection) -> None:
         else:
             exclude_mailbox(conn, args.address, actor, reason=args.reason, revoke=args.revoke)
             print(f"{'revoked exclusion of' if args.revoke else 'excluded'} mailbox {args.address}")
+        return
+
+    if args.command == "limit":
+        if args.action in ("add", "remove"):
+            limit_reader(
+                conn,
+                args.reader,
+                args.kind,
+                args.value,
+                actor,
+                reason=getattr(args, "reason", None),
+                revoke=args.action == "remove",
+            )
+        for r in list_reader_limits(conn):
+            print(f"{r['reader_address']:<34} {r['kind']:<8} {r['value']:<34} {r['reason_code']}")
         return
 
     if args.command == "schedule":
