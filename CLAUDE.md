@@ -26,6 +26,7 @@ Business context: Finishes Solutions is a real estate owner-developer (Waller, T
 ### Working style
 - Matthew rarely works in a terminal. Give him copy-paste commands with one-line explanations, and prefer GitHub Actions or scripts over long manual sequences.
 - Cody will co-maintain, so favor boring, well-documented choices over clever ones.
+- **Azure admin and setup run as `svc_automation@finishessolutions.com`**, not Matthew's personal account (Matthew, 2026-11-02). Commands that need Azure or Entra rights (`az login`, `make azure-env`/`azure-migrate`, `scripts/azure/*.sh`) assume that account; never tell him to switch to `matthews@`. The console's People page acts as whoever is signed into the console, so access changes there are made signed in as SVC_Automation (it holds the console role as "Finishes Automation"); his personal account can view but Entra refuses its changes unless it has an admin role.
 - Be honest about what is verified versus assumed. Never describe untested behavior as working.
 
 ---

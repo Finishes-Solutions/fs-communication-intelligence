@@ -3,7 +3,7 @@
 # admin): let the admin console's People page change who has access, acting as
 # the signed-in admin. Safe to re-run.
 #
-#   ADMINS="matthews@finishessolutions.com codyv@finishessolutions.com" \
+#   ADMINS="svc_automation@finishessolutions.com matthews@finishessolutions.com codyv@finishessolutions.com" \
 #     bash scripts/azure/9-console-people.sh
 #   REMOVE=1 ADMINS="someone@finishessolutions.com" bash scripts/azure/9-console-people.sh
 #
