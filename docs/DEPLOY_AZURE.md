@@ -432,6 +432,14 @@ bash scripts/azure/people.sh add someone@finishessolutions.com
 
 `add` grants both the admin console and search from Claude, ChatGPT and Copilot; add `console` or `search` after the address for just one. `remove` takes the same arguments. Both kinds of access show everyone's captured mail, so keep the list short.
 
+**The console's People page** (sidebar **People**) does the same in the browser: who has Console, AI Search and Email & File Links, grant or remove each, and next to each person their reader limits; the reader limits and the person-check profiles are managed on the same page. Changes are made in Microsoft Entra **as the signed-in admin**, with that person's own delegated Microsoft Graph token (kept in the browser tab for its hour); the console's server and identity get no new permission, and each change is in Entra's audit log under the admin's name (and in the console's history as `access_grant`/`access_remove`). Turn it on once for the admins who may change access:
+
+```bash
+ADMINS="matthews@finishessolutions.com codyv@finishessolutions.com" bash scripts/azure/9-console-people.sh
+```
+
+It adds three delegated Graph permissions to the "FS Communications Admin Console" sign-in app (`AppRoleAssignment.ReadWrite.All`, `Application.Read.All`, `User.ReadBasic.All`, the least-privileged set for listing and changing app role assignments) and consents them **for those people only**, not tenant-wide. Entra still refuses a change the admin could not make in the Entra portal: they also need an Entra role such as Cloud Application Administrator. `REMOVE=1 ADMINS="…"` takes the consent away again. The Email & File Links role is created by the first `people.sh add … files`; the page cannot create roles. Removing your own console access asks you to type `remove`.
+
 **Opening links without the console** (`files`, role `Communications.Files`). Use this for someone who should open the email and file links in MCP results or on a monday board, but not use the console:
 
 ```bash

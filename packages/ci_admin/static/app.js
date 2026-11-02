@@ -311,21 +311,24 @@ function returnPathOf(state) {
     return /^\/(?!\/)/.test(path) ? path : null;
   } catch { return null; }
 }
-async function signIn(silent = false) {
+// purpose "graph": a Microsoft Graph token for the People page (GRAPH_SCOPES), as the
+// signed-in admin, with no account picker; it never replaces the console token.
+async function signIn(silent = false, purpose = "console") {
   if (!silent) { keep.del("signed_out"); keep.del("silent_failed_at"); }
   const verifier = randomString();
   const ret = location.pathname === "/" ? "/overview" : location.pathname + location.search;
   const state = randomString() + "." + b64url(new TextEncoder().encode(ret));
   const challenge = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
-  saveFlow(state, { verifier, silent });
+  const scope = `${purpose === "graph" ? GRAPH_SCOPES : CFG.scope} openid profile`;
+  saveFlow(state, { verifier, silent, purpose, scope });
   const q = new URLSearchParams({
     client_id: CFG.client_id, response_type: "code", redirect_uri: redirectUri(),
-    response_mode: "query", scope: `${CFG.scope} openid profile`, state,
-    code_challenge: challenge, code_challenge_method: "S256", prompt: silent ? "none" : "select_account",
+    response_mode: "query", scope, state, code_challenge: challenge, code_challenge_method: "S256",
   });
+  if (purpose !== "graph") q.set("prompt", silent ? "none" : "select_account");
   // The last account used here, so a browser signed in to several picks the right one.
   const hint = keep.get("who") || "";
-  if (silent && hint.includes("@")) q.set("login_hint", hint);
+  if ((silent || purpose === "graph") && hint.includes("@")) q.set("login_hint", hint);
   location.assign(`${authority()}/authorize?${q}`);
 }
 
@@ -334,6 +337,7 @@ async function finishSignIn(params) {
   const state = params.get("state") || "";
   const flow = takeFlow(state);
   history.replaceState(null, "", returnPathOf(state) || "/overview");
+  if (flow && flow.purpose === "graph") return finishGraphSignIn(params, flow);
   // A silent attempt that needs the user (no Microsoft session in this browser)
   // is not an error: the sign-in button is shown instead. Decided by the error
   // code, which only prompt=none produces, not by stored state.
@@ -346,17 +350,7 @@ async function finishSignIn(params) {
     signInNote = "This browser lost the sign-in in progress. Sign in again; if it keeps happening, copy the link below into your browser.";
     return;
   }
-  const verifier = flow.verifier;
-  const res = await fetch(`${authority()}/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: CFG.client_id, grant_type: "authorization_code", code: params.get("code"),
-      redirect_uri: redirectUri(), code_verifier: verifier, scope: `${CFG.scope} openid profile`,
-    }),
-  });
-  const body = await res.json();
-  if (!res.ok) throw new Error(body.error_description || "Token request failed");
+  const body = await redeemCode(params, flow);
   keep.set("token", body.access_token);
   keep.set("token_at", String(Date.now()));
   keep.set("token_exp", String(Date.now() + (body.expires_in - 120) * 1000));
@@ -367,6 +361,38 @@ async function finishSignIn(params) {
       keep.set("who", claims.preferred_username || claims.name || "");
     } catch { /* display only */ }
   }
+}
+
+async function redeemCode(params, flow) {
+  const res = await fetch(`${authority()}/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: CFG.client_id, grant_type: "authorization_code", code: params.get("code"),
+      redirect_uri: redirectUri(), code_verifier: flow.verifier, scope: flow.scope || `${CFG.scope} openid profile`,
+    }),
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error_description || "Token request failed");
+  return body;
+}
+
+// The Graph token lives in this tab only (sessionStorage) and only for its hour:
+// it can change app role assignments, bounded by the admin's own Entra roles.
+const GRAPH_SCOPES = ["AppRoleAssignment.ReadWrite.All", "Application.Read.All", "User.ReadBasic.All"]
+  .map(x => "https://graph.microsoft.com/" + x).join(" ");
+let graphNote = null;
+async function finishGraphSignIn(params, flow) {
+  if (params.get("error")) { graphNote = params.get("error_description") || params.get("error"); return; }
+  try {
+    const body = await redeemCode(params, flow);
+    store.set("graph_token", body.access_token);
+    store.set("graph_exp", String(Date.now() + (body.expires_in - 120) * 1000));
+  } catch (e) { graphNote = e.message; }
+}
+function graphToken() {
+  const t = store.get("graph_token");
+  return t && Number(store.get("graph_exp") || 0) > Date.now() ? t : null;
 }
 
 function token() {
@@ -384,6 +410,7 @@ function isAdmin() {
 }
 function signOut() {
   ["token", "token_at", "token_exp", "who"].forEach(keep.del);
+  ["graph_token", "graph_exp"].forEach(store.del);
   keep.set("signed_out", "1"); // no silent sign-in until the button is used
   history.replaceState(null, "", "/"); render();
 }
@@ -606,13 +633,6 @@ async function mailboxesPage() {
   });
   const pattern = h("input", { placeholder: "name@example.com or @example.com", style: "width:300px" });
   const preason = h("input", { placeholder: "reason_code", value: "privacy" });
-  // Per-reader limits (migration 0024): hide matching mail from one person.
-  const LIMIT_KINDS = { mailbox: "Mailbox", person: "Person on the email", domain: "Domain", term: "Words in the email" };
-  const lreader = h("input", { placeholder: "reader@finishessolutions.com", style: "width:240px" });
-  const lkind = h("select", {}, Object.entries(LIMIT_KINDS).map(([k, t]) => h("option", { value: k }, t)));
-  const lvalue = h("input", { placeholder: "address, domain or words", style: "width:220px" });
-  const lreason = h("input", { placeholder: "reason_code", value: "private_business" });
-  const limits = d.reader_limits || [];
   show(
     pageHead("Mailboxes & Scope", "Which mailboxes are captured. Exclusions always win over approvals.",
       h("button", { class: "btn", onclick: () => act("include-all", {}, "All reachable mailboxes approved for test") }, icon("ok"), "Approve All Enrolled (Test)")),
@@ -633,17 +653,7 @@ async function mailboxesPage() {
         ["", r => h("div", { class: "actions", style: "justify-content:flex-end" }, h("button", { class: "btn sm", onclick: () => act("unexclude-participant",
           { pattern: r.exclusion_kind === "participant_domain" ? "@" + r.pattern : r.pattern }, "Exclusion removed") }, "Remove"))]],
       d.participant_exclusions, null, emptyState("No Exclusions", "Add a person or @domain below.", "ban"))),
-    card({ title: "Reader Limits", sub: "Hide matching mail from one person, in every mailbox and every AI tool, except emails that person is on. "
-        + "Only for people without the console: the console shows all mail.", flush: true,
-      foot: h("form", { class: "toolbar", onsubmit: e => { e.preventDefault();
-          act("limit-reader", { reader: lreader.value, kind: lkind.value, value: lvalue.value, reason: lreason.value }, "Limit added"); } },
-        field("Reader", lreader), field("Hide by", lkind), field("Value", lvalue), field("Reason", lreason),
-        h("button", { class: "btn primary", type: "submit", style: "align-self:flex-end" }, icon("plus"), "Add Limit")) },
-      table([["Reader", r => r.reader_address], ["Hide by", r => LIMIT_KINDS[r.kind] || r.kind],
-        ["Value", r => h("span", { class: "mono" }, r.value)], ["Reason", r => badge(nice(r.reason_code))], ["Added By", r => r.created_by],
-        ["", r => h("div", { class: "actions", style: "justify-content:flex-end" }, h("button", { class: "btn sm", onclick: () => act("unlimit-reader",
-          { reader: r.reader_address, kind: r.kind, value: r.value }, "Limit removed") }, "Remove"))]],
-      limits, null, emptyState("No Reader Limits", "Everyone sees what their role allows. Add a limit below.", "shield"))),
+    note("Reader limits (keeping some mail from one person) are on the People page."),
   );
   draw();
 }
@@ -783,8 +793,7 @@ async function actionablePage() {
       h("button", { class: "btn primary", type: "submit" }, "Show")),
     h("div", { class: "muted small", style: "margin-top:8px" }, "A profile key or the person's addresses, comma-separated. Leave empty for everyone.")),
   out);
-  const [d, people] = await Promise.all([
-    api("/api/actionable?" + new URLSearchParams({ person: person.value, hours: hours.value })), peoplePanel()]);
+  const d = await api("/api/actionable?" + new URLSearchParams({ person: person.value, hours: hours.value }));
   const detail = h("div", { class: "card reader" }, h("div", { class: "placeholder" },
     h("div", { class: "empty" }, h("div", { class: "i-wrap" }, icon("check")), h("div", { class: "empty-title" }, "Select an Item"),
       h("div", { class: "small" }, "The full message opens here."))));
@@ -808,7 +817,7 @@ async function actionablePage() {
   const who = d.person_check ? d.person_check.name : d.person || "Everyone";
   const how = d.person_check
     ? `The person check is on for ${d.person_check.name}: only emails it judged to be theirs are listed. "Possible" are the ones it was unsure about.`
-    : d.person ? "No person profile matches, so a simpler rule decides (named in the AI's \u201caction for\u201d, or sent to them alone). Add a profile below for the person check." : null;
+    : d.person ? "No person profile matches, so a simpler rule decides (named in the AI's \u201caction for\u201d, or sent to them alone). Add a profile on the People page for the person check." : null;
   out.replaceChildren(
     how ? note(how, d.person_check ? null : "warn") : null,
     h("div", { class: "inbox", style: "margin-top:20px" },
@@ -817,7 +826,8 @@ async function actionablePage() {
         (d.possible || []).length ? card({ title: "Possible", sub: "The person check was unsure.", actions: badge(num(d.possible.length), "warn"), flush: true }, list(d.possible, "possible")) : null,
         card({ title: "Project Risks", actions: badge(num(d.risks.length), "warn"), flush: true }, list(d.risks, "risk"))),
       detail),
-    people);
+    h("div", { class: "muted small", style: "margin-top:16px" }, "Person check profiles are on the ",
+      h("a", { href: "/people" }, "People"), " page."));
 }
 
 // Step-2 person profiles: who someone is and who they must not be confused with.
@@ -848,6 +858,170 @@ async function peoplePanel() {
   h("div", { style: "display:flex;flex-direction:column;gap:14px;margin-top:14px" },
     field("Email Addresses", f.addresses, "(comma-separated)"), field("Role", f.role), field("Not to Be Confused With", f.not_to_confuse),
     h("div", { class: "toolbar" }, switchEl(f.enabled, "Person check on"), h("button", { class: "btn primary", onclick: save }, "Save Person"))));
+}
+
+// ---------- people & permissions (/people) ---------------------------------------
+// Access is app roles on the search API registration (scripts/azure/people.sh).
+// Changes go straight to Microsoft Graph from this page, with the signed-in
+// admin's own delegated token: the console's server never gets this power, and
+// Entra refuses anything that admin could not do in the Entra portal.
+
+const ACCESS = [
+  ["console", "Communications.Admin", "Console", "The admin console: all captured mail, settings, scope and costs. Reader limits do not apply."],
+  ["search", "Communications.Reader.All", "AI Search", "Searching every enrolled mailbox from Claude, ChatGPT and Copilot, minus their reader limits."],
+  ["files", "Communications.Files", "Email & File Links", "Opening email and file links without the console. Which emails open follows their AI Search access."],
+];
+
+async function graph(path, options = {}) {
+  const t = graphToken();
+  if (!t) throw new Error("Connect to Microsoft Entra first.");
+  const res = await fetch("https://graph.microsoft.com/v1.0/" + path, {
+    ...options, headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json", ...(options.headers || {}) },
+  });
+  if (res.status === 401) { ["graph_token", "graph_exp"].forEach(store.del); throw new Error("The Microsoft Entra sign-in expired. Connect again."); }
+  if (res.status === 204) return null;
+  const body = await res.json().catch(() => ({}));
+  if (res.status === 403) throw new Error("Microsoft Entra refused this change: your account needs an Entra role that may manage app access (for example Cloud Application Administrator).");
+  if (!res.ok) throw new Error((body.error && body.error.message) || `Microsoft Graph error ${res.status}`);
+  return body;
+}
+
+async function graphAll(path) {
+  let out = [], next = path;
+  while (next) {
+    const page = await graph(next);
+    out = out.concat(page.value || []);
+    next = page["@odata.nextLink"] ? page["@odata.nextLink"].replace("https://graph.microsoft.com/v1.0/", "") : null;
+  }
+  return out;
+}
+
+// Who holds which of the three roles, by person.
+async function loadAccess() {
+  const sp = await graph(`servicePrincipals(appId='${encodeURIComponent(CFG.api_client_id || "")}')?$select=id,appRoles`);
+  const roleIds = {};
+  for (const [key, value] of ACCESS) {
+    const r = (sp.appRoles || []).find(x => x.value === value && x.isEnabled !== false);
+    if (r) roleIds[key] = r.id;
+  }
+  const byId = Object.fromEntries(Object.entries(roleIds).map(([k, v]) => [v, k]));
+  const people = {};
+  for (const a of await graphAll(`servicePrincipals/${sp.id}/appRoleAssignedTo?$top=999`)) {
+    const key = byId[a.appRoleId];
+    if (!key) continue;
+    const p = people[a.principalId] ||= { id: a.principalId, name: a.principalDisplayName, type: a.principalType, roles: {} };
+    p.roles[key] = a.id;
+  }
+  await Promise.all(Object.values(people).filter(p => p.type === "User").map(async p => {
+    try { p.upn = (await graph(`users/${p.id}?$select=userPrincipalName`)).userPrincipalName.toLowerCase(); } catch { /* shown by name */ }
+  }));
+  return { sp: sp.id, roleIds, people: Object.values(people).sort((a, b) => String(a.name).localeCompare(String(b.name))) };
+}
+
+async function changeAccess(acc, person, key, grant) {
+  const [, , title, what] = ACCESS.find(x => x[0] === key);
+  const me = (keep.get("who") || "").toLowerCase();
+  if (grant) {
+    if (!acc.roleIds[key]) throw new Error(`The ${title} role does not exist yet. Create it once with: bash scripts/azure/people.sh add ${person.upn || "someone@finishessolutions.com"} ${key}`);
+    const ok = await ask({ title: `Give ${person.name || person.upn} ${title}?`, confirm: "Grant Access", danger: key !== "files",
+      text: `${what} ${key === "files" ? "" : "This lets them read other people's mail."}` });
+    if (!ok) return false;
+    await graph(`servicePrincipals/${acc.sp}/appRoleAssignedTo`, { method: "POST",
+      body: JSON.stringify({ principalId: person.id, resourceId: acc.sp, appRoleId: acc.roleIds[key] }) });
+  } else {
+    const self = person.upn && person.upn === me && key === "console";
+    const ok = self
+      ? (await ask({ title: "Remove Your Own Console Access?", danger: true, confirm: "Remove",
+          text: "You will be locked out of this console until someone gives it back.",
+          input: { label: "Type remove to confirm", placeholder: "remove" } })) === "remove"
+      : await ask({ title: `Remove ${title} from ${person.name || person.upn}?`, danger: true, confirm: "Remove Access",
+          text: "It takes effect at their next sign-in (up to an hour for an open session)." });
+    if (!ok) return false;
+    await graph(`servicePrincipals/${acc.sp}/appRoleAssignedTo/${person.roles[key]}`, { method: "DELETE" });
+  }
+  if (person.upn) await post("/api/access-log", { action: grant ? "grant" : "remove", person: person.upn, role: key }).catch(() => {});
+  return true;
+}
+
+function accessCard(acc, limits) {
+  const limitCount = upn => limits.filter(l => l.reader_address === upn).length;
+  const act = guard(async (person, key, grant) => {
+    if (await changeAccess(acc, person, key, grant)) { toast(grant ? "Access granted" : "Access removed"); route(); }
+  });
+  const email = h("input", { placeholder: "someone@finishessolutions.com", style: "width:280px" });
+  const pick = Object.fromEntries(ACCESS.map(([k]) => [k, h("input", { type: "checkbox", checked: k !== "console" })]));
+  const add = guard(async () => {
+    const upn = email.value.trim().toLowerCase();
+    if (!upn.includes("@")) throw new Error("Enter their sign-in email address.");
+    let user;
+    try { user = await graph(`users/${encodeURIComponent(upn)}?$select=id,displayName,userPrincipalName`); }
+    catch { throw new Error(`No Microsoft account ${upn} (check the spelling).`); }
+    const person = acc.people.find(p => p.id === user.id) || { id: user.id, name: user.displayName, upn, roles: {} };
+    let changed = 0;
+    for (const [k] of ACCESS) if (pick[k].checked && !person.roles[k]) changed += (await changeAccess(acc, person, k, true)) ? 1 : 0;
+    toast(changed ? `${changed} access ${changed === 1 ? "role" : "roles"} granted` : "Nothing to change");
+    if (changed) route();
+  });
+  const cell = (p, key) => p.roles[key]
+    ? h("div", { class: "actions" }, badge("Yes", "good", true),
+        h("button", { class: "btn sm ghost", onclick: () => act(p, key, false) }, "Remove"))
+    : h("button", { class: "btn sm", onclick: () => act(p, key, true) }, icon("plus"), "Grant");
+  return card({ title: "Access", flush: true,
+    sub: "Who may use this system. Every role here can read other people's mail; keep the list short. Changes are made in Microsoft Entra as you and take effect at the person's next sign-in.",
+    foot: h("form", { class: "toolbar", onsubmit: e => { e.preventDefault(); add(); } },
+      field("Person", email),
+      ...ACCESS.map(([k, , t]) => h("label", { class: "check", style: "align-self:flex-end;display:flex;gap:6px;align-items:center" }, pick[k], t)),
+      h("button", { class: "btn primary", type: "submit", style: "align-self:flex-end" }, icon("plus"), "Grant Access")) },
+  table([
+    ["Person", p => h("div", {}, h("div", { class: "strong", style: "font-weight:500" }, p.name || "—"),
+      h("div", { class: "muted small" }, p.upn || (p.type === "User" ? "" : p.type)))],
+    ...ACCESS.map(([k, , t, what]) => [h("span", { title: what }, t), p => cell(p, k)]),
+    ["Reader Limits", p => {
+      const n = p.upn ? limitCount(p.upn) : 0;
+      if (!n) return h("span", { class: "muted" }, "—");
+      return h("div", { class: "badges" }, badge(`${n} limit${n === 1 ? "" : "s"}`, "info"),
+        p.roles.console ? badge("Console ignores limits", "warn") : null);
+    }],
+  ], acc.people, null, emptyState("Nobody Has Access", "Grant access below.", "users")));
+}
+
+function readerLimitsCard(limits) {
+  const KINDS = { mailbox: "Mailbox", person: "Person on the email", domain: "Domain", term: "Words in the email" };
+  const reader = h("input", { placeholder: "reader@finishessolutions.com", style: "width:240px" });
+  const kind = h("select", {}, Object.entries(KINDS).map(([k, t]) => h("option", { value: k }, t)));
+  const value = h("input", { placeholder: "address, domain or words", style: "width:220px" });
+  const reason = h("input", { placeholder: "reason_code", value: "private_business" });
+  const act = guard(async (data, msg) => { await post("/api/reader-limits", data); toast(msg); route(); });
+  return card({ title: "Reader Limits", flush: true,
+    sub: "Hide matching mail from one person, in every mailbox and every AI tool, except emails that person is on. Only for people without the console: the console shows all mail.",
+    foot: h("form", { class: "toolbar", onsubmit: e => { e.preventDefault();
+        act({ action: "add", reader: reader.value, kind: kind.value, value: value.value, reason: reason.value }, "Limit added"); } },
+      field("Reader", reader), field("Hide by", kind), field("Value", value), field("Reason", reason),
+      h("button", { class: "btn primary", type: "submit", style: "align-self:flex-end" }, icon("plus"), "Add Limit")) },
+  table([["Reader", r => r.reader_address], ["Hide by", r => KINDS[r.kind] || r.kind],
+    ["Value", r => h("span", { class: "mono" }, r.value)], ["Reason", r => badge(nice(r.reason_code))], ["Added By", r => r.created_by],
+    ["", r => h("div", { class: "actions", style: "justify-content:flex-end" }, h("button", { class: "btn sm", onclick: () => act(
+      { action: "remove", reader: r.reader_address, kind: r.kind, value: r.value }, "Limit removed") }, "Remove"))]],
+  limits, null, emptyState("No Reader Limits", "Everyone sees what their role allows. Add a limit below.", "shield")));
+}
+
+async function peoplePage() {
+  const [limits, profiles] = await Promise.all([api("/api/reader-limits").then(d => d.reader_limits), peoplePanel()]);
+  let access;
+  if (!graphToken()) {
+    access = card({ title: "Access", sub: "Who may use the console, AI search and email links." },
+      graphNote ? note(`Microsoft Entra did not connect: ${graphNote}`, "warn") : null,
+      h("p", { class: "muted", style: "margin:0 0 16px" }, "Viewing and changing access happens in Microsoft Entra as you. Connect once per browser tab; it lasts about an hour."),
+      h("button", { class: "btn primary", onclick: () => signIn(false, "graph") }, icon("users"), "Connect to Microsoft Entra"));
+  } else {
+    try { access = accessCard(await loadAccess(), limits); }
+    catch (e) {
+      if (aborted(e)) throw e;
+      access = card({ title: "Access" }, note(e.message, "warn"),
+        h("button", { class: "btn", style: "margin-top:12px", onclick: () => signIn(false, "graph") }, icon("refresh"), "Connect Again"));
+    }
+  }
+  show(pageHead("People", "Access, reader limits and person checks in one place."), access, readerLimitsCard(limits), profiles);
 }
 
 async function unpublishedPage() {
@@ -2811,12 +2985,13 @@ const NAV = [
   ["risks", "Risk Analysis", "alert"], ["knowledge", "Knowledge", "layers"], ["reports", "Reports", "report"],
   ["review", "Label Review", "review"],
   null,
-  ["lab", "Lab", "lab"], ["connections", "Connections", "plug"],
+  ["lab", "Lab", "lab"], ["connections", "Connections", "plug"], ["people", "People", "users"],
 ];
 const NAV_GROUPS = ["Operations", "Mail", "Insights", "Tools"];
 const PAGES = { overview, schedule: schedulePage, costs: costsPage, mailboxes: mailboxesPage, messages: messagesPage,
   actionable: actionablePage, unpublished: unpublishedPage, lab: labPage, connections: connectionsPage,
-  risks: risksPage, knowledge: knowledgePage, reports: reportsPage, review: reviewPage, check: reviewPage, read: readerPage };
+  risks: risksPage, knowledge: knowledgePage, reports: reportsPage, review: reviewPage, check: reviewPage, read: readerPage,
+  people: peoplePage };
 
 function drawNav() {
   const nav = document.getElementById("tabs");

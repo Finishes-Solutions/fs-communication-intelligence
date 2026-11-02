@@ -21,6 +21,8 @@
 #             search role (with search, every enrolled mailbox).
 # Each grant is a decision about who may read everyone's mail; keep the list short
 # and review it (bash scripts/azure/people.sh list).
+# The console's People page does the same in the browser, as the signed-in admin
+# (turn it on once with scripts/azure/9-console-people.sh).
 # To keep some mail from one search/files reader (e.g. another person's private
 # mail), add reader limits in the console (Mailboxes & Scope > Reader Limits) or
 # with `ci limit`. Limits do not apply to the console role, which shows all mail.
