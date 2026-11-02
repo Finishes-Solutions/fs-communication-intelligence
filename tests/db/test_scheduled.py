@@ -11,6 +11,9 @@ from ci_core.db import connect
 from ci_core.operator import exclude_mailbox
 from ci_core.settings import load_settings
 
+# The synthetic fixtures are dated up to 2026-10-28; captures end there, not today.
+NOW = datetime(2026, 10, 28, 15, 0, tzinfo=UTC)
+
 
 @pytest.fixture(autouse=True)
 def env(monkeypatch: pytest.MonkeyPatch, database: str) -> None:
@@ -33,19 +36,19 @@ def test_first_run_inventories_then_refuses_until_mailboxes_are_approved(
     monkeypatch.setenv("PROCESSING_ENABLED", "true")
     with connect() as conn:
         tenant_init(conn, "pytest")
-    assert run_capture(load_settings()) is None  # inventory ran; nothing approved yet
+    assert run_capture(load_settings(), NOW) is None  # inventory ran; nothing approved yet
     with connect() as conn:
         include_all_enrolled(conn, "pytest")
         exclude_mailbox(
             conn, "casey.private@finishessolutions.example", "pytest", reason="personal_mailbox"
         )
-    captured = run_capture(load_settings())
+    captured = run_capture(load_settings(), NOW)
     assert captured is not None and captured["new_version"] == 20
     processed = run_processing(load_settings())
     assert processed is not None
     rated = processed.pop("risks_rated", 0)  # the risk-matrix rating step, after processing
     assert sum(processed.values()) == 20 and rated > 0
-    again = run_capture(load_settings())
+    again = run_capture(load_settings(), NOW)
     assert again is not None and again.get("new_version", 0) == 0
 
 
@@ -53,7 +56,7 @@ def test_scheduler_tick_follows_the_schedule_and_records_runs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("CAPTURE_ENABLED", "true")
-    now = datetime(2026, 10, 28, 15, 0, tzinfo=UTC)
+    now = NOW
     assert scheduler_tick(load_settings(), now).reason == "capture is turned off"
     with connect(role="ci_operator") as conn:
         ops.update_schedule(

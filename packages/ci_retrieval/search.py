@@ -117,6 +117,11 @@ class Result:
     other_authorized_copies: int = 0
 
 
+def utcnow() -> datetime:
+    """The current time; tests pin it so windows match the fixtures' fixed dates."""
+    return datetime.now(UTC)
+
+
 def authorize(conn: Connection, principal: Principal) -> Authorization:
     rows = conn.execute(
         "SELECT DISTINCT corpus_id::text FROM access_grants WHERE revoked_at IS NULL"
@@ -928,7 +933,7 @@ def list_actionable(
     """
     addresses = sorted({a.strip().lower() for a in (person or "").split(",") if a.strip()})
     people = addresses or None
-    since = datetime.now(UTC) - timedelta(hours=hours)
+    since = utcnow() - timedelta(hours=hours)
     profile = _profile(conn, addresses)
     possible: list[dict[str, Any]] = []
     if profile is not None:

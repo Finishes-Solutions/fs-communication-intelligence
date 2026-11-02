@@ -39,8 +39,11 @@ def _connect(role: AppRole | None) -> Connection:
     return connect(role=role or "ci_ingest")
 
 
-def capture_now(settings: Settings, hours: float) -> tuple[str, dict[str, int]]:
-    """Inventory sync, then capture the last ``hours`` from every eligible mailbox.
+def capture_now(
+    settings: Settings, hours: float, now: datetime | None = None
+) -> tuple[str, dict[str, int]]:
+    """Inventory sync, then capture the ``hours`` before ``now`` (default: the
+    current time) from every eligible mailbox.
 
     Returns a run status (``succeeded``, ``partial``, ``refused``) and counts.
     """
@@ -59,6 +62,7 @@ def capture_now(settings: Settings, hours: float) -> tuple[str, dict[str, int]]:
             include_sent=settings.email_include_sent,
             profile=capture_profile(settings),
             workers=settings.capture_workers,
+            now=now,
         )
     except (EmptyScopeError, RuntimeConfigError) as exc:
         log.warning("capture refused: %s", type(exc).__name__)
@@ -73,12 +77,13 @@ def capture_now(settings: Settings, hours: float) -> tuple[str, dict[str, int]]:
     return ("partial" if total["mailbox_errors"] else "succeeded"), dict(total)
 
 
-def run_capture(settings: Settings) -> dict[str, int] | None:
-    """Capture ``CAPTURE_HOURS`` now, ignoring the schedule (CLI and tests)."""
+def run_capture(settings: Settings, now: datetime | None = None) -> dict[str, int] | None:
+    """Capture the ``CAPTURE_HOURS`` before ``now`` (default: the current time),
+    ignoring the schedule (CLI and tests)."""
     if not settings.capture_enabled:
         log.info("capture skipped: CAPTURE_ENABLED is false")
         return None
-    status, counts = capture_now(settings, settings.capture_hours)
+    status, counts = capture_now(settings, settings.capture_hours, now)
     return None if status == "refused" else counts
 
 
@@ -98,7 +103,7 @@ def scheduler_tick(settings: Settings, now: datetime | None = None) -> ops.Decis
         run_id = ops.begin_capture(conn, decision, now)
         conn.commit()
     try:
-        status, counts = capture_now(settings, decision.hours)
+        status, counts = capture_now(settings, decision.hours, now)
         error = None
     except Exception as exc:  # recorded as a code; the next tick tries again
         status, counts, error = "failed", {}, type(exc).__name__[:60]
