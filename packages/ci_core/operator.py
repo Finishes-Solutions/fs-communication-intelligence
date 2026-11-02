@@ -221,7 +221,10 @@ READER_LIMIT_KINDS = ("mailbox", "person", "domain", "term")
 
 
 def list_reader_limits(conn: Connection) -> list[dict[str, Any]]:
-    """Active per-reader limits (migration 0024), by reader."""
+    """Active per-reader limits (migration 0024), by reader; none before it is applied."""
+    found = conn.execute("SELECT to_regclass('ci.reader_restrictions') AS t").fetchone()
+    if not found or not found["t"]:
+        return []
     return conn.execute(
         "SELECT id::text, reader_address, kind, value, reason_code, created_by, created_at"
         " FROM reader_restrictions WHERE revoked_at IS NULL"
