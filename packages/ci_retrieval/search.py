@@ -90,6 +90,9 @@ NO_FILTERS = Filters()
 class Authorization:
     corpora: list[str]
     own_mailbox: str | None
+    # Set when this reader has per-reader limits (migration 0024): their sign-in
+    # address, checked against ci.reader_hidden() for every message.
+    restricted_reader: str | None = None
 
     @property
     def empty(self) -> bool:
@@ -122,15 +125,29 @@ def authorize(conn: Connection, principal: Principal) -> Authorization:
         "   OR (principal_type = 'entra_user' AND principal_id = %s))",
         (list(principal.roles), principal.oid),
     ).fetchall()
-    return Authorization([r["corpus_id"] for r in rows], principal.own_mailbox)
+    auth = Authorization([r["corpus_id"] for r in rows], principal.own_mailbox)
+    limits = conn.execute(
+        "SELECT r.* FROM (SELECT to_regprocedure('ci.reader_restricted(text)') IS NOT NULL AS on_)"
+        " o LEFT JOIN LATERAL ci.reader_restricted(%s) r ON o.on_",
+        (principal.upn,),
+    ).fetchone()
+    if limits and limits["anyone"]:
+        if not principal.upn:
+            # Rules are keyed by address: without one they could not be applied.
+            return Authorization([], None)
+        if limits["mine"]:
+            auth.restricted_reader = principal.upn
+    return auth
 
 
-# Applied to a row alias exposing corpus_id and communication_id.
-_AUTH = """(
+# Applied to a row alias exposing corpus_id and communication_id. The last
+# part applies per-reader limits (migration 0024); it only ever narrows.
+_AUTH = """((
     {a}.corpus_id = ANY(%(corpora)s::uuid[])
     OR (%(own)s::text IS NOT NULL AND EXISTS (
         SELECT 1 FROM published_email_messages own
-        WHERE own.communication_id = {a}.communication_id AND own.mailbox_address = %(own)s)))"""
+        WHERE own.communication_id = {a}.communication_id AND own.mailbox_address = %(own)s)))
+    AND (%(limited)s::text IS NULL OR NOT ci.reader_hidden({a}.communication_id, %(limited)s)))"""
 
 _FILTERS = """
     AND (%(mailbox)s::text IS NULL OR EXISTS (
@@ -163,6 +180,7 @@ def _params(auth: Authorization, filters: Filters) -> dict[str, Any]:
     return {
         "corpora": auth.corpora,
         "own": auth.own_mailbox,
+        "limited": auth.restricted_reader,
         "mailbox": filters.mailbox.lower() if filters.mailbox else None,
         "sender": filters.sender.lower() if filters.sender else None,
         "since": filters.since,

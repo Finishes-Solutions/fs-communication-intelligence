@@ -606,6 +606,13 @@ async function mailboxesPage() {
   });
   const pattern = h("input", { placeholder: "name@example.com or @example.com", style: "width:300px" });
   const preason = h("input", { placeholder: "reason_code", value: "privacy" });
+  // Per-reader limits (migration 0024): hide matching mail from one person.
+  const LIMIT_KINDS = { mailbox: "Mailbox", person: "Person on the email", domain: "Domain", term: "Words in the email" };
+  const lreader = h("input", { placeholder: "reader@finishessolutions.com", style: "width:240px" });
+  const lkind = h("select", {}, Object.entries(LIMIT_KINDS).map(([k, t]) => h("option", { value: k }, t)));
+  const lvalue = h("input", { placeholder: "address, domain or words", style: "width:220px" });
+  const lreason = h("input", { placeholder: "reason_code", value: "private_business" });
+  const limits = d.reader_limits || [];
   show(
     pageHead("Mailboxes & Scope", "Which mailboxes are captured. Exclusions always win over approvals.",
       h("button", { class: "btn", onclick: () => act("include-all", {}, "All reachable mailboxes approved for test") }, icon("ok"), "Approve All Enrolled (Test)")),
@@ -626,6 +633,17 @@ async function mailboxesPage() {
         ["", r => h("div", { class: "actions", style: "justify-content:flex-end" }, h("button", { class: "btn sm", onclick: () => act("unexclude-participant",
           { pattern: r.exclusion_kind === "participant_domain" ? "@" + r.pattern : r.pattern }, "Exclusion removed") }, "Remove"))]],
       d.participant_exclusions, null, emptyState("No Exclusions", "Add a person or @domain below.", "ban"))),
+    card({ title: "Reader Limits", sub: "Hide matching mail from one person, in every mailbox and every AI tool, except emails that person is on. "
+        + "Only for people without the console: the console shows all mail.", flush: true,
+      foot: h("form", { class: "toolbar", onsubmit: e => { e.preventDefault();
+          act("limit-reader", { reader: lreader.value, kind: lkind.value, value: lvalue.value, reason: lreason.value }, "Limit added"); } },
+        field("Reader", lreader), field("Hide by", lkind), field("Value", lvalue), field("Reason", lreason),
+        h("button", { class: "btn primary", type: "submit", style: "align-self:flex-end" }, icon("plus"), "Add Limit")) },
+      table([["Reader", r => r.reader_address], ["Hide by", r => LIMIT_KINDS[r.kind] || r.kind],
+        ["Value", r => h("span", { class: "mono" }, r.value)], ["Reason", r => badge(nice(r.reason_code))], ["Added By", r => r.created_by],
+        ["", r => h("div", { class: "actions", style: "justify-content:flex-end" }, h("button", { class: "btn sm", onclick: () => act("unlimit-reader",
+          { reader: r.reader_address, kind: r.kind, value: r.value }, "Limit removed") }, "Remove"))]],
+      limits, null, emptyState("No Reader Limits", "Everyone sees what their role allows. Add a limit below.", "shield"))),
   );
   draw();
 }

@@ -21,6 +21,9 @@
 #             search role (with search, every enrolled mailbox).
 # Each grant is a decision about who may read everyone's mail; keep the list short
 # and review it (bash scripts/azure/people.sh list).
+# To keep some mail from one search/files reader (e.g. another person's private
+# mail), add reader limits in the console (Mailboxes & Scope > Reader Limits) or
+# with `ci limit`. Limits do not apply to the console role, which shows all mail.
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
 graph() { az rest --method "$1" --uri "https://graph.microsoft.com/v1.0/$2" \
