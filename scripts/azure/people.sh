@@ -85,7 +85,10 @@ for a in json.load(sys.stdin)["value"]:
         print(a["appRoleId"], a["id"])')"
 
 for role in $roles; do
-  label="$(case "$role" in "$ADMIN_ROLE") echo console ;; "$FILES_ROLE") echo files ;; *) echo search ;; esac)"
+  # if/elif, not case inside $(...): macOS bash 3.2 cannot parse a case there.
+  if [ "$role" = "$ADMIN_ROLE" ]; then label=console
+  elif [ "$role" = "$FILES_ROLE" ]; then label=files
+  else label=search; fi
   assignment="$(echo "$existing" | awk -v r="$role" '$1 == r {print $2}')"
   if [ "$action" = "add" ]; then
     if [ -n "$assignment" ]; then echo "  $upn already has $label"; continue; fi
