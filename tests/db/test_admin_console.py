@@ -187,7 +187,7 @@ def test_page_and_sign_in_config_are_public_and_locked_down(client: TestClient) 
     assert "script-src 'self'" in csp and "frame-ancestors 'none'" in csp
     assert page.headers["x-content-type-options"] == "nosniff"
     # Every console page is a plain path serving the same locked-down page.
-    pages = ("/overview", "/reports", "/messages?q=invoice", "/review", "/check")
+    pages = ("/overview", "/reports", "/messages?q=invoice", "/review", "/check", "/people")
     for path in (*pages, "/read/0b5a5d6e-0000-4000-8000-000000000001?file=ab"):
         same = client.get(path)
         assert same.status_code == 200 and same.text == page.text, path
@@ -199,7 +199,12 @@ def test_page_and_sign_in_config_are_public_and_locked_down(client: TestClient) 
         "client_id": "admin-spa",
         "scope": f"{API_URI}/{ADMIN_SCOPE}",
         "environment": "development",
+        "api_client_id": API_ID,
     }
+    # The People page talks to Microsoft Graph from the browser, and nothing else new.
+    assert (
+        "connect-src 'self' https://login.microsoftonline.com https://graph.microsoft.com;" in csp
+    )
     assert client.get("/api/overview").headers["www-authenticate"].startswith("Bearer")
 
 
@@ -1019,3 +1024,51 @@ def test_lab_shows_what_an_email_would_teach(client: TestClient) -> None:
         },
     ).json()
     assert phishing["knowledge_ai"] is None  # phishing indicators teach nothing
+
+
+def test_people_page_reader_limits_and_access_log(client: TestClient, database_ready: str) -> None:
+    will = "will.reader@finishessolutions.example"
+    add = {"action": "add", "reader": will, "kind": "domain", "value": "@example-gc.example"}
+    assert (
+        client.post("/api/reader-limits", headers=auth(), json=add).status_code == 400
+    )  # no reason
+    added = client.post(
+        "/api/reader-limits", headers=auth(), json=add | {"reason": "private_business"}
+    )
+    assert added.status_code == 200
+    assert [
+        (r["reader_address"], r["kind"], r["value"]) for r in added.json()["reader_limits"]
+    ] == [(will, "domain", "example-gc.example")]
+    files_only = auth(roles=[READER_ALL, FILES_ROLE])
+    assert client.get("/api/reader-limits", headers=files_only).status_code == 403
+    gone = client.post("/api/reader-limits", headers=auth(), json=add | {"action": "remove"})
+    assert gone.status_code == 200 and gone.json()["reader_limits"] == []
+    # Access changes are made in Entra by the browser; the console records them.
+    for body, status in (
+        ({"action": "grant", "person": will, "role": "search"}, 200),
+        ({"action": "grant", "person": will, "role": "everything"}, 400),
+        ({"action": "delete", "person": will, "role": "files"}, 400),
+        ({"action": "remove", "person": "not an address", "role": "files"}, 400),
+    ):
+        assert client.post("/api/access-log", headers=auth(), json=body).status_code == status
+    assert (
+        client.post(
+            "/api/access-log",
+            headers=files_only,
+            json={"action": "grant", "person": will, "role": "files"},
+        ).status_code
+        == 403
+    )
+    with connect(dbname=database_ready) as conn:
+        rows = conn.execute(
+            "SELECT actor_id, action, target_id, details->>'person' AS person FROM audit_events"
+            " WHERE action LIKE 'access_%' OR action LIKE 'reader_limit_%' ORDER BY id"
+        ).fetchall()
+    assert [(r["action"], r["target_id"]) for r in rows][-1] == (
+        "access_grant",
+        "Communications.Reader.All",
+    )
+    assert (
+        rows[-1]["person"] == will and rows[-1]["actor_id"] == "matthew@finishessolutions.example"
+    )
+    assert {r["action"] for r in rows} >= {"reader_limit_add", "reader_limit_remove"}

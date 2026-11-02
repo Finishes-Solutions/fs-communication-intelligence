@@ -100,6 +100,12 @@ ADMIN_SCOPE = "Communications.Console"  # Entra refuses a scope and a role with 
 ADMIN_ROLE = "Communications.Admin"
 # Opens emails and files from links (the read-only page) without the console.
 FILES_ROLE = "Communications.Files"
+# The app roles the People page grants, by their short names (scripts/azure/people.sh).
+ACCESS_ROLES = {
+    "console": ADMIN_ROLE,
+    "search": "Communications.Reader.All",
+    "files": FILES_ROLE,
+}
 # What the read-only page calls: one email, its files and the label names.
 READER_PAGE = (ADMIN_ROLE, FILES_ROLE)
 STATIC = Path(__file__).parent / "static"
@@ -120,6 +126,7 @@ PAGES = (
     "knowledge",
     "lab",
     "connections",
+    "people",
 )
 
 Connector = Callable[[str], Connection]
@@ -147,7 +154,10 @@ Handler = Callable[[Request, Principal, dict[str, Any]], Any]
 
 _CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; "
-    "connect-src 'self' https://login.microsoftonline.com; frame-src blob:; "
+    # graph.microsoft.com: the People page changes app role assignments in the
+    # browser with the signed-in admin's own delegated Graph token (never the server's).
+    "connect-src 'self' https://login.microsoftonline.com https://graph.microsoft.com; "
+    "frame-src blob:; "
     "object-src blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
 )
 _HEADERS = [
@@ -468,7 +478,6 @@ def build_admin_app(
             return {
                 "mailboxes": [m.__dict__ for m in list_mailboxes(conn)],
                 "participant_exclusions": list_participant_exclusions(conn),
-                "reader_limits": list_reader_limits(conn),
             }
 
     def mailbox_action(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
@@ -498,16 +507,6 @@ def build_admin_app(
                 )
             elif action == "unexclude-participant":
                 exclude_participant(conn, str(body.get("pattern") or ""), actor, revoke=True)
-            elif action in ("limit-reader", "unlimit-reader"):
-                limit_reader(
-                    conn,
-                    str(body.get("reader") or ""),
-                    str(body.get("kind") or ""),
-                    str(body.get("value") or ""),
-                    actor,
-                    reason=body.get("reason"),
-                    revoke=action == "unlimit-reader",
-                )
             else:
                 raise HTTPException(404, "unknown action")
             conn.commit()
@@ -886,6 +885,43 @@ def build_admin_app(
                 conn.commit()
             return {"people": list_people(conn)}
 
+    def reader_limits(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        with connector("ci_operator") as conn:
+            if request.method == "POST":
+                limit_reader(
+                    conn,
+                    str(body.get("reader") or ""),
+                    str(body.get("kind") or ""),
+                    str(body.get("value") or ""),
+                    _actor(principal),
+                    reason=body.get("reason"),
+                    revoke=body.get("action") == "remove",
+                )
+                conn.commit()
+            return {"reader_limits": list_reader_limits(conn)}
+
+    def access_log(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        """Records an app role change the People page just made in Entra (with the
+        admin's own Graph token). Entra's audit log is the authoritative record;
+        this keeps it in the console's history next to the other changes."""
+        action, role_name = body.get("action"), body.get("role")
+        person = str(body.get("person") or "")
+        if action not in ("grant", "remove") or role_name not in ACCESS_ROLES:
+            raise OperatorError("action must be grant or remove, role console, search or files")
+        if not re.fullmatch(r"[^@\s]{1,64}@[a-z0-9.-]{3,190}", person.lower()):
+            raise OperatorError("person must be a sign-in address")
+        with connector("ci_operator") as conn:
+            audit(
+                conn,
+                _actor(principal),
+                f"access_{action}",
+                "app_role",
+                ACCESS_ROLES[role_name],
+                {"person": person.lower(), "via": "console_people_page"},
+            )
+            conn.commit()
+        return {"ok": True}
+
     def lab_classify(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
         item = lab.pasted_input(body)
         person = lab.addresses(body.get("person"))
@@ -1123,6 +1159,8 @@ def build_admin_app(
                 "client_id": settings.admin_spa_client_id,
                 "scope": verifier.scope_uri,
                 "environment": settings.deployment_environment.value,
+                # The search API registration whose app roles the People page manages.
+                "api_client_id": settings.search_api_client_id,
             }
         )
 
@@ -1167,6 +1205,8 @@ def build_admin_app(
         Route("/api/knowledge/{id}/{action}", endpoint(knowledge_action), methods=["POST"]),
         Route("/api/review/next", endpoint(review_next)),
         Route("/api/people", endpoint(people), methods=["GET", "PUT"]),
+        Route("/api/reader-limits", endpoint(reader_limits), methods=["GET", "POST"]),
+        Route("/api/access-log", endpoint(access_log), methods=["POST"]),
         Route("/api/calibration", endpoint(calibration_report)),
         Route("/api/lab/classify", endpoint(lab_classify), methods=["POST"]),
         Route("/api/lab/reclassify", endpoint(lab_reclassify), methods=["POST"]),
