@@ -278,14 +278,23 @@ class FixtureGraphClient:
         self._rounds[token] = _Round(items, mailbox_id, folder_id, current)
         return self._page(token)
 
-    def list_messages(self, mailbox_id: str, *, received_since: datetime) -> list[dict[str, Any]]:
+    def list_messages(
+        self,
+        mailbox_id: str,
+        *,
+        received_since: datetime,
+        received_until: datetime | None = None,
+    ) -> list[dict[str, Any]]:
         self._count("list_messages")
         mailbox = self._mailbox(mailbox_id)
         self._raise_fault("list_messages", mailbox_id, None, delta_link=False)
         found = []
         for loc in self._located.values():
             received = datetime.fromisoformat(loc.fixture.message["receivedDateTime"])
-            if loc.mailbox_id == mailbox_id and received >= received_since:
+            in_window = received >= received_since and (
+                received_until is None or received < received_until
+            )
+            if loc.mailbox_id == mailbox_id and in_window:
                 message = copy.deepcopy(loc.fixture.message)
                 message["parentFolderId"] = mailbox.folder_id(loc.folder)
                 found.append(message)

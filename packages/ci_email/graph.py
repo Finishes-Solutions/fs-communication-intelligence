@@ -25,6 +25,7 @@ counts and reason codes only.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, Protocol
@@ -121,11 +122,19 @@ class GraphClient(Protocol):
         """Start a round with ``link=None`` or continue from a next/delta link."""
         ...
 
-    def list_messages(self, mailbox_id: str, *, received_since: datetime) -> list[dict[str, Any]]:
-        """Messages received since a time, in every folder, as Graph JSON (MESSAGE_SELECT).
+    def list_messages(
+        self,
+        mailbox_id: str,
+        *,
+        received_since: datetime,
+        received_until: datetime | None = None,
+    ) -> Iterable[dict[str, Any]]:
+        """Messages received since a time (and before ``received_until``, when given),
+        in every folder, as Graph JSON (MESSAGE_SELECT). May be lazy: a backfill
+        window of a busy mailbox must not be held in memory at once.
 
-        Used for bounded windows (``ci capture --hours``). Continuous capture
-        uses per-folder delta.
+        Used for bounded windows (``ci capture --hours``, backfill windows).
+        Continuous capture uses per-folder delta.
         """
         ...
 
