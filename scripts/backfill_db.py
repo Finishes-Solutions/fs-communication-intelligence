@@ -35,7 +35,7 @@ LIMIT 1
 
 def connect(autocommit: bool = False) -> psycopg.Connection[tuple[object, ...]]:
     if os.environ.get("DATABASE_AUTH", "").lower() == "entra" and "PGPASSWORD" not in os.environ:
-        os.environ["PGPASSWORD"] = subprocess.check_output(  # noqa: S603
+        os.environ["PGPASSWORD"] = subprocess.check_output(
             [  # noqa: S607 - the operator's Azure CLI
                 "az",
                 "account",
