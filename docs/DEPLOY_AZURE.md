@@ -232,6 +232,18 @@ shows windows per state, the period still to capture, the running window and the
 
 **Extra processors without VM quota.** When the subscription has no VM cores (2026-11-03: Central US allowed 10 regional and 0 DSv5 cores), `bash scripts/azure/11-extra-processors.sh` builds the ingestion package locally and deploys it to `N` (default 3) more Flex Consumption apps named `<ingestion app>-p1..pN`, with the ingestion identity, storage and settings, capture off and `WORKERS` (96) processing workers each. They work the same queue; `--status` lists them and `--stop` deletes them. Later GitHub deploys update only the main app.
 
+**Scale back down when the backfill is done** (all windows `done` in `ci backfill status`, and `ci runs` shows nothing waiting to be processed). Run as svc_automation:
+
+```bash
+bash scripts/azure/11-extra-processors.sh --stop
+bash scripts/azure/10-backfill-worker.sh --stop
+az functionapp config appsettings set -g fs-communication-intelligence -n func-fs-ci-ing-dev-1026 --settings PROCESSING_WORKERS=4 PROCESSING_MINUTES=8 CAPTURE_WORKERS=6 EMBEDDING_TOKENS_PER_MINUTE=300000 -o none
+az functionapp scale config set -g fs-communication-intelligence -n func-fs-ci-ing-dev-1026 --instance-memory 2048
+az postgres flexible-server update -g fs-communication-intelligence -n psql-fs-ci-dev-1026b --tier Burstable --sku-name Standard_B2ms
+```
+
+The database restarts for a few minutes. Its storage cannot shrink (128 GB stays). Azure OpenAI capacity is a rate limit, billed per token used, so it can stay raised. The paid safety checks stay as they were set for the run; `ci schedule set --shield-on --masking-on` turns them back on (that raises the cost per email).
+
 **How long and how much.** Volume since 2026-09-01 is about 19,000 indexed emails a month across 176 mailboxes, so a backfill to 2025-01-01 is roughly 380,000 emails, less where mailboxes are newer or mail was deleted. Capture is bounded by Microsoft Graph (10,000 requests per 10 minutes and 4 concurrent requests per mailbox): the busiest mailboxes take several hours each, in parallel. Processing is bounded by the Azure OpenAI quotas and `PROCESSING_WORKERS`: at the default 4 workers about 20,000 emails a day; raise the deployments' capacity and the workers for a faster run (see *Processing speed and Azure OpenAI rate limits*). The AI cost does not depend on speed: at the unverified list prices about $0.005 per indexed email with the paid checks off and about $0.012 with masking and Prompt Shields on. Check the Costs page's billed figure per email before a large run.
 
 ## 8. Test
