@@ -240,11 +240,11 @@ bash scripts/azure/10-backfill-worker.sh --stop
 az functionapp config appsettings set -g fs-communication-intelligence -n func-fs-ci-ing-dev-1026 --settings PROCESSING_WORKERS=4 PROCESSING_MINUTES=8 CAPTURE_WORKERS=6 EMBEDDING_TOKENS_PER_MINUTE=300000 -o none
 az functionapp scale config set -g fs-communication-intelligence -n func-fs-ci-ing-dev-1026 --instance-memory 2048
 az postgres flexible-server update -g fs-communication-intelligence -n psql-fs-ci-dev-1026b --tier Burstable --sku-name Standard_B2ms
-az postgres flexible-server parameter set -g fs-communication-intelligence --server-name psql-fs-ci-dev-1026b --name synchronous_commit --value on
+uv run --env-file local/azure-dev.env python -c "import os,psycopg,subprocess; os.environ['PGPASSWORD']=subprocess.check_output(['az','account','get-access-token','--resource-type','oss-rdbms','--query','accessToken','-o','tsv'],text=True).strip(); psycopg.connect(autocommit=True).execute('ALTER DATABASE ci RESET synchronous_commit')"
 az postgres flexible-server update -g fs-communication-intelligence -n psql-fs-ci-dev-1026b --performance-tier P10
 ```
 
-During the 2026-11-03 backfill the disk, not the CPU, became the limit: hundreds of workers waited on `WALWrite` with the 128 GB disk at its baseline 500 IOPS (P10). Two settings fixed it for the run: `synchronous_commit=off` (a commit no longer waits for the disk; after a server crash the last fraction of a second of finished work can be lost and those emails are processed again, nothing is corrupted) and the disk's performance tier raised to P40 (7,500 IOPS). Both are undone above; Azure allows lowering the tier only 12 hours after raising it.
+During the 2026-11-03 backfill the disk, not the CPU, became the limit: hundreds of workers waited on `WALWrite` with the 128 GB disk at its baseline 500 IOPS (P10). Two settings fixed it for the run: `synchronous_commit=off`, set with `ALTER DATABASE ci SET` because Azure makes the server parameter read-only (a commit no longer waits for the disk; after a server crash the last fraction of a second of finished work can be lost and those emails are processed again, nothing is corrupted) and the disk's performance tier raised to P40 (7,500 IOPS). Both are undone above; Azure allows lowering the tier only 12 hours after raising it.
 
 The database restarts for a few minutes. Its storage cannot shrink (128 GB stays). Azure OpenAI capacity is a rate limit, billed per token used, so it can stay raised. The paid safety checks stay as they were set for the run; `ci schedule set --shield-on --masking-on` turns them back on (that raises the cost per email).
 
