@@ -26,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import partial
+from itertools import islice
 from typing import Any
 
 import psycopg
@@ -54,7 +55,12 @@ class MailboxResult:
     error: str | None = None
 
 
-MAX_CAPTURE_HOURS = 24 * 93  # a backfill may reach back 93 days
+MAX_CAPTURE_HOURS = 24 * 93  # one capture window may span 93 days (a backfill plan has many)
+# Attachment listings fetched at once for one mailbox: Graph allows four concurrent
+# requests per app and mailbox (learn.microsoft.com/graph/throttling-limits).
+ATTACHMENT_FETCHERS = 4
+# Messages taken from the listing before their attachments are fetched together.
+FETCH_BATCH = 50
 
 
 def _addresses(message: dict[str, Any], key: str) -> list[tuple[str, str | None]]:
@@ -299,63 +305,93 @@ def capture_mailbox(
     since: datetime,
     include_sent: bool,
     profile: dict[str, Any],
+    until: datetime | None = None,
 ) -> MailboxResult:
+    """Store every message of one mailbox received in [since, until).
+
+    The listing is consumed lazily in batches of FETCH_BATCH; each batch's
+    attachment listings are fetched with up to ATTACHMENT_FETCHERS requests at
+    once (Graph's per-mailbox concurrency limit), then stored one by one on this
+    mailbox's connection."""
     result = MailboxResult(scope.address)
     try:
         folders = graph.well_known_folder_ids(scope.native_scope_id)
         skip_names = SKIPPED_WELL_KNOWN_FOLDERS | (set() if include_sent else {SENT_ITEMS})
         skip_ids = {fid for name, fid in folders.items() if name in skip_names}
-        messages = graph.list_messages(scope.native_scope_id, received_since=since)
+        messages = iter(
+            graph.list_messages(scope.native_scope_id, received_since=since, received_until=until)
+        )
     except GraphError as exc:
         result.error = type(exc).__name__
         log.warning("capture failed for scope %s: %s", scope.scope_id, type(exc).__name__)
         return result
-    with connect() as conn:
-        for message in messages:
-            result.counts["listed"] += 1
-            if message.get("isDraft"):
-                result.counts["skipped_draft"] += 1
-                continue
-            if message.get("parentFolderId") in skip_ids:
-                result.counts["skipped_folder"] += 1
-                continue
-            if item_excluded(conn, scope.connection_id, message["id"]) or excluded_by_participant(
-                conn, message
-            ):
-                result.counts["excluded_participant_or_item"] += 1
-                continue
+    with connect() as conn, ThreadPoolExecutor(max_workers=ATTACHMENT_FETCHERS) as fetchers:
+        while True:
             try:
-                # Graph reports hasAttachments=false for inline-only images, so
-                # signature logos are not listed (one call saved per message).
-                attachments = (
-                    graph.list_attachments(scope.native_scope_id, message["id"])
-                    if message.get("hasAttachments")
-                    else []
+                batch = list(islice(messages, FETCH_BATCH))
+            except GraphError as exc:  # a later page failed; what was stored stays
+                result.error = type(exc).__name__
+                log.warning("listing stopped for scope %s: %s", scope.scope_id, type(exc).__name__)
+                break
+            if not batch:
+                break
+            wanted: list[dict[str, Any]] = []
+            for message in batch:
+                result.counts["listed"] += 1
+                if message.get("isDraft"):
+                    result.counts["skipped_draft"] += 1
+                    continue
+                if message.get("parentFolderId") in skip_ids:
+                    result.counts["skipped_folder"] += 1
+                    continue
+                excluded = item_excluded(conn, scope.connection_id, message["id"])
+                if excluded or excluded_by_participant(conn, message):
+                    result.counts["excluded_participant_or_item"] += 1
+                    continue
+                wanted.append(message)
+            # Graph reports hasAttachments=false for inline-only images, so
+            # signature logos are not listed (one call saved per message).
+            listings = list(
+                fetchers.map(
+                    lambda m: _attachments_or_error(graph, scope.native_scope_id, m), wanted
                 )
-            except GraphError as exc:
-                result.counts[f"error_{type(exc).__name__}"] += 1
-                continue
-            try:
-                outcome = _store_with_retry(
-                    conn,
-                    partial(
-                        store_message,
+            )
+            for message, attachments in zip(wanted, listings, strict=True):
+                if isinstance(attachments, GraphError):
+                    result.counts[f"error_{type(attachments).__name__}"] += 1
+                    continue
+                try:
+                    outcome = _store_with_retry(
                         conn,
-                        dataset=dataset,
-                        scope=scope,
-                        corpus_id=corpus_id,
-                        message=message,
-                        attachments=attachments,
-                        profile=profile,
-                    ),
-                )
-            except psycopg.Error as exc:  # one message must not fail the whole capture
-                conn.rollback()
-                result.counts[f"error_db_{type(exc).__name__}"] += 1
-                log.warning("message not stored: %s", type(exc).__name__)
-                continue
-            result.counts[outcome] += 1
+                        partial(
+                            store_message,
+                            conn,
+                            dataset=dataset,
+                            scope=scope,
+                            corpus_id=corpus_id,
+                            message=message,
+                            attachments=attachments,
+                            profile=profile,
+                        ),
+                    )
+                except psycopg.Error as exc:  # one message must not fail the whole capture
+                    conn.rollback()
+                    result.counts[f"error_db_{type(exc).__name__}"] += 1
+                    log.warning("message not stored: %s", type(exc).__name__)
+                    continue
+                result.counts[outcome] += 1
     return result
+
+
+def _attachments_or_error(
+    graph: GraphClient, mailbox_id: str, message: dict[str, Any]
+) -> list[dict[str, Any]] | GraphError:
+    if not message.get("hasAttachments"):
+        return []
+    try:
+        return graph.list_attachments(mailbox_id, message["id"])
+    except GraphError as exc:
+        return exc
 
 
 _RETRYABLE = (psycopg.errors.DeadlockDetected, psycopg.errors.SerializationFailure)
@@ -385,16 +421,30 @@ def capture_window(
     connect: Callable[[AppRole | None], Connection],
     graph: GraphClient,
     *,
-    hours: float,
+    hours: float | None = None,
     include_sent: bool,
     profile: dict[str, Any],
     workers: int = 6,
     now: datetime | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
 ) -> list[MailboxResult]:
-    """Capture every eligible mailbox. Fails closed on paused mode or empty scope."""
-    if not 0 < hours <= MAX_CAPTURE_HOURS:
-        raise ValueError(f"--hours must be more than 0 and at most {MAX_CAPTURE_HOURS} (93 days)")
-    since = (now or datetime.now(UTC)) - timedelta(hours=hours)
+    """Capture every eligible mailbox. Fails closed on paused mode or empty scope.
+
+    Either ``hours`` (the look-back before ``now``) or an explicit ``since``/``until``
+    window (a backfill plan's window). Both are limited to MAX_CAPTURE_HOURS."""
+    if since is not None or until is not None:
+        if hours is not None or since is None or until is None:
+            raise ValueError("give --hours, or both since and until")
+        span = (until - since).total_seconds() / 3600
+        if not 0 < span <= MAX_CAPTURE_HOURS:
+            raise ValueError(f"a window must be more than 0 and at most {MAX_CAPTURE_HOURS} hours")
+    else:
+        if hours is None or not 0 < hours <= MAX_CAPTURE_HOURS:
+            raise ValueError(
+                f"--hours must be more than 0 and at most {MAX_CAPTURE_HOURS} (93 days)"
+            )
+        since = (now or datetime.now(UTC)) - timedelta(hours=hours)
     with connect("ci_ingest") as conn:
         config = active_config(conn)
         scopes = require_capture_scope(conn)
@@ -416,6 +466,7 @@ def capture_window(
             dataset=config.dataset or "",
             corpus_id=corpus[scope.scope_id],
             since=since,
+            until=until,
             include_sent=include_sent,
             profile=profile,
         )

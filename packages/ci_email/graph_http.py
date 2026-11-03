@@ -140,17 +140,20 @@ class HttpGraphClient:
             ids[name] = response.json()["id"]
         return ids
 
-    def list_messages(self, mailbox_id: str, *, received_since: datetime) -> list[dict[str, Any]]:
-        since = received_since.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        return list(
-            self._pages(
-                f"{GRAPH}/users/{mailbox_id}/messages",
-                {
-                    "$filter": f"receivedDateTime ge {since}",
-                    "$select": MESSAGE_SELECT,
-                    "$top": "50",
-                },
-            )
+    def list_messages(
+        self,
+        mailbox_id: str,
+        *,
+        received_since: datetime,
+        received_until: datetime | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Lazy: each page (50 messages with bodies) is fetched as the caller reaches it."""
+        clause = f"receivedDateTime ge {_graph_time(received_since)}"
+        if received_until is not None:
+            clause += f" and receivedDateTime lt {_graph_time(received_until)}"
+        return self._pages(
+            f"{GRAPH}/users/{mailbox_id}/messages",
+            {"$filter": clause, "$select": MESSAGE_SELECT, "$top": "50"},
         )
 
     def delta(
@@ -183,6 +186,10 @@ class HttpGraphClient:
         return self._request(
             f"{GRAPH}/users/{mailbox_id}/messages/{message_id}/attachments/{attachment_id}/$value"
         ).content
+
+
+def _graph_time(when: datetime) -> str:
+    return when.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _error_code(response: httpx.Response) -> str:

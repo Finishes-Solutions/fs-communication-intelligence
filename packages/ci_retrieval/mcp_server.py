@@ -230,10 +230,11 @@ def build_server(
         "more than one mailbox, or a profile key. When the person has a profile, a separate "
         "per-person check decides which emails are really theirs (it tells apart people with "
         "similar names, e.g. Chuck Sr. and Chuck Jr.): `actions` are its confident answers and "
-        "`possible` the ones it was unsure about; treat `possible` as needing confirmation."
-        + _PAGING
-        + _LINKS
-        + _TRUST
+        "`possible` the ones it was unsure about; treat `possible` as needing confirmation. "
+        "Each action item has `status`: open, in_progress or resolved, judged by AI from later "
+        "replies in the same conversation (`resolution_ai` gives the reason and, when you may "
+        "read it, the reply that settled it). `status` filters: open (default: open and in "
+        "progress), resolved, or all." + _PAGING + _LINKS + _TRUST
     )
     def list_actionable(
         person: str | None = None,
@@ -241,8 +242,11 @@ def build_server(
         include_risks: bool = True,
         limit: int = 25,
         offset: int = 0,
+        status: str = "open",
     ) -> dict[str, Any]:
         limit, offset = max(1, min(limit, 100)), max(0, min(offset, MAX_OFFSET))
+        if status not in retrieval.ACTION_STATUSES:
+            return {"error": "status must be open, resolved or all"}
         with connector() as conn:
             found = retrieval.list_actionable(
                 conn,
@@ -251,6 +255,7 @@ def build_server(
                 hours=hours,
                 include_risks=include_risks,
                 limit=offset + limit,
+                status=status,
             )
         return linked(page(found, ("actions", "possible", "risks"), offset, limit))
 

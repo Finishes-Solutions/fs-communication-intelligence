@@ -11,7 +11,9 @@ did work is recorded in ``ci.ops_runs`` with counts and codes only.
 from __future__ import annotations
 
 import logging
+import time
 from collections import Counter
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 import psycopg
@@ -25,6 +27,7 @@ from ci_core.settings import Settings
 from ci_email.capture import capture_window
 from ci_email.inventory import sync_inventory
 from ci_email.process import process_all, record_usage, store_missing_originals
+from ci_email.resolutions import resolve_pending_actions
 from ci_email.risk_ratings import rate_pending_risks
 
 log = logging.getLogger("ci.scheduled")
@@ -33,6 +36,11 @@ log = logging.getLogger("ci.scheduled")
 STALE_RUN_GRACE_MINUTES = 60
 # Rating risk emails after processing (ci_email.risk_ratings): at most this long per run.
 RISK_RATING_SECONDS = 120.0
+# Checking action items with new replies (ci_email.resolutions): at most this long per run.
+RESOLUTION_SECONDS = 180.0
+# One tick works through backfill windows for at most this long before returning
+# (the host stops a function after 2 hours; a window is not started past this).
+BACKFILL_TICK_SECONDS = 100 * 60
 
 
 def _connect(role: AppRole | None) -> Connection:
@@ -40,20 +48,29 @@ def _connect(role: AppRole | None) -> Connection:
 
 
 def capture_now(
-    settings: Settings, hours: float, now: datetime | None = None
+    settings: Settings,
+    hours: float | None,
+    now: datetime | None = None,
+    *,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    sync: bool = True,
 ) -> tuple[str, dict[str, int]]:
-    """Inventory sync, then capture the ``hours`` before ``now`` (default: the
-    current time) from every eligible mailbox.
+    """Inventory sync (unless ``sync`` is false), then capture the ``hours`` before
+    ``now`` (default: the current time), or the explicit ``since``/``until`` window,
+    from every eligible mailbox.
 
     Returns a run status (``succeeded``, ``partial``, ``refused``) and counts.
     """
     graph = backends.graph_client(settings)
-    with connect(role="ci_ingest") as conn:
-        connection, corpus = connection_and_corpus(conn, settings)
-        states = sync_inventory(conn, graph, connection, corpus, "ingestion-function").states
-        conn.commit()
-    log.info("inventory states=%s", states)
-    total: Counter[str] = Counter({f"mailboxes_{k}": v for k, v in states.items()})
+    total: Counter[str] = Counter()
+    if sync:
+        with connect(role="ci_ingest") as conn:
+            connection, corpus = connection_and_corpus(conn, settings)
+            states = sync_inventory(conn, graph, connection, corpus, "ingestion-function").states
+            conn.commit()
+        log.info("inventory states=%s", states)
+        total.update({f"mailboxes_{k}": v for k, v in states.items()})
     try:
         results = capture_window(
             _connect,
@@ -63,6 +80,8 @@ def capture_now(
             profile=capture_profile(settings),
             workers=settings.capture_workers,
             now=now,
+            since=since,
+            until=until,
         )
     except (EmptyScopeError, RuntimeConfigError) as exc:
         log.warning("capture refused: %s", type(exc).__name__)
@@ -94,12 +113,18 @@ def scheduler_tick(settings: Settings, now: datetime | None = None) -> ops.Decis
         return ops.Decision(False, "CAPTURE_ENABLED app setting is false")
     with connect(role="ci_ingest") as conn:
         decision = ops.capture_decision(ops.read_schedule(conn), now)
-        if not decision.due:
-            return decision
         if ops.capture_in_progress(conn, now):
             return ops.Decision(False, "a capture is still running")
         if ops.close_stale_runs(conn, "capture", ops.RUNNING_CAPTURE_GRACE, now):
             log.warning("closed stale capture run(s)")
+        if ops.requeue_stale_windows(conn):
+            log.warning("put stale backfill window(s) back to pending")
+        if not decision.due:
+            backfill_pending = ops.next_backfill_window(conn) is not None
+            conn.commit()
+            if backfill_pending:
+                return run_backfill(settings, now)
+            return decision
         run_id = ops.begin_capture(conn, decision, now)
         conn.commit()
     try:
@@ -111,6 +136,56 @@ def scheduler_tick(settings: Settings, now: datetime | None = None) -> ops.Decis
     with connect(role="ci_ingest") as conn:
         ops.finish_run(conn, run_id, status, counts, error)
     return decision
+
+
+def run_backfill(
+    settings: Settings,
+    now: datetime | None = None,
+    *,
+    max_seconds: float = BACKFILL_TICK_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
+) -> ops.Decision:
+    """Work through pending backfill windows, newest first, one capture run each,
+    until none is left or ``max_seconds`` have passed since the start. Called from
+    the scheduler when no scheduled or requested capture is due; a scheduled
+    capture waits until the tick returns."""
+    now = now or datetime.now(UTC)
+    started = clock()
+    windows = 0
+    first = True
+    while clock() - started < max_seconds:
+        with connect(role="ci_ingest") as conn:
+            window = ops.claim_backfill_window(conn, now)
+            conn.commit()
+        if window is None:
+            break
+        windows += 1
+        log.info(
+            "backfill window %s: %s to %s (%.0f h)",
+            window.id,
+            window.since,
+            window.until,
+            window.hours,
+        )
+        try:
+            status, counts = capture_now(
+                settings, None, now, since=window.since, until=window.until, sync=first
+            )
+            error = None
+            if status == "refused":  # paused mode or empty scope: the next window would be too
+                error = next((k for k in counts if k.startswith("refused_")), "refused")[:60]
+        except Exception as exc:  # recorded as a code; the window is marked failed
+            status, counts, error = "failed", {}, type(exc).__name__[:60]
+            log.exception("backfill window failed")
+        first = False
+        with connect(role="ci_ingest") as conn:
+            ops.finish_backfill_window(conn, window, status, counts, error)
+            conn.commit()
+        if status == "refused":
+            log.warning("backfill stopped: capture refused (%s); windows stay pending", error)
+            break
+    reason = f"backfill: {windows} window(s) run" if windows else "backfill: nothing pending"
+    return ops.Decision(windows > 0, reason, "backfill")
 
 
 def run_processing(settings: Settings) -> dict[str, int] | None:
@@ -160,6 +235,13 @@ def run_processing(settings: Settings) -> dict[str, int] | None:
                 lambda: connect(role="ci_ingest"),
                 backends.risk_rater(modelled, configured.meter),
                 max_seconds=RISK_RATING_SECONDS,
+            )
+        )
+        counts.update(
+            resolve_pending_actions(
+                lambda: connect(role="ci_ingest"),
+                backends.action_resolver(modelled, configured.meter),
+                max_seconds=RESOLUTION_SECONDS,
             )
         )
     except Exception as exc:

@@ -784,20 +784,28 @@ async function actionablePage() {
   const person = h("input", { value: p.get("person") ?? DEFAULT_PERSON, placeholder: "Empty = everyone" });
   const hours = h("select", {}, [["24", "Last 24 hours"], ["72", "Last 3 days"], ["168", "Last week"], ["720", "Last 30 days"]]
     .map(([v, t]) => h("option", { value: v, selected: v === (p.get("hours") || "24") }, t)));
+  const status = h("select", {}, [["open", "Open and in progress"], ["resolved", "Resolved"], ["all", "All"]]
+    .map(([v, t]) => h("option", { value: v, selected: v === (p.get("status") || "open") }, t)));
   const out = h("div", {}, h("div", { class: "card" }, h("div", { class: "empty" }, h("div", { class: "spinner" }), "Loading…")));
   show(pageHead("Action Items & Project Risks", "The same list Chuck's agents get from list_actionable. AI proposals, not approvals.",
     h("a", { class: "btn", href: `/review?${new URLSearchParams({ source: "actionable", person: person.value })}` }, icon("review"), "Review These One by One")),
   card({},
-    h("form", { class: "toolbar", onsubmit: e => { e.preventDefault(); navigate(`/actionable?${new URLSearchParams({ person: person.value, hours: hours.value })}`); } },
-      h("div", { class: "search", style: "flex:1 1 320px" }, icon("users"), person), hours,
+    h("form", { class: "toolbar", onsubmit: e => { e.preventDefault(); navigate(`/actionable?${new URLSearchParams({ person: person.value, hours: hours.value, status: status.value })}`); } },
+      h("div", { class: "search", style: "flex:1 1 320px" }, icon("users"), person), hours, status,
       h("button", { class: "btn primary", type: "submit" }, "Show")),
-    h("div", { class: "muted small", style: "margin-top:8px" }, "A profile key or the person's addresses, comma-separated. Leave empty for everyone.")),
+    h("div", { class: "muted small", style: "margin-top:8px" }, "A profile key or the person's addresses, comma-separated. Leave empty for everyone. Resolved means a later reply in the thread shows the request was dealt with (an AI reading of the replies).")),
   out);
-  const d = await api("/api/actionable?" + new URLSearchParams({ person: person.value, hours: hours.value }));
+  const d = await api("/api/actionable?" + new URLSearchParams({ person: person.value, hours: hours.value, status: status.value }));
   const detail = h("div", { class: "card reader" }, h("div", { class: "placeholder" },
     h("div", { class: "empty" }, h("div", { class: "i-wrap" }, icon("check")), h("div", { class: "empty-title" }, "Select an Item"),
       h("div", { class: "small" }, "The full message opens here."))));
   const checkBadge = r => r.person_check_ai ? badge(`Person check${r.person_check_ai.probability != null ? " " + Number(r.person_check_ai.probability).toFixed(2) : ""}${r.person_check_ai.reason ? " · " + nice(r.person_check_ai.reason) : ""}`, "info") : null;
+  const statusBadge = r => {
+    if (!r.resolution_ai || r.status === "open") return null;
+    const by = r.resolution_ai.resolved_by;
+    const who = by ? ` · ${by.sender || "reply"} ${short(by.received_at)}` : "";
+    return badge(`${r.status === "resolved" ? "Resolved" : "In progress"}${r.resolution_ai.reason ? " · " + r.resolution_ai.reason : ""}${who}`, r.status === "resolved" ? "good" : "info");
+  };
   const list = (rows, kind) => rows.length ? h("div", { class: "items" }, rows.map(r => {
     const el = h("button", { class: "item", type: "button" },
       h("span", { class: "item-icon " + (kind === "risk" || kind === "possible" ? "warn" : "good") }, icon(kind === "risk" ? "alert" : kind === "possible" ? "info" : "check")),
@@ -805,7 +813,7 @@ async function actionablePage() {
         h("div", { class: "item-title" }, r.subject || "(no subject)"),
         h("div", { class: "item-sub" }, `${r.sender || "?"} → ${r.mailbox}`),
         h("div", { class: "item-text" }, kind === "risk" ? r.risk_ai : r.action_ai),
-        kind !== "risk" && r.person_check_ai ? h("div", { class: "badges", style: "margin-top:8px" }, checkBadge(r)) : null),
+        kind !== "risk" && (r.person_check_ai || statusBadge(r)) ? h("div", { class: "badges", style: "margin-top:8px" }, checkBadge(r), statusBadge(r)) : null),
       h("div", { style: "text-align:right" }, h("div", { class: "msg-time" }, short(r.received_at)),
         kind !== "risk" && r.due_ai ? h("div", { style: "margin-top:6px" }, badge(`Due ${r.due_ai}`, "warn")) : null));
     el.addEventListener("click", () => {

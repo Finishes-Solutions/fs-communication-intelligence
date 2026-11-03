@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import uuid
 from dataclasses import asdict, dataclass, fields, replace
 from datetime import date, datetime, time, timedelta
 from typing import Any, Literal
@@ -23,7 +24,9 @@ INTERVALS = (15, 30, 60, 120, 240, 720, 1440)
 MAX_REQUEST_HOURS = 24 * 93  # a requested backfill; the scheduled window stays <= 744
 # A capture older than this is presumed dead (the ingestion app stops a run after 2 hours).
 RUNNING_CAPTURE_GRACE = timedelta(minutes=130)
-Trigger = Literal["schedule", "manual"]
+Trigger = Literal["schedule", "manual", "backfill"]
+# One backfill window spans at most this long (the same limit as a requested capture).
+BACKFILL_MAX_WINDOW_DAYS = 93
 
 
 @dataclass(frozen=True)
@@ -184,8 +187,225 @@ def hours_since(day: str, now: datetime, time_zone: str = "America/Chicago") -> 
     if hours <= 0:
         raise OperatorError("that date is in the future")
     if hours > MAX_REQUEST_HOURS:
-        raise OperatorError(f"that is more than {MAX_REQUEST_HOURS // 24} days back")
+        raise OperatorError(
+            f"that is more than {MAX_REQUEST_HOURS // 24} days back;"
+            " use `ci backfill plan --since DATE` for a longer period"
+        )
     return float(hours)
+
+
+def local_midnight(day: str, time_zone: str = "America/Chicago") -> datetime:
+    """Midnight local time on ``day`` (YYYY-MM-DD) as an aware datetime."""
+    try:
+        return datetime.combine(date.fromisoformat(day), time(0), ZoneInfo(time_zone))
+    except ValueError as exc:
+        raise OperatorError("give the date as YYYY-MM-DD, e.g. 2025-01-01") from exc
+
+
+# -- Backfill plans (migration 0025) --------------------------------------------
+#
+# A plan cuts a long period into windows of at most BACKFILL_MAX_WINDOW_DAYS. The
+# ingestion app works through them newest first, one capture run each, whenever
+# no scheduled or requested capture is due. A window that was running when the
+# host stopped is put back to pending, because stored emails are skipped on a
+# rerun. Nothing here holds content: dates, states, counts and codes only.
+
+
+@dataclass(frozen=True)
+class BackfillWindow:
+    id: int
+    plan_id: str
+    since: datetime
+    until: datetime
+    state: str
+    run_id: int | None = None
+    error_code: str | None = None
+
+    @property
+    def hours(self) -> float:
+        return (self.until - self.since).total_seconds() / 3600
+
+
+def plan_windows(since: datetime, until: datetime, days: int) -> list[tuple[datetime, datetime]]:
+    """Cut [since, until) into windows of ``days``, newest first; the oldest may be shorter."""
+    if not 1 <= days <= BACKFILL_MAX_WINDOW_DAYS:
+        raise OperatorError(f"window days must be between 1 and {BACKFILL_MAX_WINDOW_DAYS}")
+    if until <= since:
+        raise OperatorError("the end of the period must be after its start")
+    windows = []
+    end = until
+    while end > since:
+        start = max(since, end - timedelta(days=days))
+        windows.append((start, end))
+        end = start
+    return windows
+
+
+def plan_backfill(
+    conn: Connection,
+    actor: str,
+    *,
+    since_day: str,
+    until_day: str | None,
+    days: int,
+    now: datetime,
+    time_zone: str = "America/Chicago",
+) -> dict[str, Any]:
+    """Create the pending windows of a new plan (operator). One plan at a time: a plan
+    with pending or running windows must be cancelled first."""
+    since = local_midnight(since_day, time_zone)
+    until = local_midnight(until_day, time_zone) if until_day else now
+    if until > now:
+        raise OperatorError("the end of the period is in the future")
+    open_windows = conn.execute(
+        "SELECT count(*) AS n FROM ops_backfill_windows WHERE state IN ('pending', 'running')"
+    ).fetchone()
+    if open_windows and open_windows["n"]:
+        raise OperatorError(
+            f"a backfill with {open_windows['n']} unfinished window(s) exists;"
+            " `ci backfill status` shows it, `ci backfill cancel` stops it"
+        )
+    windows = plan_windows(since, until, days)
+    plan_id = str(uuid.uuid4())
+    for start, end in windows:
+        conn.execute(
+            "INSERT INTO ops_backfill_windows (plan_id, since, until, created_by)"
+            " VALUES (%s, %s, %s, %s)",
+            (plan_id, start, end, actor),
+        )
+    summary = {
+        "plan_id": plan_id,
+        "since": since.isoformat(),
+        "until": until.isoformat(),
+        "windows": len(windows),
+        "window_days": days,
+    }
+    audit(conn, actor, "backfill_planned", "ops_backfill_windows", plan_id, summary)
+    return summary
+
+
+def _window(row: dict[str, Any]) -> BackfillWindow:
+    return BackfillWindow(
+        id=int(row["id"]),
+        plan_id=str(row["plan_id"]),
+        since=row["since"],
+        until=row["until"],
+        state=row["state"],
+        run_id=row["run_id"],
+        error_code=row["error_code"],
+    )
+
+
+_WINDOW_COLUMNS = "id, plan_id, since, until, state, run_id, error_code"
+
+
+def next_backfill_window(conn: Connection) -> BackfillWindow | None:
+    """The newest pending window, or None. Does not claim it."""
+    row = conn.execute(
+        f"SELECT {_WINDOW_COLUMNS} FROM ops_backfill_windows WHERE state = 'pending'"  # noqa: S608
+        " ORDER BY until DESC LIMIT 1"
+    ).fetchone()
+    return _window(row) if row else None
+
+
+def claim_backfill_window(conn: Connection, now: datetime) -> BackfillWindow | None:
+    """Claim the newest pending window and record its capture run; the caller commits.
+    Returns None when nothing is pending (or another worker holds the row)."""
+    row = conn.execute(
+        f"SELECT {_WINDOW_COLUMNS} FROM ops_backfill_windows WHERE state = 'pending'"  # noqa: S608
+        " ORDER BY until DESC LIMIT 1 FOR UPDATE SKIP LOCKED"
+    ).fetchone()
+    if row is None:
+        return None
+    window = _window(row)
+    run_id = start_run(conn, "capture", "backfill", round(window.hours, 2))
+    conn.execute(
+        "UPDATE ops_backfill_windows SET state = 'running', run_id = %s, started_at = %s"
+        " WHERE id = %s",
+        (run_id, now, window.id),
+    )
+    conn.execute("UPDATE ops_settings SET last_capture_started_at = %s WHERE id", (now,))
+    return replace(window, state="running", run_id=run_id)
+
+
+def finish_backfill_window(
+    conn: Connection,
+    window: BackfillWindow,
+    status: str,
+    counts: dict[str, int],
+    error_code: str | None = None,
+) -> None:
+    """Record the window's outcome and its run. ``partial`` (some mailboxes failed)
+    counts as done: the emails of a failed mailbox are picked up by a later plan."""
+    if window.run_id is not None:
+        finish_run(conn, window.run_id, status, counts, error_code)
+    state = "done" if status in ("succeeded", "partial") else "failed"
+    conn.execute(
+        "UPDATE ops_backfill_windows SET state = %s, finished_at = now(), counts = %s,"
+        " error_code = %s WHERE id = %s",
+        (state, json.dumps(counts), error_code, window.id),
+    )
+
+
+def requeue_stale_windows(conn: Connection) -> int:
+    """Windows still 'running' whose capture run has ended (closed as stale, or
+    failed before the window was finished) go back to pending for a rerun."""
+    rows = conn.execute(
+        "UPDATE ops_backfill_windows w SET state = 'pending', run_id = NULL, started_at = NULL,"
+        " error_code = 'rerun_after_' || coalesce(r.error_code, r.status)"
+        " FROM ops_runs r WHERE w.state = 'running' AND r.id = w.run_id"
+        " AND r.status <> 'running' RETURNING w.id"
+    ).fetchall()
+    return len(rows)
+
+
+def cancel_backfill(conn: Connection, actor: str) -> int:
+    """Pending windows become cancelled (a running one finishes its capture). Operator."""
+    rows = conn.execute(
+        "UPDATE ops_backfill_windows SET state = 'cancelled', finished_at = now()"
+        " WHERE state = 'pending' RETURNING id"
+    ).fetchall()
+    audit(conn, actor, "backfill_cancelled", "ops_backfill_windows", None, {"windows": len(rows)})
+    return len(rows)
+
+
+def retry_failed_windows(conn: Connection, actor: str) -> int:
+    rows = conn.execute(
+        "UPDATE ops_backfill_windows SET state = 'pending', run_id = NULL, started_at = NULL,"
+        " finished_at = NULL WHERE state = 'failed' RETURNING id"
+    ).fetchall()
+    audit(conn, actor, "backfill_retried", "ops_backfill_windows", None, {"windows": len(rows)})
+    return len(rows)
+
+
+def backfill_status(conn: Connection) -> dict[str, Any]:
+    """Counts per state, the period still pending, the running window and recent outcomes."""
+    states = {
+        r["state"]: int(r["n"])
+        for r in conn.execute(
+            "SELECT state, count(*) AS n FROM ops_backfill_windows GROUP BY state"
+        ).fetchall()
+    }
+    pending = conn.execute(
+        "SELECT min(since) AS since, max(until) AS until FROM ops_backfill_windows"
+        " WHERE state = 'pending'"
+    ).fetchone()
+    running = conn.execute(
+        f"SELECT {_WINDOW_COLUMNS}, started_at FROM ops_backfill_windows"  # noqa: S608
+        " WHERE state = 'running' ORDER BY started_at DESC LIMIT 1"
+    ).fetchone()
+    done = conn.execute(
+        "SELECT since, until, state, started_at, finished_at, counts, error_code"
+        " FROM ops_backfill_windows WHERE state IN ('done', 'failed')"
+        " ORDER BY finished_at DESC LIMIT 10"
+    ).fetchall()
+    return {
+        "states": states,
+        "pending_since": pending["since"].isoformat() if pending and pending["since"] else None,
+        "pending_until": pending["until"].isoformat() if pending and pending["until"] else None,
+        "running": _jsonable(running) if running else None,
+        "recent": [_jsonable(r) for r in done],
+    }
 
 
 def capture_in_progress(conn: Connection, now: datetime) -> bool:

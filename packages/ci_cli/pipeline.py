@@ -30,6 +30,7 @@ from ci_email.process import (
     requeue_unscreened,
     retry_failed,
 )
+from ci_email.resolutions import resolve_pending_actions
 from ci_email.risk_ratings import rate_pending_risks
 from ci_processing.chunking import CHUNKER_VERSION
 from ci_processing.classification import POLICY_VERSION
@@ -230,12 +231,43 @@ def process(args: argparse.Namespace) -> None:
                 workers=args.workers,
             )
         )
+        counts.update(
+            resolve_pending_actions(
+                lambda: connect(role="ci_ingest"),
+                backends.action_resolver(modelled, configured.meter),
+                workers=args.workers,
+            )
+        )
     finally:
         if configured.meter is not None:
             with connect(role="ci_ingest") as conn:
                 record_usage(conn, configured.meter.drain(), source="cli")
                 conn.commit()
     print(f"processed: {dict(sorted(counts.items()))}")
+
+
+def resolve(args: argparse.Namespace) -> None:
+    """``ci resolve``: check action items that have replies, newest activity first,
+    without the run's time budget (a catch-up after a backfill)."""
+    settings = load_settings()
+    with connect(role="ci_ingest") as conn:
+        schedule = ops.read_schedule(conn)
+    modelled = backends.with_model(settings, schedule)
+    configured = backends.with_switches(backends.processing_backends(modelled), settings, schedule)
+    try:
+        counts = resolve_pending_actions(
+            lambda: connect(role="ci_ingest"),
+            backends.action_resolver(modelled, configured.meter),
+            limit=args.limit,
+            workers=args.workers,
+            max_seconds=None,
+        )
+    finally:
+        if configured.meter is not None:
+            with connect(role="ci_ingest") as conn:
+                record_usage(conn, configured.meter.drain(), source="cli")
+                conn.commit()
+    print(f"resolutions: {dict(sorted(counts.items()))}")
 
 
 def stats() -> None:

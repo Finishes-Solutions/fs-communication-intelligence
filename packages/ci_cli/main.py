@@ -45,6 +45,12 @@ The database comes from the standard ``PG*`` environment variables; locally,
                                               and failures (also in the console)
     ci run-capture [--hours 24 | --since 2026-09-01]
                                               capture at the next 5-minute tick (up to 93 days)
+    ci backfill plan --since 2025-01-01 [--until 2026-09-01] [--days 7]
+                                              cut a long period into windows the ingestion
+                                              app captures one by one, newest first
+    ci backfill status | cancel | retry-failed
+    ci resolve [--limit 2000]                 check action items that got replies: resolved,
+                                              in progress or open (also runs after processing)
 
     ci names list                             canonical property and legal-entity names
     ci names add property "Willow Creek Retail" --alias "WC Retail" --alias "Willow Creek"
@@ -196,6 +202,11 @@ def _parser() -> argparse.ArgumentParser:
         help="process mail the bulk/automated pre-filter skipped in full (paid steps run)",
     )
     process.add_argument("--domain", help="with --retry-skipped: only this sender domain")
+    resolve = sub.add_parser(
+        "resolve", help="check action items with new replies: resolved, in progress or open"
+    )
+    resolve.add_argument("--limit", type=int, default=2000, help="action items per run")
+    resolve.add_argument("--workers", type=int, default=8)
     process.add_argument(
         "--rescreen",
         action="store_true",
@@ -316,6 +327,15 @@ def _parser() -> argparse.ArgumentParser:
     run_when.add_argument(
         "--since", help="capture from this date, midnight Central time (YYYY-MM-DD, max 93 days)"
     )
+    backfill = sub.add_parser("backfill", help="capture a long period in windows")
+    backfill_action = backfill.add_subparsers(dest="action", required=True)
+    bplan = backfill_action.add_parser("plan", help="create the windows (one plan at a time)")
+    bplan.add_argument("--since", required=True, help="first day, midnight Central (YYYY-MM-DD)")
+    bplan.add_argument("--until", help="day after the last one (YYYY-MM-DD); default: now")
+    bplan.add_argument("--days", type=int, default=7, help="days per window (1 to 93; default 7)")
+    backfill_action.add_parser("status", help="windows per state and the one running")
+    backfill_action.add_parser("cancel", help="drop the pending windows")
+    backfill_action.add_parser("retry-failed", help="put failed windows back to pending")
     return parser
 
 
@@ -452,6 +472,62 @@ def _knowledge(args: argparse.Namespace, conn: Connection, actor: str) -> None:
         print(f"entry {args.entity_id} now counts as {args.kind} entry {into}")
 
 
+def _backfill(args: argparse.Namespace, conn: Connection, actor: str) -> None:
+    tz = ZoneInfo(ops.read_schedule(conn).time_zone)
+    if args.action == "plan":
+        summary = ops.plan_backfill(
+            conn,
+            actor,
+            since_day=args.since,
+            until_day=args.until,
+            days=args.days,
+            now=datetime.now(UTC),
+            time_zone=tz.key,
+        )
+        since = datetime.fromisoformat(summary["since"]).astimezone(tz)
+        until = datetime.fromisoformat(summary["until"]).astimezone(tz)
+        print(
+            f"planned {summary['windows']} window(s) of up to {summary['window_days']} day(s)"
+            f" from {since:%Y-%m-%d %H:%M} to {until:%Y-%m-%d %H:%M} ({tz.key});"
+            " the ingestion app starts the newest within about 5 minutes"
+            " (CAPTURE_ENABLED must be true on the app)"
+        )
+        return
+    if args.action == "cancel":
+        print(f"cancelled {ops.cancel_backfill(conn, actor)} pending window(s)")
+    elif args.action == "retry-failed":
+        print(f"requeued {ops.retry_failed_windows(conn, actor)} failed window(s)")
+    status = ops.backfill_status(conn)
+    states = ", ".join(f"{k}={v}" for k, v in sorted(status["states"].items())) or "none"
+    print(f"windows: {states}")
+    if status["pending_since"]:
+        since = datetime.fromisoformat(status["pending_since"]).astimezone(tz)
+        until = datetime.fromisoformat(status["pending_until"]).astimezone(tz)
+        print(f"still to capture: {since:%Y-%m-%d} to {until:%Y-%m-%d} ({tz.key})")
+    if status["running"]:
+        r = status["running"]
+        since = datetime.fromisoformat(r["since"]).astimezone(tz)
+        until = datetime.fromisoformat(r["until"]).astimezone(tz)
+        started = datetime.fromisoformat(r["started_at"]).astimezone(tz)
+        print(f"running: {since:%Y-%m-%d} to {until:%Y-%m-%d}, started {started:%H:%M:%S}")
+    for r in status["recent"]:
+        since = datetime.fromisoformat(r["since"]).astimezone(tz)
+        until = datetime.fromisoformat(r["until"]).astimezone(tz)
+        took = "-"
+        if r["started_at"] and r["finished_at"]:
+            seconds = (
+                datetime.fromisoformat(r["finished_at"]) - datetime.fromisoformat(r["started_at"])
+            ).total_seconds()
+            took = f"{seconds / 60:.1f} min"
+        counts = r["counts"] or {}
+        stored = counts.get("new_version", 0)
+        error = f" error={r['error_code']}" if r["error_code"] else ""
+        print(
+            f"  {r['state']:<7} {since:%Y-%m-%d} to {until:%Y-%m-%d} {took:>9}"
+            f"  listed={counts.get('listed', 0)} stored={stored}{error}"
+        )
+
+
 def _runs(args: argparse.Namespace, conn: Connection) -> None:
     """Recent runs in the schedule's time zone, then the processing backlog and failures."""
     tz = ZoneInfo(ops.read_schedule(conn).time_zone)
@@ -554,6 +630,9 @@ def _run(args: argparse.Namespace, conn: Connection) -> None:
     if args.command == "runs":
         _runs(args, conn)
         return
+    if args.command == "backfill":
+        _backfill(args, conn, actor)
+        return
     if args.command == "people":
         if args.action == "set":
             set_person(
@@ -605,6 +684,7 @@ def _run(args: argparse.Namespace, conn: Connection) -> None:
 _STANDALONE = {
     "capture": pipeline.capture,
     "process": pipeline.process,
+    "resolve": pipeline.resolve,
     "search": pipeline.search,
     "search-check": pipeline.search_check,
     "actionable": pipeline.actionable,

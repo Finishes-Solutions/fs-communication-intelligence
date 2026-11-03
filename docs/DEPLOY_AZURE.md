@@ -212,6 +212,24 @@ ci run-capture --since 2026-09-01
 
 The ingestion app stops a single run after 2 hours. If a large backfill is cut off, request it again: it resumes, because emails already stored are skipped. Keep processing paused (`ci schedule set --processing-off`) while capturing if you want to change settings before the AI runs.
 
+### Backfill a long period (months or years)
+
+A **backfill plan** (migration 0025; Matthew, 2026-11-03: all mail back to 2025-01-01) cuts the period into windows the ingestion app captures one at a time, newest first, so recent history is searchable soonest. Each window is one capture run (`ci runs` shows them with trigger `backfill`); a window the host stopped mid-way goes back to pending and is rerun, and emails already stored are skipped. One plan at a time.
+
+```bash
+ci backfill plan --since 2025-01-01 --days 7
+```
+
+`--until YYYY-MM-DD` ends the period earlier (the day after the last one); the default is now. `--days` is the window length (1 to 93). Seven-day windows keep a busy mailbox's listing small: the capture reads a window page by page and never holds the whole period in memory.
+
+```bash
+ci backfill status
+```
+
+shows windows per state, the period still to capture, the running window and the last ten outcomes. `ci backfill cancel` drops the pending windows; `ci backfill retry-failed` requeues failed ones. The app setting `CAPTURE_ENABLED` must be true; the schedule's own on/off switch and active hours do not apply to a plan, and a scheduled or requested capture goes first when one is due. Inside a mailbox, attachment listings are fetched four at a time (Graph's per-mailbox concurrency limit), and `CAPTURE_WORKERS` mailboxes are captured at once.
+
+**How long and how much.** Volume since 2026-09-01 is about 19,000 indexed emails a month across 176 mailboxes, so a backfill to 2025-01-01 is roughly 380,000 emails, less where mailboxes are newer or mail was deleted. Capture is bounded by Microsoft Graph (10,000 requests per 10 minutes and 4 concurrent requests per mailbox): the busiest mailboxes take several hours each, in parallel. Processing is bounded by the Azure OpenAI quotas and `PROCESSING_WORKERS`: at the default 4 workers about 20,000 emails a day; raise the deployments' capacity and the workers for a faster run (see *Processing speed and Azure OpenAI rate limits*). The AI cost does not depend on speed: at the unverified list prices about $0.005 per indexed email with the paid checks off and about $0.012 with masking and Prompt Shields on. Check the Costs page's billed figure per email before a large run.
+
 ## 8. Test
 
 - `ci stats`: published, held/rejected by reason, failed codes, label counts, attachment extraction.
@@ -484,6 +502,16 @@ ci people set chuck_sr --name "Chuck Sr." --address chuckc@finishesetc.net --not
 Only Chuck Sr. has a list for now; Chuck Jr. has no profile of his own.
 
 Changing a profile only affects mail processed afterwards. To apply it to mail already processed, run `ci process --remask --limit 0` (this re-runs everything, including the classifier).
+
+### Resolved action items
+
+Action items show when they have been dealt with (Matthew, 2026-11-03: "it never shows when an action item has been resolved"). For every published action item (the classifier's `action_required` or `approval_required` = yes) that gets a later email in the same conversation, one small model call reads the original request and up to six replies, newest last, and answers **resolved** (done, approved or refused, signed, sent, paid, answered, or withdrawn), **in progress** (someone took it on or asked a question) or **open** (nothing in the replies settles it), with a one-line reason and the reply that settled or advanced it (`ci_email.resolutions`, `ci_processing.resolution`, migration 0026 `action_resolutions`). The check runs after processing in each run (up to 3 minutes, newest activity first) and again only when a newer reply arrives, until the item is resolved; mailbox copies of one thread share one call. A reply that merely acknowledges is not a resolution. Nothing is read outside the thread: a request settled by phone, in person or in another thread stays open until someone replies in that thread.
+
+- **Console Action Items** has a status selector: *Open and in progress* (default), *Resolved*, *All*. Each item shows a badge with the status, the reason and who replied when.
+- **MCP `list_actionable`** returns `status` and `resolution_ai` on each action item and takes `status` (`open` default, `resolved`, `all`), so an agent asked for Chuck's open items does not list what was already approved. The resolving reply is named only when the reader may read it; otherwise only the status is shown.
+- **`ci resolve --limit 2000`** checks the backlog without the run's time budget, for example after a backfill (each check is one chat call of roughly 1,500 to 4,000 input tokens; resolved items are never re-checked).
+
+Status is an AI reading of the replies, uncalibrated until reviewed. Whether a thread's replies carry the same Graph `conversationId` in every mailbox is not verified; a reply recorded under another id is not seen.
 
 ### Properties, projects and legal entities
 
