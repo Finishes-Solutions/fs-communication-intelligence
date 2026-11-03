@@ -27,6 +27,7 @@ from ci_email.process import (
     requeue_failed_attachments,
     requeue_for_remask,
     requeue_skipped,
+    requeue_unextracted_attachments,
     requeue_unscreened,
     retry_failed,
 )
@@ -195,6 +196,11 @@ def process(args: argparse.Namespace) -> None:
             count = requeue_failed_attachments(conn)
             conn.commit()
         print(f"requeued {count} message(s) whose attachments failed to read")
+    if args.extract_pending:
+        with connect(role="ci_ingest") as conn:
+            count = requeue_unextracted_attachments(conn, args.limit or None)
+            conn.commit()
+        print(f"requeued {count} message(s) whose attachments were never read")
     if args.remask:
         with connect(role="ci_ingest") as conn:
             count = requeue_for_remask(conn)

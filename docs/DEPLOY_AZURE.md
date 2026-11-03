@@ -509,6 +509,7 @@ Action items show when they have been dealt with (Matthew, 2026-11-03: "it never
 
 - **Console Action Items** has a status selector: *Open and in progress* (default), *Resolved*, *All*. Each item shows a badge with the status, the reason and who replied when.
 - **MCP `list_actionable`** returns `status` and `resolution_ai` on each action item and takes `status` (`open` default, `resolved`, `all`), so an agent asked for Chuck's open items does not list what was already approved. The resolving reply is named only when the reader may read it; otherwise only the status is shown.
+- **A helper processor without Graph access** (e.g. `ATTACHMENT_EXTRACTION_ENABLED=false ci process --workers 48` on a Mac during a backfill, 2026-11-03) indexes bodies but leaves attachments `not_attempted`. Afterwards `ci process --extract-pending --limit 0` requeues those published messages for the Function App, which reads the files and classifies them again (one more chat call each, since the input changes).
 - **`ci resolve --limit 2000`** checks the backlog without the run's time budget, for example after a backfill (each check is one chat call of roughly 1,500 to 4,000 input tokens; resolved items are never re-checked).
 
 Status is an AI reading of the replies, uncalibrated until reviewed. Whether a thread's replies carry the same Graph `conversationId` in every mailbox is not verified; a reply recorded under another id is not seen.
