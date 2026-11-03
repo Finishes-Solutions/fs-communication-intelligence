@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Communication Intelligence</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  @page { size: 17in 11in; margin: 0; }
+  :root {
+    --green-900:#00351a; --green-800:#004d1e; --green-700:#006527; --green-600:#0a7a36;
+    --green-100:#e2f1e8; --green-50:#f1f8f4;
+    --ink-950:#0b0d0c; --ink-900:#16191a; --ink-800:#23282a; --ink-700:#353b3d; --ink-600:#4d5457;
+    --ink-500:#6b7174; --ink-400:#939a9d; --ink-300:#bcc2c4; --ink-200:#dde1e2; --ink-150:#e8ebeb;
+    --ink-100:#f1f3f3; --ink-50:#f8f9f9; --white:#fff;
+    --mono:'IBM Plex Mono', ui-monospace, monospace;
+    --sans:'Montserrat', system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; background:var(--white); }
+  body { width:17in; height:11in; overflow:hidden; font-family:var(--sans); color:var(--ink-800);
+         -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  .page { width:17in; height:11in; padding:0.5in 0.6in 0.4in; display:flex; flex-direction:column; gap:0.18in; }
+
+  /* header */
+  .head { display:flex; align-items:flex-end; justify-content:space-between; border-bottom:2px solid var(--ink-950); padding-bottom:0.16in; }
+  .brand { display:flex; align-items:center; gap:0.2in; }
+  .brand .mark { width:0.78in; height:0.78in; background:var(--ink-950); border-radius:6px; display:flex; align-items:center; justify-content:center; }
+  .brand .mark svg { width:0.5in; height:0.5in; }
+  .brand h1 { margin:0; white-space:nowrap; font-size:34pt; font-weight:800; letter-spacing:-0.02em; color:var(--ink-950); line-height:1; }
+  .brand .sub { margin:6px 0 0; font-size:10.5pt; color:var(--ink-600); font-weight:500; }
+  .eyebrow { font-family:var(--mono); font-size:7.5pt; letter-spacing:0.14em; text-transform:uppercase; color:var(--ink-500); font-weight:500; }
+  .head .right { text-align:right; max-width:5.6in; }
+  .head .right .line { display:block; margin-top:2px; }
+  .head .right .eyebrow { display:block; margin-bottom:5px; }
+  .head .right .line { font-size:8.5pt; color:var(--ink-600); }
+  .head .right .line b { color:var(--ink-950); font-weight:600; }
+
+  /* section titles */
+  .sec { display:flex; align-items:baseline; gap:10px; margin-bottom:8px; }
+  .sec .n { font-family:var(--mono); font-size:8pt; color:var(--white); background:var(--green-700); padding:2px 6px; border-radius:3px; letter-spacing:0.08em; }
+  .sec h2 { margin:0; font-size:14pt; font-weight:700; letter-spacing:-0.01em; color:var(--ink-950); }
+  .sec .hint { font-size:8.5pt; color:var(--ink-500); margin-left:auto; }
+
+  /* band 1: flow */
+  .flow { display:grid; grid-template-columns: repeat(7, 1fr 22px) ; grid-template-columns: 1fr 22px 1fr 22px 1fr 22px 1fr 22px 1fr 22px 1fr 22px 1fr; align-items:stretch; }
+  .stage { border:1px solid var(--ink-200); border-radius:5px; background:var(--white); padding:9px 10px 8px; display:flex; flex-direction:column; gap:5px; min-height:2.05in; box-shadow:0 1px 2px rgba(11,13,12,.06); }
+  .stage.inv { background:var(--ink-900); border-color:var(--ink-900); color:var(--ink-200); }
+  .stage.inv .t { color:var(--white); } .stage.inv .eyebrow { color:var(--ink-400); } .stage.inv li { color:var(--ink-200); }
+  .stage.green { background:var(--green-50); border-color:#c2e3d0; }
+  .stage .top { display:flex; align-items:center; justify-content:space-between; }
+  .stage .top svg { width:18px; height:18px; stroke:var(--green-700); fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+  .stage.inv .top svg { stroke:#8acda3; }
+  .stage .t { font-size:11pt; font-weight:700; color:var(--ink-950); line-height:1.15; }
+  .stage ul { margin:0; padding:0 0 0 12px; font-size:8.5pt; line-height:1.4; color:var(--ink-700); }
+  .stage li { margin:0 0 2px; }
+  .stage li b { font-weight:600; color:var(--ink-950); }
+  .stage.inv li b { color:var(--white); }
+  .stage .foot { margin-top:auto; font-family:var(--mono); font-size:6.6pt; letter-spacing:0.06em; text-transform:uppercase; color:var(--ink-500); border-top:1px solid var(--ink-150); padding-top:5px; }
+  .stage.inv .foot { border-color:rgba(255,255,255,.16); color:var(--ink-400); }
+  .arrow { display:flex; align-items:center; justify-content:center; }
+  .arrow svg { width:18px; height:18px; stroke:var(--ink-400); fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+
+  /* lower grid */
+  .lower { display:grid; grid-template-columns: 1.02fr 1.28fr; gap:0.3in; flex:1; min-height:0; }
+  .panel { border:1px solid var(--ink-200); border-radius:6px; padding:0.14in 0.2in 0.12in; display:flex; flex-direction:column; background:var(--white); min-height:0; overflow:hidden; }
+
+  /* loop */
+  .loop { display:grid; grid-template-columns: 3.45in 1fr; gap:0.2in; flex:1; align-items:stretch; min-height:0; }
+  .loopwrap { display:flex; align-items:center; justify-content:center; min-height:0; }
+  .loopsvg { width:100%; height:100%; max-height:4.4in; }
+  .loopsvg text { font-family:var(--sans); }
+  .learn { display:flex; flex-direction:column; gap:7px; justify-content:center; }
+  .item { display:grid; grid-template-columns: 22px 1fr; gap:8px; align-items:start; }
+  .item .k { font-family:var(--mono); font-size:7.5pt; color:var(--green-700); font-weight:600; padding-top:2px; }
+  .item .h { font-size:9pt; font-weight:700; color:var(--ink-950); line-height:1.2; }
+  .item p { margin:2px 0 0; font-size:7.9pt; line-height:1.38; color:var(--ink-700); }
+
+  /* accurate */
+  .acc { display:grid; grid-template-columns: 1.3fr 1fr; gap:0.22in; flex:1; }
+  .acc h3 { margin:0 0 8px; font-size:9.6pt; font-weight:700; color:var(--ink-950); }
+  .rules { display:grid; grid-template-columns:1fr 1fr; gap:8px 14px; }
+  .rule { border-left:3px solid var(--green-700); padding:1px 0 1px 8px; }
+  .rule .h { font-size:8.9pt; font-weight:700; color:var(--ink-950); line-height:1.2; }
+  .rule p { margin:2px 0 0; font-size:7.8pt; line-height:1.38; color:var(--ink-700); }
+  .metrics { background:var(--ink-900); border-radius:5px; padding:10px 12px; color:var(--ink-200); display:flex; flex-direction:column; }
+  .metrics h3 { color:var(--white); }
+  .metrics .eyebrow { color:var(--ink-400); margin-bottom:6px; display:block; }
+  .m { display:grid; grid-template-columns: 1fr auto; gap:6px; align-items:baseline; padding:4px 0; border-bottom:1px solid rgba(255,255,255,.14); }
+  .m:last-of-type { border-bottom:0; }
+  .m .h { font-size:8.5pt; font-weight:600; color:var(--white); }
+  .m p { margin:1px 0 0; font-size:7.3pt; line-height:1.36; color:var(--ink-300); grid-column:1 / -1; }
+  .m .tag { font-family:var(--mono); font-size:6.6pt; letter-spacing:0.08em; text-transform:uppercase; color:#8acda3; white-space:nowrap; }
+  .metrics .note { margin-top:auto; padding-top:6px; font-size:7.1pt; line-height:1.35; color:var(--ink-400); border-top:1px solid rgba(255,255,255,.14); }
+
+  /* footer */
+  .footer { display:flex; justify-content:space-between; align-items:center; border-top:1px solid var(--ink-200); padding-top:8px; font-size:7.4pt; color:var(--ink-500); }
+  .footer .eyebrow { color:var(--ink-500); }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="head">
+    <div class="brand">
+      <div class="mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/>
+          <path d="M8.5 6h7"/><path d="m7.12 8.24 3.76 7.52"/><path d="m16.88 8.24-3.76 7.52"/>
+        </svg>
+      </div>
+      <div>
+        <h1>Communication Intelligence</h1>
+        <p class="sub">How the system works, how it gets smarter, and how it stays accurate.</p>
+      </div>
+    </div>
+    <div class="right">
+      <span class="eyebrow">Finishes Solutions · System diagram</span>
+      <span class="line"><b>Source</b> Microsoft 365 email, every mailbox in scope</span>
+      <span class="line"><b>Store</b> PostgreSQL and pgvector in the Finishes Azure tenant</span>
+      <span class="line"><b>Ask from</b> Claude, Microsoft Copilot or ChatGPT, signed in as yourself</span>
+    </div>
+  </div>
+
+  <!-- 1. How it works -->
+  <div>
+    <div class="sec"><span class="n">01</span><h2>How it works</h2><span class="hint">Every email follows the same seven steps. Nothing is searchable until it has passed steps 3 and 4.</span></div>
+    <div class="flow">
+
+      <div class="stage">
+        <div class="top"><span class="eyebrow">Step 1</span>
+          <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg></div>
+        <div class="t">Mailboxes</div>
+        <ul>
+          <li><b>Every company mailbox</b> is in scope, user and shared; named exceptions are kept out.</li>
+          <li>Access is <b>read-only</b> and granted mailbox by mailbox through Exchange's own permission boundary.</li>
+          <li>The system cannot send, move or change mail.</li>
+        </ul>
+        <div class="foot">176 mailboxes today</div>
+      </div>
+      <div class="arrow"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+
+      <div class="stage">
+        <div class="top"><span class="eyebrow">Step 2</span>
+          <svg viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 19h16"/></svg></div>
+        <div class="t">Capture</div>
+        <ul>
+          <li>Each email is fetched with its <b>subject, body, participants and attachments</b>, using IDs that survive moves.</li>
+          <li>Attachments are opened and their <b>text extracted</b>; original files are kept.</li>
+          <li>Obvious bulk and automated mail is recorded, not processed.</li>
+        </ul>
+        <div class="foot">~19,000 indexed emails a month</div>
+      </div>
+      <div class="arrow"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+
+      <div class="stage green">
+        <div class="top"><span class="eyebrow">Step 3</span>
+          <svg viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 4.4 3.4 8.1 8 9 4.6-.9 8-4.6 8-9V6z"/><path d="m9 12 2 2 4-4"/></svg></div>
+        <div class="t">Protect</div>
+        <ul>
+          <li><b>Masked before storage:</b> government IDs, bank, routing and card numbers, passwords, keys and codes.</li>
+          <li><b>Health information</b> is blocked entirely and never indexed.</li>
+          <li>Text is screened for <b>hidden instructions</b>; email content is always treated as untrusted.</li>
+        </ul>
+        <div class="foot">In-tenant services, no prompt rules</div>
+      </div>
+      <div class="arrow"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+
+      <div class="stage">
+        <div class="top"><span class="eyebrow">Step 4</span>
+          <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h7"/><circle cx="18" cy="16" r="3"/><path d="m20.2 18.2 1.8 1.8"/></svg></div>
+        <div class="t">Understand</div>
+        <ul>
+          <li>The AI answers <b>21 fixed questions</b> per email: action required, approval, invoice, project risk, urgency, category.</li>
+          <li>It reads out <b>properties, entities, people and facts</b> as written, never inferred.</li>
+          <li>A second check asks <b>whose</b> action item it is.</li>
+        </ul>
+        <div class="foot">Labels are proposals, not approvals</div>
+      </div>
+      <div class="arrow"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+
+      <div class="stage">
+        <div class="top"><span class="eyebrow">Step 5</span>
+          <svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></div>
+        <div class="t">Store</div>
+        <ul>
+          <li>Text is cut into passages and turned into <b>meaning vectors</b> for search by idea, not just keyword.</li>
+          <li>Everything lives in <b>PostgreSQL in the Finishes Azure tenant</b>; files in private Blob storage.</li>
+          <li>Copies of one email in several mailboxes are linked, never merged.</li>
+        </ul>
+        <div class="foot">One database, one audit trail</div>
+      </div>
+      <div class="arrow"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+
+      <div class="stage inv">
+        <div class="top"><span class="eyebrow">Step 6</span>
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/></svg></div>
+        <div class="t">Ask, as yourself</div>
+        <ul>
+          <li>You ask from <b>Claude, Copilot or ChatGPT</b> after a Microsoft 365 sign-in.</li>
+          <li>The assistant reaches mail only through <b>one authorized API</b>. It never holds a database key.</li>
+          <li>Your identity decides what you can see, <b>on every question</b>.</li>
+        </ul>
+        <div class="foot">Search · threads · action items · risks</div>
+      </div>
+      <div class="arrow"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+
+      <div class="stage">
+        <div class="top"><span class="eyebrow">Step 7</span>
+          <svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M8 13h8M8 17h5"/></svg></div>
+        <div class="t">Get the evidence</div>
+        <ul>
+          <li>Every answer cites <b>sender, date, subject and mailbox</b> and links to the real email and its files.</li>
+          <li>An empty result means <b>"not found in mail you may read"</b>, never a guess.</li>
+          <li>Links open a read-only page under the same access rule.</li>
+        </ul>
+        <div class="foot">Admin console for review, costs, people</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="lower">
+
+    <!-- 2. How it gets smarter -->
+    <div class="panel">
+      <div class="sec"><span class="n">02</span><h2>How it gets smarter</h2><span class="hint">Two loops, both corrected by people, never approved by the AI.</span></div>
+      <div class="loop">
+        <div class="loopwrap"><svg class="loopsvg" viewBox="0 28 400 276" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="#006527"/></marker>
+          </defs>
+          <circle cx="200" cy="165" r="100" fill="none" stroke="#dde1e2" stroke-width="1.5"/>
+          <path d="M 200 65 A 100 100 0 0 1 287 115" fill="none" stroke="#006527" stroke-width="2.2" marker-end="url(#ah)"/>
+          <path d="M 300 165 A 100 100 0 0 1 250 252" fill="none" stroke="#006527" stroke-width="2.2" marker-end="url(#ah)"/>
+          <path d="M 200 265 A 100 100 0 0 1 113 215" fill="none" stroke="#006527" stroke-width="2.2" marker-end="url(#ah)"/>
+          <path d="M 100 165 A 100 100 0 0 1 150 78" fill="none" stroke="#006527" stroke-width="2.2" marker-end="url(#ah)"/>
+          <g font-size="12.5" font-weight="700" fill="#0b0d0c" text-anchor="middle">
+            <rect x="118" y="34" width="164" height="50" rx="4" fill="#ffffff" stroke="#16191a" stroke-width="1.3"/>
+            <text x="200" y="55">New mail arrives</text>
+            <text x="200" y="72" font-size="9.5" font-weight="500" fill="#4d5457">read with what is already known</text>
+
+            <rect x="262" y="140" width="134" height="50" rx="4" fill="#ffffff" stroke="#16191a" stroke-width="1.3"/>
+            <text x="329" y="161">AI proposes</text>
+            <text x="329" y="178" font-size="9.5" font-weight="500" fill="#4d5457">labels · names · facts · risks</text>
+
+            <rect x="118" y="246" width="164" height="50" rx="4" fill="#f1f8f4" stroke="#006527" stroke-width="1.5"/>
+            <text x="200" y="267" fill="#004d1e">People review</text>
+            <text x="200" y="284" font-size="9.5" font-weight="500" fill="#4d5457">confirm · correct · merge · hide</text>
+
+            <rect x="4" y="140" width="134" height="50" rx="4" fill="#ffffff" stroke="#16191a" stroke-width="1.3"/>
+            <text x="71" y="161">Memory grows</text>
+            <text x="71" y="178" font-size="9.5" font-weight="500" fill="#4d5457">knowledge base · examples</text>
+          </g>
+          <g font-family="IBM Plex Mono" fill="#6b7174" letter-spacing="1" text-anchor="middle">
+            <text x="200" y="162" font-size="9.5" font-weight="600" fill="#006527">EVERY RUN</text>
+            <text x="200" y="176" font-size="8.5">THE LOOP CLOSES</text>
+          </g>
+        </svg></div>
+        <div class="learn">
+          <div class="item"><span class="k">A</span><div><div class="h">A knowledge base learned from the mail itself</div>
+            <p>Properties, companies, people, terms, meetings and how they relate are extracted from each email and checked against its text. A name seen in two or more messages is handed back to the AI as context for the next one, so references get resolved the way the company actually writes them. No seeded list, no approval queue.</p></div></div>
+          <div class="item"><span class="k">B</span><div><div class="h">Reviewer answers become examples</div>
+            <p>In Label Review, a person marks each AI label right or wrong. Corrected emails are shown to the AI as worked examples on later calls, corrections first, then mail from the same sender domain. Precision and recall per label come from the same answers.</p></div></div>
+          <div class="item"><span class="k">C</span><div><div class="h">Risk picture accumulates</div>
+            <p>Each project-risk email gets an impact and likelihood rating with a stated reason. Over time this builds the risk matrix, the trend by category and the property heatmap.</p></div></div>
+          <div class="item"><span class="k">D</span><div><div class="h">Thresholds move only by hand</div>
+            <p>The system suggests where a label's yes/no line should sit. A person changes it. Nothing retunes itself silently, so behaviour is explainable at any date.</p></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. How it stays accurate -->
+    <div class="panel">
+      <div class="sec"><span class="n">03</span><h2>How it stays accurate</h2><span class="hint">Rules that are enforced, and results that are measured, not asserted.</span></div>
+      <div class="acc">
+        <div>
+          <h3>Enforced on every email and every question</h3>
+          <div class="rules">
+            <div class="rule"><div class="h">Masking is a service, not an instruction</div><p>Sensitive numbers are found by deterministic patterns and an in-tenant detection service before the AI ever reads the text. A masking outage holds the email rather than letting it through.</p></div>
+            <div class="rule"><div class="h">Authorization runs inside the database</div><p>Who is asking is checked in SQL before any ranking. Per-reader limits (a person, a domain, a term) only narrow results and apply to every tool and link alike.</p></div>
+            <div class="rule"><div class="h">Email text is untrusted input</div><p>Instructions found inside a message are ignored by the classifier and by every assistant. Injection attempts are screened and flagged.</p></div>
+            <div class="rule"><div class="h">Every result is traceable</div><p>Sender, date, subject, mailbox and a link to the original. Summaries and labels are shown as AI proposals. Duplicates are collapsed only after authorization.</p></div>
+            <div class="rule"><div class="h">Nothing is silently dropped</div><p>Every email ends in a recorded state: published, held with a reason code, not indexed, or failed. Operators see counts, backlog and failures per run.</p></div>
+            <div class="rule"><div class="h">Every call is audited</div><p>Who asked, which tool, which emails came back. Query text is not logged by default. Access changes are written to the audit trail as well as to Entra.</p></div>
+          </div>
+        </div>
+        <div class="metrics">
+          <span class="eyebrow">Measured separately, with counts</span>
+          <div class="m"><div class="h">Capture completeness</div><span class="tag">per mailbox</span><p>Mail found in the mailbox versus mail captured. Misses are counted, not assumed away.</p></div>
+          <div class="m"><div class="h">Processing success</div><span class="tag">per run</span><p>Published, held by reason, failed and dead, plus the age of the oldest waiting email.</p></div>
+          <div class="m"><div class="h">Label quality</div><span class="tag">precision · recall</span><p>Per label and per person, from Label Review answers, always with the sample size. A probability is not an accuracy.</p></div>
+          <div class="m"><div class="h">Retrieval quality</div><span class="tag">recall@5 · @10</span><p>Against a question set with known answers, including questions that should return nothing.</p></div>
+          <div class="m"><div class="h">Authorization negatives</div><span class="tag">must be zero</span><p>Wrong audience, missing role, revoked grant, excluded mailbox, paused mode, forged filter: each must return no results.</p></div>
+          <div class="note">Accuracy is a measured, published number with a sample size, never a single percentage. Thresholds are uncalibrated until a labelled sample says otherwise, and the console shows that status.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <span class="eyebrow">Finishes Solutions · Technology · Development environment as of November 3, 2026</span>
+    <span>Mail never leaves the Finishes Microsoft and Azure tenants for processing. Assistants receive only authorized results, never credentials, keys or files.</span>
+  </div>
+</div>
+</body>
+</html>
