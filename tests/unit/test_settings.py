@@ -128,3 +128,19 @@ def test_empty_values_count_as_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ATTACHMENT_UNSUPPORTED_POLICY", "")
     with pytest.raises(SettingsError, match="attachment_unsupported_policy"):
         load_settings()
+
+
+def test_managed_identity_is_used_in_azure_or_when_a_vm_opts_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ci_core.azure_auth import managed_identity_available
+
+    for name in ("IDENTITY_ENDPOINT", "MSI_ENDPOINT", "AZURE_MANAGED_IDENTITY"):
+        monkeypatch.delenv(name, raising=False)
+    assert not managed_identity_available()  # a Mac: the probe would only time out
+    monkeypatch.setenv("AZURE_MANAGED_IDENTITY", "1")
+    assert managed_identity_available()  # a VM with the ingestion identity attached
+    monkeypatch.setenv("AZURE_MANAGED_IDENTITY", "no")
+    assert not managed_identity_available()
+    monkeypatch.setenv("IDENTITY_ENDPOINT", "http://169.254.255.2/msi/token")
+    assert managed_identity_available()  # Functions and App Service
