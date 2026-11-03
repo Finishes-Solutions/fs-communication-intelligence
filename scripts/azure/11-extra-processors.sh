@@ -11,7 +11,9 @@
 #   bash scripts/azure/11-extra-processors.sh --status   # the apps and their state
 #   bash scripts/azure/11-extra-processors.sh --stop     # delete the extra apps
 #
-# Settings (export before running): N (3 apps), WORKERS (96 per app).
+# Settings (export before running): N (3 apps), WORKERS (96 per app), FIRST (1): the
+# first app number to create or redeploy, e.g. FIRST=4 N=6 adds p4..p6 and leaves
+# p1..p3 running untouched.
 # Run from the repo root on a checkout of the code the ingestion app runs
 # (the package is built locally with Linux wheels, like the deploy workflow).
 # Later GitHub deploys update only the main ingestion app: run --stop when the
@@ -20,6 +22,7 @@ set -euo pipefail
 source "$(dirname "$0")/common.sh"
 
 N="${N:-3}"
+FIRST="${FIRST:-1}"
 WORKERS="${WORKERS:-96}"
 PREFIX="$ING_APP-p"
 
@@ -68,7 +71,7 @@ json.dump(settings, open(dst, "w"))
 print(f"  {len(settings)} settings")
 PY
 
-for i in $(seq 1 "$N"); do
+for i in $(seq "$FIRST" "$N"); do
   app="$PREFIX$i"
   echo "== $app"
   if az functionapp show -g "$RG" -n "$app" >/dev/null 2>&1; then
@@ -92,7 +95,7 @@ done
 
 cat <<OUT
 
-$N extra processor(s) running ($WORKERS workers each). Watch with:  ci runs --limit 30
+Extra processor(s) p$FIRST..p$N running ($WORKERS workers each). Watch with:  ci runs --limit 30
 (each app records its own 'process' runs). Remove them when the backlog is gone:
   bash scripts/azure/11-extra-processors.sh --stop
 OUT
