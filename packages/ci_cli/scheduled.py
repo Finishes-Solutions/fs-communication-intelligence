@@ -27,6 +27,7 @@ from ci_core.settings import Settings
 from ci_email.capture import capture_window
 from ci_email.inventory import sync_inventory
 from ci_email.process import process_all, record_usage, store_missing_originals
+from ci_email.resolutions import resolve_pending_actions
 from ci_email.risk_ratings import rate_pending_risks
 
 log = logging.getLogger("ci.scheduled")
@@ -35,6 +36,8 @@ log = logging.getLogger("ci.scheduled")
 STALE_RUN_GRACE_MINUTES = 60
 # Rating risk emails after processing (ci_email.risk_ratings): at most this long per run.
 RISK_RATING_SECONDS = 120.0
+# Checking action items with new replies (ci_email.resolutions): at most this long per run.
+RESOLUTION_SECONDS = 180.0
 # One tick works through backfill windows for at most this long before returning
 # (the host stops a function after 2 hours; a window is not started past this).
 BACKFILL_TICK_SECONDS = 100 * 60
@@ -232,6 +235,13 @@ def run_processing(settings: Settings) -> dict[str, int] | None:
                 lambda: connect(role="ci_ingest"),
                 backends.risk_rater(modelled, configured.meter),
                 max_seconds=RISK_RATING_SECONDS,
+            )
+        )
+        counts.update(
+            resolve_pending_actions(
+                lambda: connect(role="ci_ingest"),
+                backends.action_resolver(modelled, configured.meter),
+                max_seconds=RESOLUTION_SECONDS,
             )
         )
     except Exception as exc:

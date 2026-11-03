@@ -607,6 +607,9 @@ def build_admin_app(
 
     def actionable(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
         hours = _float(request.query_params.get("hours"), "hours") or 24
+        status = request.query_params.get("status") or "open"
+        if status not in retrieval.ACTION_STATUSES:
+            raise HTTPException(400, "status must be open, resolved or all")
         with connector("ci_search") as conn:
             return retrieval.list_actionable(
                 conn,
@@ -615,6 +618,7 @@ def build_admin_app(
                 hours=min(hours, 24 * 31),
                 include_risks=True,
                 limit=_int(request, "limit", 100, 1, 200),
+                status=status,
             )
 
     # ----- knowledge base (content via ci_search; corrections as ci_operator) --

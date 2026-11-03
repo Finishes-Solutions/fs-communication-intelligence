@@ -901,6 +901,85 @@ def _routed(
     return items
 
 
+ACTION_STATUSES = ("open", "resolved", "all")
+
+
+def _attach_resolutions(
+    conn: Connection, principal: Principal, items: list[dict[str, Any]]
+) -> None:
+    """Add ``status`` and ``resolution_ai`` to action items (migration 0026).
+
+    ``status`` is ``open`` (no check yet, or the replies did not settle it),
+    ``in_progress`` or ``resolved``. The resolving email is named only when the
+    caller may read it; otherwise the status stands alone."""
+    for item in items:
+        item["status"] = "open"
+        item["resolution_ai"] = None
+    if not items:
+        return
+    try:
+        rows = conn.execute(
+            "SELECT communication_id::text, status, confidence, reason,"
+            " resolver_communication_id::text AS resolver_id, resolver_at, checked_through"
+            " FROM published_action_resolutions WHERE communication_id = ANY(%s::uuid[])",
+            ([i["communication_id"] for i in items],),
+        ).fetchall()
+    except Exception:  # a database without migration 0026: every item stays open
+        conn.rollback()
+        return
+    if not rows:
+        return
+    resolver_ids = sorted({r["resolver_id"] for r in rows if r["resolver_id"]})
+    readable: dict[str, dict[str, Any]] = {}
+    if resolver_ids:
+        auth = authorize(conn, principal)
+        if not auth.empty:
+            readable = {
+                r["communication_id"]: dict(r)
+                for r in conn.execute(
+                    f"SELECT pc.id::text AS communication_id, pc.title AS subject,"  # noqa: S608
+                    f" pc.occurred_at,"
+                    f" (SELECT p.email_normalized FROM published_participants p"
+                    f"   WHERE p.communication_id = pc.id AND p.role = 'from' LIMIT 1) AS sender"
+                    f" FROM {_PUBLISHED} pc WHERE pc.id = ANY(%(ids)s::uuid[])"
+                    f" AND {_AUTH.format(a='pc')}",
+                    _params(auth, Filters()) | {"ids": resolver_ids},
+                ).fetchall()
+            }
+    found = {r["communication_id"]: r for r in rows}
+    for item in items:
+        r = found.get(item["communication_id"])
+        if r is None:
+            continue
+        resolver = readable.get(r["resolver_id"] or "")
+        item["status"] = r["status"]
+        item["resolution_ai"] = {
+            "status": r["status"],
+            "confidence": r["confidence"],
+            "reason": r["reason"],
+            "checked_through": r["checked_through"].isoformat() if r["checked_through"] else None,
+            "resolved_by": (
+                {
+                    "communication_id": resolver["communication_id"],
+                    "subject": resolver["subject"],
+                    "sender": resolver["sender"],
+                    "received_at": (
+                        resolver["occurred_at"].isoformat() if resolver["occurred_at"] else None
+                    ),
+                }
+                if resolver
+                else None
+            ),
+        }
+
+
+def _keep_status(items: list[dict[str, Any]], status: str, limit: int) -> list[dict[str, Any]]:
+    if status == "all":
+        return items[:limit]
+    wanted = ("resolved",) if status == "resolved" else ("open", "in_progress")
+    return [i for i in items if i["status"] in wanted][:limit]
+
+
 def list_actionable(
     conn: Connection,
     principal: Principal,
@@ -909,8 +988,13 @@ def list_actionable(
     hours: float = 24,
     include_risks: bool = True,
     limit: int = 50,
+    status: str = "open",
 ) -> dict[str, Any]:
     """Messages asking ``person`` to act, plus risk items.
+
+    ``status`` keeps action items that are ``open`` (open or in progress, the
+    default), ``resolved``, or ``all``. Resolution is judged from later replies
+    in the same conversation (ci_email.resolutions) and is an AI proposal.
 
     ``person`` is a profile key or one or more comma-separated addresses (for
     someone with several mailboxes). Action items come in two steps. Step 1,
@@ -931,14 +1015,19 @@ def list_actionable(
     inspection, safety, quality, financing, non-performance), company-wide
     within the caller's grants.
     """
+    if status not in ACTION_STATUSES:
+        raise ValueError("status must be open, resolved or all")
     addresses = sorted({a.strip().lower() for a in (person or "").split(",") if a.strip()})
     people = addresses or None
     since = utcnow() - timedelta(hours=hours)
     profile = _profile(conn, addresses)
     possible: list[dict[str, Any]] = []
+    # Resolved items are filtered after the query, so read more than a page when
+    # only some statuses are wanted.
+    fetch = limit if status == "all" else min(limit * 3, 300)
     if profile is not None:
-        actions = _routed(conn, principal, since, profile["key"], "yes", limit)
-        possible = _routed(conn, principal, since, profile["key"], "review", limit)
+        actions = _routed(conn, principal, since, profile["key"], "yes", fetch)
+        possible = _routed(conn, principal, since, profile["key"], "review", fetch)
     else:
         actions = _listing(
             conn,
@@ -946,9 +1035,12 @@ def list_actionable(
             Filters(since=since),
             ACTION_RULE_WHERE,
             action_rule_params(people),
-            limit,
+            fetch,
             labels=ACTION_LABELS,  # the rule requires one of them
         )
+    _attach_resolutions(conn, principal, actions + possible)
+    actions = _keep_status(actions, status, limit)
+    possible = _keep_status(possible, status, limit)
     risks = (
         _listing(
             conn,
@@ -973,11 +1065,13 @@ def list_actionable(
             "hours": hours,
             "person_filter": len(addresses),
             "person_check": profile["key"] if profile else None,
+            "status": status,
         },
     )
     conn.commit()
     return {
         "note": UNTRUSTED_NOTE,
+        "status": status,
         "person": ", ".join(addresses) or None,
         "person_check": (
             {"key": profile["key"], "name": profile["display_name"]} if profile else None

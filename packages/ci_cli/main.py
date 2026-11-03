@@ -49,6 +49,8 @@ The database comes from the standard ``PG*`` environment variables; locally,
                                               cut a long period into windows the ingestion
                                               app captures one by one, newest first
     ci backfill status | cancel | retry-failed
+    ci resolve [--limit 2000]                 check action items that got replies: resolved,
+                                              in progress or open (also runs after processing)
 
     ci names list                             canonical property and legal-entity names
     ci names add property "Willow Creek Retail" --alias "WC Retail" --alias "Willow Creek"
@@ -200,6 +202,11 @@ def _parser() -> argparse.ArgumentParser:
         help="process mail the bulk/automated pre-filter skipped in full (paid steps run)",
     )
     process.add_argument("--domain", help="with --retry-skipped: only this sender domain")
+    resolve = sub.add_parser(
+        "resolve", help="check action items with new replies: resolved, in progress or open"
+    )
+    resolve.add_argument("--limit", type=int, default=2000, help="action items per run")
+    resolve.add_argument("--workers", type=int, default=8)
     process.add_argument(
         "--rescreen",
         action="store_true",
@@ -677,6 +684,7 @@ def _run(args: argparse.Namespace, conn: Connection) -> None:
 _STANDALONE = {
     "capture": pipeline.capture,
     "process": pipeline.process,
+    "resolve": pipeline.resolve,
     "search": pipeline.search,
     "search-check": pipeline.search_check,
     "actionable": pipeline.actionable,

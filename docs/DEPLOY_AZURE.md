@@ -503,6 +503,16 @@ Only Chuck Sr. has a list for now; Chuck Jr. has no profile of his own.
 
 Changing a profile only affects mail processed afterwards. To apply it to mail already processed, run `ci process --remask --limit 0` (this re-runs everything, including the classifier).
 
+### Resolved action items
+
+Action items show when they have been dealt with (Matthew, 2026-11-03: "it never shows when an action item has been resolved"). For every published action item (the classifier's `action_required` or `approval_required` = yes) that gets a later email in the same conversation, one small model call reads the original request and up to six replies, newest last, and answers **resolved** (done, approved or refused, signed, sent, paid, answered, or withdrawn), **in progress** (someone took it on or asked a question) or **open** (nothing in the replies settles it), with a one-line reason and the reply that settled or advanced it (`ci_email.resolutions`, `ci_processing.resolution`, migration 0026 `action_resolutions`). The check runs after processing in each run (up to 3 minutes, newest activity first) and again only when a newer reply arrives, until the item is resolved; mailbox copies of one thread share one call. A reply that merely acknowledges is not a resolution. Nothing is read outside the thread: a request settled by phone, in person or in another thread stays open until someone replies in that thread.
+
+- **Console Action Items** has a status selector: *Open and in progress* (default), *Resolved*, *All*. Each item shows a badge with the status, the reason and who replied when.
+- **MCP `list_actionable`** returns `status` and `resolution_ai` on each action item and takes `status` (`open` default, `resolved`, `all`), so an agent asked for Chuck's open items does not list what was already approved. The resolving reply is named only when the reader may read it; otherwise only the status is shown.
+- **`ci resolve --limit 2000`** checks the backlog without the run's time budget, for example after a backfill (each check is one chat call of roughly 1,500 to 4,000 input tokens; resolved items are never re-checked).
+
+Status is an AI reading of the replies, uncalibrated until reviewed. Whether a thread's replies carry the same Graph `conversationId` in every mailbox is not verified; a reply recorded under another id is not seen.
+
 ### Properties, projects and legal entities
 
 The classifier also returns the **properties/projects** an email is about (up to 5) and the **legal entities** it names (up to 8: LLCs, LPs, trusts, funds, companies), exactly as written in the email or its attachments, never inferred. They appear in Messages, the Label check, the Lab, and agent results (`properties_ai`, `entities_ai`). Filter by them in **Messages** (Property, Entity boxes) or from agents (`search_email` / `list_email` with `property` or `entity`): a partial, case-insensitive match, so `property=willow` finds "Willow Creek Retail".

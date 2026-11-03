@@ -24,6 +24,7 @@ from ci_processing.embedding import Embedder, FakeEmbedder
 from ci_processing.originals import AzureBlobStore, DirectoryStore, OriginalStore
 from ci_processing.prefilter import allow_domains
 from ci_processing.redaction import FakeRedactor, Redactor
+from ci_processing.resolution import ActionResolver, FakeActionResolver
 from ci_processing.risk_rating import FakeRiskRater, RiskRater
 from ci_processing.routing import FakePersonRouter, PersonRouter
 from ci_processing.screening import DisabledScreener, FakeScreener, Screener
@@ -133,6 +134,21 @@ def person_router(settings: Settings, meter: Meter | None = None) -> PersonRoute
     from ci_processing.azure import AzureOpenAIPersonRouter
 
     return AzureOpenAIPersonRouter(
+        settings.azure_openai_endpoint or "",
+        settings.azure_openai_chat_deployment or "",
+        settings.azure_openai_api_version,
+        meter=meter,
+    )
+
+
+def action_resolver(settings: Settings, meter: Meter | None = None) -> ActionResolver:
+    """Resolved / in progress / open for action items with replies (migration 0026)."""
+    if settings.classifier_backend is ClassifierBackend.FAKE:
+        return FakeActionResolver()
+    settings.require("azure_openai_endpoint", "azure_openai_chat_deployment")
+    from ci_processing.azure import AzureOpenAIActionResolver
+
+    return AzureOpenAIActionResolver(
         settings.azure_openai_endpoint or "",
         settings.azure_openai_chat_deployment or "",
         settings.azure_openai_api_version,
