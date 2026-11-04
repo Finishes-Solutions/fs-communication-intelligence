@@ -161,12 +161,48 @@ Then multiply by the per-email figures in `docs/DEPLOY_AZURE.md` "Backfill a lon
 
 Unchanged: Prompt Shields on the classifier's input, PII and credential masking before classification under `SENSITIVE_DATA_POLICY=mask`, the operator switches, `policy_decisions`. The prefilter gets Teams rules: system and bot messages, reaction-only and empty messages, messages that are only a file card.
 
-### 5.4 Classification, chunking, embedding
+### 5.4 Grouping and indexing so the AI has context (Matthew, 2026-11-04: "how should those messages be grouped and indexed so AI has context?")
 
-- The classifier prompt gets a `source = teams` variant: no subject, a transcript-style window with `[time] Name: text`, chat type and members as context, the same label set. `approval_required`/`action_required` keep the "asks a named person" tightening; the person check (`action_people`) runs on windows.
-- Chunks: one `chat_context` chunk per window segment (about 350 tokens, paragraph = message boundary), header = chat or channel name, members, dates; citations = the messages in the segment (message ids, author, time, `webUrl`).
-- Knowledge, risk ratings and resolution checks run on windows unchanged. Resolution for Teams is natural: the next window in the same chat is the "reply".
-- Label review and review examples work per window; Teams examples are shown to the Teams prompt only.
+The problem: a chat line on its own ("ok send it", "see attached", "what about the draw?") means nothing. Email carries its own context in the subject and quoted history; chat does not. The design gives every stored piece of chat enough surrounding text to be classified, searched and cited on its own, without re-sending whole chat histories to the model.
+
+**Two units.** The *message* is the unit of truth (one row each, with its own id, author, time, edits and deletion). The *window* is the unit of meaning: the thing that is classified, embedded, searched and shown. Every message belongs to exactly one window at a time.
+
+**How windows are cut.**
+- Channel: one post and all of its replies are one window (a thread). A thread longer than 8,000 characters is split at reply boundaries into numbered parts that share the post.
+- Chat (1:1, group, meeting chat): consecutive messages in one chat form a window until there is a gap of `TEAMS_WINDOW_GAP_MINUTES` (default 60) since the previous message, or the window reaches 40 messages or 8,000 characters. A new day does not force a split; a quiet hour does.
+- A window re-forms when a message in it is added, edited or deleted. The new text gets a new version with an input hash; nothing is re-classified if the text is identical.
+
+**What the model and the embedder see for a window** (built by the normaliser, never shown as evidence):
+
+```
+Chat: Will Essner, Matthew Sinitiere (1:1)         or   Channel: Development / Permits (team: FS Construction)
+When: Tue 2026-10-21 09:12 to 11:40 (America/Chicago)
+Earlier in this chat (AI, unverified): "Discussed the draw request for Evergreen Heights; lender wanted updated lien waivers."
+---
+[09:12] Will Essner: did the lien waivers go out?
+[09:13] Matthew Sinitiere: replying to Will ("did the lien waivers..."): yes, Friday. [file: Evergreen_LienWaivers_Oct.pdf]
+[11:40] Will Essner: @Chuck Cates can you sign the draw cover sheet today
+```
+
+- `Earlier in this chat` is the one-line summary the classifier produced for the previous window of the same chat (`window_summary`, a new classifier output, 200 characters max). It carries continuity across windows and days at about 50 tokens instead of re-sending history. It is labelled untrusted, like `learned_names`.
+- Mentions are resolved to names, quoted replies to "replying to <author> (<first 60 chars>)", file cards to `[file: name]`, Loop and adaptive cards to their text, images to `[image]`. System messages are dropped.
+- Times are local; names are display names with UPNs kept in the metadata.
+
+**How windows become chunks (what is embedded and searched).**
+- A window of up to about 700 tokens is one chunk. Larger windows are chunked at message boundaries to about 350 tokens with a two-message overlap, so a chunk never starts mid-exchange.
+- Every chunk carries the same header (chat or channel, members, date range), so a chunk found by search makes sense alone, exactly as an email chunk carries subject, sender and date today.
+- Each chunk records the message ids it contains. Search results therefore cite individual messages (author, time, `webUrl`, `view_url`) while ranking by the chunk's meaning.
+- Hybrid retrieval is unchanged: vector top-50 plus full-text top-50, fused, at most 3 chunks per window.
+
+**What runs per window, not per message.** Classification (same labels; the prompt gets a `teams` variant with the format above, no subject, chat type and members as context), the per-person action check, `project_risk` rating, property and entity extraction, knowledge extraction, and the review examples. A window is the thing that appears in Label Review and on the Action Items and Risk pages; its citation is the message that carries the request.
+
+**Reading around a hit.** `get_teams_window` returns the window with its messages; `get_chat` returns the neighbouring windows of the same chat (before and after) so an agent can read on. The resolution check for an action item in a window reads the following windows of the same chat, which is the Teams equivalent of "a later email in the same conversation".
+
+**Meeting chats** (the chat attached to a Teams meeting) are windows like any other, and they are linked (`relationships`, `kind = 'same_meeting'`) to the meeting's transcript when one exists in the meetings pipeline (`docs/MEETINGS_AND_CALLS_PLAN.md`), so "what was decided in Tuesday's call" can be answered from the transcript and the chat together, each cited separately.
+
+**What this still cannot see.** Anything said on a call or in a meeting that nobody typed, and anything inside a shared file or a pasted screenshot (§5.5). Results say so in the coverage block.
+
+**Unmeasured.** The gap and size thresholds, the value of the carried-forward summary and the chunk size are guesses to be checked in Label Review and the retrieval test set (§11 of CLAUDE.md), not tuned in advance.
 
 ### 5.5 Attachments and images
 
