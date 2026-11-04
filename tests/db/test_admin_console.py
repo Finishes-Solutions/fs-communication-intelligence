@@ -215,6 +215,9 @@ def test_overview_counts(client: TestClient) -> None:
     assert data["mode"]["mode"] == "test" and data["mode"]["eligible_mailboxes"] > 0
     assert data["schedule"]["capture_enabled"] is False
     assert any(lb["label"] == "invoice_receipt" for lb in data["labels"])
+    dates = data["email_range"]
+    assert dates["oldest_at"] and dates["latest_at"]
+    assert dates["oldest_at"] <= dates["latest_at"]
 
 
 def test_schedule_changes_are_validated_and_audited(

@@ -132,6 +132,9 @@ function guard(fn) {
   };
 }
 function when(iso) { return iso ? new Date(iso).toLocaleString() : "—"; }
+function dateTime(iso) {
+  return iso ? new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }) : "—";
+}
 function short(iso) {
   return iso ? new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "—";
 }
@@ -450,6 +453,7 @@ async function overview() {
   const s = d.schedule;
   const requeue = guard(async () => { const r = await post("/api/requeue-failed"); toast(`${r.requeued} failed messages requeued.`); route(); });
   const failed = (d.failures || []).reduce((n, f) => n + f.versions, 0);
+  const range = d.email_range || {};
   show(
     pageHead("Overview", "Capture, processing and publication at a glance.",
       h("button", { class: "btn", onclick: requeue }, icon("requeue"), "Requeue Failed"),
@@ -462,6 +466,8 @@ async function overview() {
       stat("Waiting to Process", "layers", num(backlog.fetched ?? 0),
         backlog.oldest_fetched_at ? `Oldest ${short(backlog.oldest_fetched_at)}` : "Nothing waiting"),
       stat("Processing", "zap", s.processing_enabled ? "On" : "Off", failed ? `${num(failed)} failed` : "No failures"),
+      stat("Latest Email", "mail", dateTime(range.latest_at), range.latest_at ? "Newest received date captured" : "No email captured yet"),
+      stat("Oldest Email", "mail", dateTime(range.oldest_at), range.oldest_at ? "Oldest received date captured" : "No email captured yet"),
     ),
     (s.prompt_shield_enabled === false || s.masking_enabled === false)
       ? note(`Testing mode: ${[s.prompt_shield_enabled === false ? "prompt-injection check" : "", s.masking_enabled === false ? "masking" : ""].filter(Boolean).join(" and ")} switched off in Schedule & Runs.`, "warn") : null,

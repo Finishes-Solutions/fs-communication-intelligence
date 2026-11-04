@@ -492,6 +492,7 @@ def overview(conn: Connection) -> dict[str, Any]:
         "mailboxes": rows("SELECT * FROM ops_mailbox_states ORDER BY mailboxes DESC"),
         "versions": rows("SELECT * FROM ops_version_states ORDER BY versions DESC"),
         "backlog": rows("SELECT * FROM ops_backlog")[0],
+        "email_range": rows("SELECT * FROM ops_email_range")[0],
         "failures": rows("SELECT * FROM ops_failures ORDER BY versions DESC"),
         "labels": rows(
             "SELECT * FROM ops_label_counts WHERE decision = 'yes' ORDER BY messages DESC"
