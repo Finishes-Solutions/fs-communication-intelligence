@@ -115,6 +115,7 @@ from ci_core.operator import (
     set_knowledge_detail,
     set_mode,
     set_person,
+    set_providers,
     unmerge_knowledge,
 )
 from ci_core.runtime import RuntimeConfigError, active_config, eligible_mailboxes
@@ -333,9 +334,38 @@ def _parser() -> argparse.ArgumentParser:
     bplan.add_argument("--since", required=True, help="first day, midnight Central (YYYY-MM-DD)")
     bplan.add_argument("--until", help="day after the last one (YYYY-MM-DD); default: now")
     bplan.add_argument("--days", type=int, default=7, help="days per window (1 to 93; default 7)")
+    bplan.add_argument(
+        "--source", choices=["email", "fireflies"], default="email", help="what to capture"
+    )
     backfill_action.add_parser("status", help="windows per state and the one running")
-    backfill_action.add_parser("cancel", help="drop the pending windows")
+    bcancel = backfill_action.add_parser("cancel", help="drop the pending windows")
+    bcancel.add_argument("--source", choices=["email", "fireflies"], help="only this source")
     backfill_action.add_parser("retry-failed", help="put failed windows back to pending")
+    sources = mode.add_parser("sources", help="which sources capture may read")
+    sources.add_argument("names", help="comma-separated: email,fireflies")
+
+    fireflies = sub.add_parser(
+        "fireflies", help="Fireflies meetings (docs/MEETINGS_AND_CALLS_PLAN.md)"
+    )
+    ff_action = fireflies.add_subparsers(dest="action", required=True)
+    ff_action.add_parser("check", help="first contact: the key's user, team size, one listing page")
+    ff_action.add_parser("init", help="register the Fireflies connection and meetings corpus")
+    ff_action.add_parser("inventory", help="re-read the team from Fireflies")
+    ff_scope = ff_action.add_parser("scope").add_subparsers(dest="scope_action", required=True)
+    ff_scope.add_parser("list")
+    ffi = ff_scope.add_parser("include", help="approve a team member for a dataset")
+    ffi.add_argument("email", nargs="?")
+    ffi.add_argument("--all-enrolled", action="store_true")
+    ffi.add_argument("--dataset", choices=["test", "production"], default="test")
+    ffi.add_argument("--revoke", action="store_true")
+    ffi.add_argument("--confirm-production", action="store_true")
+    ffe = ff_scope.add_parser("exclude", help="keep a team member or one meeting out")
+    ffe.add_argument("email", nargs="?")
+    ffe.add_argument("--meeting", help="a transcript id instead of a person")
+    ffe.add_argument("--reason")
+    ffe.add_argument("--revoke", action="store_true")
+    ffc = ff_action.add_parser("capture", help="store the meetings of the last N days now")
+    ffc.add_argument("--days", type=int, default=14)
     teams = sub.add_parser("teams", help="Microsoft Teams source (docs/TEAMS_PLAN.md)")
     teams_action = teams.add_subparsers(dest="action", required=True)
     tprobe = teams_action.add_parser("probe", help="T0: can the Teams identity read chats?")
@@ -488,23 +518,28 @@ def _backfill(args: argparse.Namespace, conn: Connection, actor: str) -> None:
             days=args.days,
             now=datetime.now(UTC),
             time_zone=tz.key,
+            source=args.source,
         )
         since = datetime.fromisoformat(summary["since"]).astimezone(tz)
         until = datetime.fromisoformat(summary["until"]).astimezone(tz)
         print(
-            f"planned {summary['windows']} window(s) of up to {summary['window_days']} day(s)"
+            f"planned {summary['windows']} {args.source} window(s) of up to"
+            f" {summary['window_days']} day(s)"
             f" from {since:%Y-%m-%d %H:%M} to {until:%Y-%m-%d %H:%M} ({tz.key});"
             " the ingestion app starts the newest within about 5 minutes"
             " (CAPTURE_ENABLED must be true on the app)"
         )
         return
     if args.action == "cancel":
-        print(f"cancelled {ops.cancel_backfill(conn, actor)} pending window(s)")
+        print(f"cancelled {ops.cancel_backfill(conn, actor, args.source)} pending window(s)")
     elif args.action == "retry-failed":
         print(f"requeued {ops.retry_failed_windows(conn, actor)} failed window(s)")
     status = ops.backfill_status(conn)
     states = ", ".join(f"{k}={v}" for k, v in sorted(status["states"].items())) or "none"
     print(f"windows: {states}")
+    for source, per_state in sorted(status.get("by_source", {}).items()):
+        detail = ", ".join(f"{k}={v}" for k, v in sorted(per_state.items()))
+        print(f"  {source}: {detail}")
     if status["pending_since"]:
         since = datetime.fromisoformat(status["pending_since"]).astimezone(tz)
         until = datetime.fromisoformat(status["pending_until"]).astimezone(tz)
@@ -527,8 +562,9 @@ def _backfill(args: argparse.Namespace, conn: Connection, actor: str) -> None:
         counts = r["counts"] or {}
         stored = counts.get("new_version", 0)
         error = f" error={r['error_code']}" if r["error_code"] else ""
+        source = r.get("source") or "email"
         print(
-            f"  {r['state']:<7} {since:%Y-%m-%d} to {until:%Y-%m-%d} {took:>9}"
+            f"  {r['state']:<7} {source:<9} {since:%Y-%m-%d} to {until:%Y-%m-%d} {took:>9}"
             f"  listed={counts.get('listed', 0)} stored={stored}{error}"
         )
 
@@ -589,6 +625,14 @@ def _run(args: argparse.Namespace, conn: Connection) -> None:
         return
     if args.command == "grant":
         pipeline.grant(conn, args, actor)
+        return
+
+    if args.command == "fireflies":
+        pipeline.fireflies(conn, args, actor)
+        return
+    if args.command == "mode" and args.action == "sources":
+        config = set_providers(conn, [n.strip() for n in args.names.split(",") if n.strip()], actor)
+        print(f"enabled sources: {', '.join(config.enabled_providers) or 'none'}")
         return
 
     if args.command == "scope":

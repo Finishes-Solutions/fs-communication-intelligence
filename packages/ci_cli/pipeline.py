@@ -464,3 +464,83 @@ def teams_probe(args: argparse.Namespace) -> None:
     print(explain(report))
     if args.json:
         print(json.dumps(report.to_dict(), indent=2))
+
+
+def fireflies(conn: Connection, args: argparse.Namespace, actor: str) -> None:
+    """``ci fireflies ...``: first contact, registration, team inventory, scope, capture."""
+    from ci_fireflies import capture as ff_capture
+    from ci_fireflies import inventory as ff
+
+    settings = load_settings()
+    if args.action == "check":
+        client = backends.fireflies_client(settings)
+        me = client.whoami()
+        users = client.list_users()
+        since, until = ff_capture.rolling_window(None, 30)
+        page = client.list_transcripts(since, until)
+        print(f"key user: {me.email} (admin: {'yes' if me.is_admin else 'no'})")
+        print(f"team members the key can list: {len(users)}")
+        print(f"meetings in the last 30 days (first page, max 50): {len(page)}")
+        if not me.is_admin:
+            print(
+                "WARNING: not an admin key; it may list only its own meetings (D-M2 asks for"
+                " the whole team). Make the automation seat a Fireflies admin."
+            )
+        return
+    if args.action == "init":
+        client = backends.fireflies_client(settings)
+        account = client.whoami().user_id
+        connection, _ = ff.register_connection(conn, account, actor)
+        print(f"registered Fireflies connection {connection} and corpus {ff.CORPUS_KEY}")
+        print(
+            "Next: ci mode sources email,fireflies; ci fireflies inventory;"
+            " ci fireflies scope include --all-enrolled"
+        )
+        return
+    if args.action == "inventory":
+        connection, corpus = ff.connection_and_corpus(conn)
+        summary = ff.sync_users(
+            conn, backends.fireflies_client(settings), connection, corpus, actor
+        )
+        print(f"team: {summary.states}")
+        return
+    if args.action == "scope":
+        if args.scope_action == "list":
+            print(f"{'EMAIL':<45} {'NAME':<24} {'STATE':<10} TEST PROD EXCLUDED ADMIN")
+            for r in ff.list_users(conn):
+                print(
+                    f"{r['email']:<45} {(r['name'] or '')[:24]:<24} {r['scope_state']:<10} "
+                    f"{'yes' if r['test_approved'] else '-':<4} "
+                    f"{'yes' if r['production_approved'] else '-':<4} "
+                    f"{'yes' if r['excluded'] else '-':<8} {'yes' if r['is_admin'] else '-'}"
+                )
+        elif args.scope_action == "include":
+            if args.dataset == "production" and not args.confirm_production:
+                raise OperatorError("production changes need --confirm-production")
+            if args.all_enrolled:
+                n = ff.approve_all(conn, args.dataset, actor)
+                print(f"approved {n} team member(s) for {args.dataset}; exclusions still win")
+            elif args.email:
+                ff.approve_user(conn, args.email, args.dataset, actor, revoke=args.revoke)
+                print(f"{'removed approval for' if args.revoke else 'approved'} {args.email}")
+            else:
+                raise OperatorError("give an email or --all-enrolled")
+        elif args.scope_action == "exclude":
+            if args.meeting:
+                ff.exclude_meeting(conn, args.meeting, actor, reason=args.reason)
+                print(f"excluded meeting {args.meeting}")
+            elif args.email:
+                ff.exclude_user(conn, args.email, actor, reason=args.reason, revoke=args.revoke)
+                print(f"{'removed exclusion for' if args.revoke else 'excluded'} {args.email}")
+            else:
+                raise OperatorError("give an email or --meeting")
+        return
+    if args.action == "capture":
+        from ci_cli.scheduled import fireflies_capture_now
+
+        conn.commit()  # the capture opens its own connections
+        since, until = ff_capture.rolling_window(None, args.days)
+        status, counts = fireflies_capture_now(settings, since=since, until=until)
+        print(f"{status}: {dict(sorted(counts.items()))}")
+        return
+    raise OperatorError(f"unknown fireflies action {args.action}")

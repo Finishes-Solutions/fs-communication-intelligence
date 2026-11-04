@@ -53,6 +53,13 @@ class GraphBackend(StrEnum):
     FIXTURE = "fixture"
 
 
+class FirefliesBackend(StrEnum):
+    """``fixture``: synthetic transcripts from tests/fixtures/fireflies. ``api``: GraphQL."""
+
+    FIXTURE = "fixture"
+    API = "api"
+
+
 class AuthMode(StrEnum):
     ENTRA = "entra"
     LOCAL_TEST = "local_test"
@@ -85,6 +92,7 @@ _FAKE_BACKENDS: dict[str, StrEnum] = {
     "embedder": EmbedderBackend.FAKE,
     "screener": ScreenerBackend.FAKE,
     "graph_backend": GraphBackend.FIXTURE,
+    "fireflies_backend": FirefliesBackend.FIXTURE,
 }
 
 _LOCAL_DEFAULTS: dict[str, StrEnum] = {
@@ -97,6 +105,7 @@ _CLOUD_DEFAULTS: dict[str, StrEnum] = {
     "embedder": EmbedderBackend.AZURE_OPENAI,
     "screener": ScreenerBackend.AZURE,
     "graph_backend": GraphBackend.GRAPH,
+    "fireflies_backend": FirefliesBackend.API,
 }
 
 
@@ -135,6 +144,18 @@ class Settings(BaseSettings):
     # no Azure identity endpoint, the signed-in Azure CLI is used instead.
     teams_client_id: str | None = None  # AZURE_TEAMS_CLIENT_ID
     teams_capture_enabled: bool = False  # hard kill switch, like CAPTURE_ENABLED
+
+    # Fireflies meetings (docs/MEETINGS_AND_CALLS_PLAN.md). The API key is the
+    # automation account's (D-M2), a Key Vault reference in Azure
+    # (scripts/azure/11-fireflies.sh); never in the repository, logs or chat.
+    fireflies_backend: FirefliesBackend
+    fireflies_api_url: str = "https://api.fireflies.ai/graphql"
+    fireflies_api_key: SecretStr | None = None
+    fireflies_requests_per_minute: int = 50  # Business/Enterprise plans allow 60
+    fireflies_capture_enabled: bool = False  # hard kill switch for the rolling capture
+    fireflies_capture_days: int = 14  # the rolling window each capture re-reads
+    fireflies_capture_interval_min: int = 60
+    fireflies_backfill_since: datetime | None = None  # D-M1: 2025-01-01; empty blocks capture
 
     # Azure AI services in the Finishes tenant, reached with Entra tokens.
     azure_openai_endpoint: str | None = None
@@ -236,13 +257,13 @@ class Settings(BaseSettings):
             values.setdefault(key, value)
         return values
 
-    @field_validator("email_backfill_since")
+    @field_validator("email_backfill_since", "fireflies_backfill_since")
     @classmethod
     def _backfill_is_utc(cls, value: datetime | None) -> datetime | None:
         if value is None:
             return None
         if value.tzinfo is None:
-            raise ValueError("EMAIL_BACKFILL_SINCE must include a UTC offset")
+            raise ValueError("a *_BACKFILL_SINCE setting must include a UTC offset")
         return value.astimezone(UTC)
 
     @field_validator("embedding_dimensions")

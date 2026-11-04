@@ -714,7 +714,7 @@ async function messagesPage() {
     for (const [k, el] of Object.entries(f)) if (el.value.trim()) q.set(k, el.value.trim());
     navigate("/messages?" + q);
   }
-  show(pageHead("Messages", "Published mail you are authorized to read. Summaries and labels are AI proposals."),
+  show(pageHead("Emails", "Published mail you are authorized to read. Summaries and labels are AI proposals."),
     card({},
       h("form", { class: "toolbar", onsubmit: e => { e.preventDefault(); go(); } },
         searchBox(f.q), f.mailbox, f.sender, f.property, f.entity, f.label, f.since_days,
@@ -725,10 +725,10 @@ async function messagesPage() {
   for (const k of Object.keys(f)) { const v = p.get(k) ?? (k === "since_days" ? "7" : ""); if (v) q.set(k, v); }
   const d = await api("/api/messages?" + q);
   results.replaceChildren(
-    h("div", { class: "card-head" }, h("h2", {}, p.get("q") ? "Best Matches" : "Messages"), h("span", { class: "muted small" }, `${num(d.results.length)} shown`)),
+    h("div", { class: "card-head" }, h("h2", {}, p.get("q") ? "Best Matches" : "Emails"), h("span", { class: "muted small" }, `${num(d.results.length)} shown`)),
     d.results.length
       ? h("div", { class: "msg-list" }, d.results.map(r => msgRow(r, x => showMessage(x.communication_id, detail))))
-      : emptyState("No Messages Found", "Try a wider time range or fewer filters.", "search"));
+      : emptyState("No Emails Found", "Try a wider time range or fewer filters.", "search"));
 }
 
 async function showMessage(id, holder) {
@@ -2988,7 +2988,7 @@ const NAV = [
   ["overview", "Overview", "overview"], ["schedule", "Schedule & Runs", "clock"], ["costs", "Costs", "dollar"],
   ["mailboxes", "Mailboxes", "inbox"],
   null,
-  ["messages", "Messages", "mail"], ["actionable", "Action Items", "check"], ["unpublished", "Not Published", "hidden"],
+  ["messages", "Emails", "mail"], ["actionable", "Action Items", "check"], ["unpublished", "Not Published", "hidden"],
   null,
   ["risks", "Risk Analysis", "alert"], ["knowledge", "Knowledge", "layers"], ["reports", "Reports", "report"],
   ["review", "Label Review", "review"],

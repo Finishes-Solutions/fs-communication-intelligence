@@ -29,6 +29,9 @@ from ci_email.inventory import sync_inventory
 from ci_email.process import process_all, record_usage, store_missing_originals
 from ci_email.resolutions import resolve_pending_actions
 from ci_email.risk_ratings import rate_pending_risks
+from ci_fireflies import capture as ff_capture
+from ci_fireflies.inventory import connection_and_corpus as ff_connection
+from ci_fireflies.inventory import sync_users
 
 log = logging.getLogger("ci.scheduled")
 # A processing run still 'running' this long after its time budget was stopped
@@ -96,6 +99,90 @@ def capture_now(
     return ("partial" if total["mailbox_errors"] else "succeeded"), dict(total)
 
 
+def fireflies_capture_now(
+    settings: Settings,
+    *,
+    since: datetime,
+    until: datetime,
+    sync: bool = True,
+) -> tuple[str, dict[str, int]]:
+    """Team inventory (unless ``sync`` is false), then capture the meetings of the window.
+    Returns a run status (``succeeded``, ``partial``, ``refused``) and counts."""
+    client = backends.fireflies_client(settings)
+    total: Counter[str] = Counter()
+    if sync:
+        with connect(role="ci_ingest") as conn:
+            connection, corpus = ff_connection(conn)
+            states = sync_users(conn, client, connection, corpus, "ingestion-function").states
+            conn.commit()
+        total.update({f"users_{k}": v for k, v in states.items()})
+    try:
+        result = ff_capture.capture_window(
+            _connect, client, since=since, until=until, profile=capture_profile(settings)
+        )
+    except (EmptyScopeError, RuntimeConfigError) as exc:
+        log.warning("fireflies capture refused: %s", type(exc).__name__)
+        total["refused_" + type(exc).__name__] += 1
+        return "refused", dict(total)
+    total.update(result.counts)
+    if result.error:
+        total["errors"] += 1
+        log.warning("fireflies capture error code=%s", result.error)
+    return ("partial" if result.error else "succeeded"), dict(total)
+
+
+def fireflies_tick(settings: Settings, now: datetime | None = None) -> ops.Decision:
+    """The rolling Fireflies capture: the last FIREFLIES_CAPTURE_DAYS, at most once per
+    FIREFLIES_CAPTURE_INTERVAL_MIN, when the app setting allows it. Deleted meetings
+    inside the window are withdrawn afterwards. Backfill windows run from the main
+    scheduler tick."""
+    now = now or datetime.now(UTC)
+    if not settings.fireflies_capture_enabled:
+        return ops.Decision(False, "FIREFLIES_CAPTURE_ENABLED app setting is false")
+    if settings.fireflies_backfill_since is None:
+        return ops.Decision(False, "FIREFLIES_BACKFILL_SINCE is not set (D-M1)")
+    with connect(role="ci_ingest") as conn:
+        last = conn.execute(
+            "SELECT last_fireflies_capture_at AS at FROM ops_settings WHERE id"
+        ).fetchone()
+        if ops.close_stale_runs(conn, "fireflies_capture", ops.RUNNING_CAPTURE_GRACE, now):
+            log.warning("closed stale fireflies capture run(s)")
+        running = conn.execute(
+            "SELECT 1 FROM ops_runs WHERE kind = 'fireflies_capture' AND status = 'running'"
+            " AND started_at > %s LIMIT 1",
+            (now - ops.RUNNING_CAPTURE_GRACE,),
+        ).fetchone()
+        if running:
+            return ops.Decision(False, "a fireflies capture is still running")
+        if (
+            last
+            and last["at"]
+            and now - last["at"] < timedelta(minutes=settings.fireflies_capture_interval_min)
+        ):
+            return ops.Decision(False, "fireflies capture ran recently")
+        since, until = ff_capture.rolling_window(now, settings.fireflies_capture_days)
+        since = max(since, settings.fireflies_backfill_since)
+        run_id = ops.start_run(
+            conn, "fireflies_capture", "schedule", round((until - since).total_seconds() / 3600, 2)
+        )
+        conn.execute("UPDATE ops_settings SET last_fireflies_capture_at = %s WHERE id", (now,))
+        conn.commit()
+    try:
+        status, counts = fireflies_capture_now(settings, since=since, until=until)
+        error = None
+        if status == "succeeded":
+            counts["withdrawn"] = ff_capture.withdraw_missing(
+                _connect, backends.fireflies_client(settings), since=since, until=until
+            )
+    except Exception as exc:  # recorded as a code; the next tick tries again
+        status, counts, error = "failed", {}, type(exc).__name__[:60]
+        log.exception("fireflies capture failed")
+    with connect(role="ci_ingest") as conn:
+        ops.finish_run(conn, run_id, status, counts, error)
+        conn.commit()
+    return ops.Decision(True, f"fireflies capture: {status}", "schedule")
+
+
 def run_capture(settings: Settings, now: datetime | None = None) -> dict[str, int] | None:
     """Capture the ``CAPTURE_HOURS`` before ``now`` (default: the current time),
     ignoring the schedule (CLI and tests)."""
@@ -152,10 +239,11 @@ def run_backfill(
     now = now or datetime.now(UTC)
     started = clock()
     windows = 0
-    first = True
+    first: dict[str, bool] = {}  # per source: inventory sync before its first window
+    refused: tuple[str, ...] = ()
     while clock() - started < max_seconds:
         with connect(role="ci_ingest") as conn:
-            window = ops.claim_backfill_window(conn, now)
+            window = ops.claim_backfill_window(conn, now, skip_sources=refused)
             conn.commit()
         if window is None:
             break
@@ -167,23 +255,31 @@ def run_backfill(
             window.until,
             window.hours,
         )
+        sync = not first.get(window.source, False)
         try:
-            status, counts = capture_now(
-                settings, None, now, since=window.since, until=window.until, sync=first
-            )
+            if window.source == "fireflies":
+                status, counts = fireflies_capture_now(
+                    settings, since=window.since, until=window.until, sync=sync
+                )
+            else:
+                status, counts = capture_now(
+                    settings, None, now, since=window.since, until=window.until, sync=sync
+                )
             error = None
             if status == "refused":  # paused mode or empty scope: the next window would be too
                 error = next((k for k in counts if k.startswith("refused_")), "refused")[:60]
         except Exception as exc:  # recorded as a code; the window is marked failed
             status, counts, error = "failed", {}, type(exc).__name__[:60]
             log.exception("backfill window failed")
-        first = False
+        first[window.source] = True
         with connect(role="ci_ingest") as conn:
             ops.finish_backfill_window(conn, window, status, counts, error)
             conn.commit()
         if status == "refused":
-            log.warning("backfill stopped: capture refused (%s); windows stay pending", error)
-            break
+            log.warning(
+                "backfill: %s capture refused (%s); its windows stay pending", window.source, error
+            )
+            refused = (*refused, window.source)
     reason = f"backfill: {windows} window(s) run" if windows else "backfill: nothing pending"
     return ops.Decision(windows > 0, reason, "backfill")
 

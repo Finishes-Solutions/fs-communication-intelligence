@@ -561,6 +561,56 @@ Check: the first line ends with `ok`. `protected_api_approval_required` means Mi
 
 Locally, `ci teams probe` runs the same code with the signed-in Azure CLI; a user token carries no app roles, so expect `forbidden` there.
 
+## 14. Fireflies meetings: key, first contact, backfill (M1)
+
+Decided 2026-11-04 (D-M1: every transcript from 2025-01-01, all seats; D-M2: the automation account's API key). Built, not yet run against the real account; `ci fireflies check` is the first contact.
+
+```bash
+bash scripts/azure/11-fireflies.sh
+```
+
+It asks for the Fireflies API key of `svc_automation@finishessolutions.com` (Fireflies → Settings → Developer; typed without echo), stores it in Key Vault as `fireflies-api-key`, lets the ingestion identity read that one secret, and sets `FIREFLIES_BACKEND=api`, the Key Vault reference, `FIREFLIES_BACKFILL_SINCE=2025-01-01` and `FIREFLIES_CAPTURE_ENABLED=false` on the ingestion app. The key is never printed or written anywhere else.
+
+Then, from a machine with the Azure dev database settings (`make azure-env`), with the same key in `FIREFLIES_API_KEY` for the CLI only (Mac keychain or a file in `.gitignore`, never the repo):
+
+```bash
+ci fireflies check
+```
+
+Check: `key user: svc_automation@... (admin: yes)` and a team count near 29. `admin: no` means the automation seat must be made a Fireflies admin first, or the key lists only its own meetings. The output is counts only.
+
+```bash
+ci fireflies init
+```
+
+```bash
+ci mode sources email,fireflies
+```
+
+```bash
+ci fireflies inventory
+```
+
+```bash
+ci fireflies scope include --all-enrolled
+```
+
+Registers the connection and the `fireflies-meetings` corpus (`Communications.Reader.All` may read it, D-M5 default), enables the source under the current mode, lists the team as capture scopes and approves them for the test dataset. `ci fireflies scope exclude <email> --reason ...` keeps a person's meetings out; `ci fireflies scope exclude --meeting <transcript id> --reason ...` keeps one meeting out.
+
+```bash
+ci fireflies capture --days 14
+```
+
+A first real window from this machine. Check: `succeeded: {...}` with `listed` near the Fireflies count for the fortnight and `new_version` close to it; `no_scope` counts meetings none of the approved members is on (stored, never published).
+
+```bash
+ci backfill plan --source fireflies --since 2025-01-01 --days 30
+```
+
+The full history (about 339 transcripts, under an hour at 60 requests a minute). The ingestion app works through the windows from its 5-minute tick, newest first, beside any email plan; `ci backfill status` shows both sources. Finally set `FIREFLIES_CAPTURE_ENABLED=true` on the app: every hour it re-reads the last 14 days (edits become new versions, deleted meetings are withdrawn).
+
+Meetings are stored with their transcript and the vendor summary as texts, but **not processed or searchable yet**: classification, windows, the Meetings tab and the MCP tools are M2 (`docs/MEETINGS_AND_CALLS_PLAN.md` §6). The email processor skips them.
+
 ## Deploys: only what changed
 
 A merge to `main` deploys only the apps its changes affect (`scripts/deploy-plan.sh`):

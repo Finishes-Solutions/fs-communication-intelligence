@@ -1,0 +1,46 @@
+{
+  "id": "fft-0007-deleted-later",
+  "title": "Quick sync on the Mill Creek permit",
+  "date": 1793131200000,
+  "dateString": "2026-10-27T20:00:00.000Z",
+  "duration": 5.0,
+  "organizer_email": "pat.example@finishessolutions.example",
+  "host_email": "pat.example@finishessolutions.example",
+  "participants": [
+    "pat.example@finishessolutions.example",
+    "morgan.lee@finishessolutions.example"
+  ],
+  "transcript_url": "https://app.fireflies.ai/view/fft-0007-deleted-later",
+  "meeting_link": null,
+  "meeting_attendees": [],
+  "speakers": [
+    {
+      "id": 0,
+      "name": "Pat Example"
+    }
+  ],
+  "sentences": [
+    {
+      "index": 0,
+      "speaker_name": "Pat Example",
+      "speaker_id": 0,
+      "text": "The county wants the drainage study before they issue the grading permit.",
+      "start_time": 0.0,
+      "end_time": 5.0
+    }
+  ],
+  "summary": null,
+  "meeting_info": {
+    "silent_meeting": false,
+    "summary_status": "skipped"
+  },
+  "fixture": {
+    "expect": {
+      "stored": true,
+      "withdrawn_after_delete": true
+    },
+    "after": {
+      "deleted": true
+    }
+  }
+}

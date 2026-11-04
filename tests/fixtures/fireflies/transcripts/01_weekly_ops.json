@@ -1,0 +1,121 @@
+{
+  "id": "fft-0001-weekly-ops",
+  "title": "Weekly Ops: Evergreen Heights and Mill Creek",
+  "date": 1792508400000,
+  "dateString": "2026-10-20T15:00:00.000Z",
+  "duration": 31.5,
+  "organizer_email": "pat.example@finishessolutions.example",
+  "host_email": "pat.example@finishessolutions.example",
+  "participants": [
+    "pat.example@finishessolutions.example",
+    "morgan.lee@finishessolutions.example",
+    "dana.vendor@northwind-paving.example"
+  ],
+  "transcript_url": "https://app.fireflies.ai/view/fft-0001-weekly-ops",
+  "meeting_link": "https://teams.microsoft.com/l/meetup-join/19:meeting_fixture0001@thread.v2/0",
+  "meeting_attendees": [
+    {
+      "displayName": "Pat Example",
+      "email": "pat.example@finishessolutions.example"
+    },
+    {
+      "displayName": "Morgan Lee",
+      "email": "morgan.lee@finishessolutions.example"
+    },
+    {
+      "displayName": "Dana Vendor",
+      "email": "dana.vendor@northwind-paving.example"
+    }
+  ],
+  "speakers": [
+    {
+      "id": 0,
+      "name": "Pat Example"
+    },
+    {
+      "id": 1,
+      "name": "Morgan Lee"
+    },
+    {
+      "id": 2,
+      "name": "Dana Vendor"
+    }
+  ],
+  "sentences": [
+    {
+      "index": 0,
+      "speaker_name": "Pat Example",
+      "speaker_id": 0,
+      "text": "Let's start with Evergreen Heights. The paving draw is due Friday.",
+      "start_time": 0.0,
+      "end_time": 4.2
+    },
+    {
+      "index": 1,
+      "speaker_name": "Morgan Lee",
+      "speaker_id": 1,
+      "text": "The lender wants updated lien waivers before they release draw seven.",
+      "start_time": 4.5,
+      "end_time": 9.8
+    },
+    {
+      "index": 2,
+      "speaker_name": "Dana Vendor",
+      "speaker_id": 2,
+      "text": "We can have the waivers signed by Thursday if the change order for the base course is approved.",
+      "start_time": 10.1,
+      "end_time": 16.0
+    },
+    {
+      "index": 3,
+      "speaker_name": "Pat Example",
+      "speaker_id": 0,
+      "text": "Morgan, please get the change order to Chuck for approval today.",
+      "start_time": 16.4,
+      "end_time": 20.3
+    },
+    {
+      "index": 4,
+      "speaker_name": "Morgan Lee",
+      "speaker_id": 1,
+      "text": "Will do. Mill Creek inspection was rescheduled to the 28th because of the rain.",
+      "start_time": 20.7,
+      "end_time": 26.9
+    },
+    {
+      "index": 5,
+      "speaker_name": "Pat Example",
+      "speaker_id": 2,
+      "text": "That pushes the slab pour a week. Flag it as a schedule risk on the board.",
+      "start_time": 27.2,
+      "end_time": 32.0
+    }
+  ],
+  "summary": {
+    "overview": "Weekly operations review of Evergreen Heights paving draw and Mill Creek inspection delay.",
+    "short_summary": "Draw seven at Evergreen Heights waits on lien waivers and a base-course change order; Mill Creek inspection moved to the 28th, slab pour slips a week.",
+    "action_items": "**Morgan Lee**\nSend the base-course change order to Chuck for approval (00:16)\n\n**Dana Vendor**\nReturn signed lien waivers by Thursday (00:10)",
+    "keywords": [
+      "Evergreen Heights",
+      "draw",
+      "lien waivers",
+      "change order",
+      "Mill Creek",
+      "inspection"
+    ]
+  },
+  "meeting_info": {
+    "silent_meeting": false,
+    "summary_status": "processed"
+  },
+  "fixture": {
+    "expect": {
+      "stored": true,
+      "scopes": [
+        "ffu-pat",
+        "ffu-morgan"
+      ],
+      "action_items": true
+    }
+  }
+}

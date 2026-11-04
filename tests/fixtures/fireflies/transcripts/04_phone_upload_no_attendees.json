@@ -1,0 +1,46 @@
+{
+  "id": "fft-0004-phone-upload",
+  "title": "Site walk notes (phone recording)",
+  "date": 1792847700000,
+  "dateString": "2026-10-24T13:15:00.000Z",
+  "duration": 6.4,
+  "organizer_email": "river.stone@finishessolutions.example",
+  "host_email": null,
+  "participants": [
+    "river.stone@finishessolutions.example"
+  ],
+  "transcript_url": "https://app.fireflies.ai/view/fft-0004-phone-upload",
+  "meeting_link": null,
+  "meeting_attendees": [],
+  "speakers": [],
+  "sentences": [
+    {
+      "index": 0,
+      "speaker_name": "Speaker 1",
+      "speaker_id": 0,
+      "text": "Walking building C at Mill Creek. Erosion control on the north slope has washed out again.",
+      "start_time": 0.0,
+      "end_time": 6.0
+    },
+    {
+      "index": 1,
+      "speaker_name": "Speaker 1",
+      "speaker_id": 1,
+      "text": "Need the civil contractor back out before the inspection on the twenty eighth.",
+      "start_time": 6.2,
+      "end_time": 11.0
+    }
+  ],
+  "summary": null,
+  "meeting_info": {
+    "silent_meeting": false,
+    "summary_status": "skipped"
+  },
+  "fixture": {
+    "expect": {
+      "stored": true,
+      "scopes": [],
+      "note": "organizer not approved: stored, no scope, not publishable"
+    }
+  }
+}

@@ -87,6 +87,7 @@ def seed(conn: Connection, actor: str, fixtures_dir: Path | None = None) -> Seed
             excluded.append(mailbox.address)
     # Re-run so the exclusions above show as excluded_by_rule.
     summary = sync_inventory(conn, graph, connection_id, corpus_id, actor)
+    _seed_fireflies(conn, actor, fixtures_dir)
     audit(
         conn,
         actor,
@@ -96,3 +97,23 @@ def seed(conn: Connection, actor: str, fixtures_dir: Path | None = None) -> Seed
         {"approved": len(approved), "excluded": len(excluded)},
     )
     return SeedResult(connection_id, corpus_id, summary, approved, excluded)
+
+
+def _seed_fireflies(conn: Connection, actor: str, fixtures_dir: Path | None) -> None:
+    """The synthetic Fireflies team beside the mail tenant: connection, corpus, users,
+    approvals from ``team.json`` (``seed``), and the source enabled."""
+    from ci_core.operator import set_providers
+    from ci_core.runtime import active_config
+    from ci_fireflies import inventory as ff
+    from ci_fireflies.fixture import FIXTURES_DIR, FixtureFirefliesClient
+
+    directory = (fixtures_dir.parent / "fireflies") if fixtures_dir else FIXTURES_DIR
+    client = FixtureFirefliesClient.from_directory(directory)
+    connection_id, corpus_id = ff.register_connection(conn, client.team.account_ref, actor)
+    ff.sync_users(conn, client, connection_id, corpus_id, actor)
+    for user in client.team.users:
+        if user.seed == "approve":
+            ff.approve_user(conn, user.email, "test", actor)
+    providers = active_config(conn).enabled_providers
+    if "fireflies" not in providers:
+        set_providers(conn, [*providers, "fireflies"], actor)

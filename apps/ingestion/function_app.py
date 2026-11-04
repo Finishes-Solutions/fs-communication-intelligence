@@ -12,7 +12,7 @@ import logging
 
 import azure.functions as func
 
-from ci_cli.scheduled import run_processing, scheduler_tick
+from ci_cli.scheduled import fireflies_tick, run_processing, scheduler_tick
 from ci_core.settings import SettingsError, load_settings
 
 app = func.FunctionApp()
@@ -20,8 +20,11 @@ app = func.FunctionApp()
 
 @app.timer_trigger(schedule="0 */5 * * * *", arg_name="timer", use_monitor=True)
 def capture(timer: func.TimerRequest) -> None:
-    decision = scheduler_tick(load_settings())
+    settings = load_settings()
+    decision = scheduler_tick(settings)
     logging.info("capture tick: due=%s reason=%s", decision.due, decision.reason)
+    meetings = fireflies_tick(settings)
+    logging.info("fireflies tick: due=%s reason=%s", meetings.due, meetings.reason)
 
 
 @app.timer_trigger(schedule="0 */5 * * * *", arg_name="timer", use_monitor=True)

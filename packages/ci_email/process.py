@@ -115,7 +115,8 @@ def _claim(conn: Connection) -> dict[str, Any] | None:
         JOIN email_messages em ON em.communication_id = c.id
         JOIN source_scopes s ON s.id = em.mailbox_scope_id
         JOIN email_mailboxes m ON m.scope_id = s.id
-        WHERE v.processing_state = 'fetched' AND c.dataset_key = ci.active_dataset()
+        WHERE v.processing_state = 'fetched' AND c.kind = 'email'
+          AND c.dataset_key = ci.active_dataset()
         ORDER BY v.created_at
         FOR UPDATE OF v SKIP LOCKED
         LIMIT 1

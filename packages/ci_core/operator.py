@@ -81,6 +81,39 @@ def set_mode(conn: Connection, mode: Mode, actor: str, note: str | None = None) 
     return active_config(conn)
 
 
+PROVIDERS = ("email", "teams", "fireflies", "dialpad")
+
+
+def set_providers(conn: Connection, providers: list[str], actor: str) -> RuntimeConfig:
+    """Activate a new revision with the same mode and these enabled sources."""
+    unknown = sorted(set(providers) - set(PROVIDERS))
+    if unknown:
+        raise OperatorError(f"unknown source(s): {', '.join(unknown)}")
+    previous = conn.execute(
+        "SELECT revision, mode, enabled_providers FROM runtime_config WHERE is_active FOR UPDATE"
+    ).fetchone()
+    if previous is None:
+        raise OperatorError("no active mode; run `ci mode set` first")
+    wanted = [p for p in PROVIDERS if p in providers]
+    conn.execute("UPDATE runtime_config SET is_active = false WHERE is_active")
+    row = required(
+        conn.execute(
+            "INSERT INTO runtime_config (mode, enabled_providers, is_active, activated_at,"
+            " activated_by, notes) VALUES (%s, %s, true, now(), %s, %s) RETURNING revision",
+            (previous["mode"], wanted, actor, "sources changed"),
+        ).fetchone()
+    )
+    audit(
+        conn,
+        actor,
+        "sources_change",
+        "runtime_config",
+        str(row["revision"]),
+        {"from": list(previous["enabled_providers"]), "to": wanted},
+    )
+    return active_config(conn)
+
+
 def list_mailboxes(conn: Connection) -> list[MailboxRow]:
     rows = conn.execute(
         """

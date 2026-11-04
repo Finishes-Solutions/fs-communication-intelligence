@@ -84,3 +84,40 @@ def require_capture_scope(conn: Connection) -> list[EligibleScope]:
             f"mode {active_config(conn).mode} selects no mailboxes; capture refuses to run"
         )
     return scopes
+
+
+def eligible_fireflies_users(conn: Connection) -> list[EligibleScope]:
+    """Fireflies team members capture may read under the active revision ([] when
+    paused or when the ``fireflies`` source is not enabled). ``address`` is the email."""
+    config = active_config(conn)
+    if config.dataset is None or "fireflies" not in config.enabled_providers:
+        return []
+    approved = "test_approved" if config.dataset == "test" else "production_approved"
+    rows = conn.execute(
+        f"""
+        SELECT s.id::text AS scope_id, s.connection_id::text AS connection_id,
+               s.native_scope_id, u.email AS address
+        FROM source_scopes s
+        JOIN source_connections c ON c.id = s.connection_id AND c.enabled
+                                  AND c.provider = 'fireflies'
+        JOIN fireflies_users u ON u.scope_id = s.id
+        WHERE s.scope_kind = 'fireflies_user' AND s.scope_state = 'enrolled' AND s.{approved}
+          AND NOT EXISTS (SELECT 1 FROM exclusions e
+                          WHERE e.exclusion_kind = 'scope' AND e.revoked_at IS NULL
+                            AND e.scope_kind = s.scope_kind
+                            AND e.native_scope_id = s.native_scope_id)
+        ORDER BY u.email
+        """  # noqa: S608 - the column name is one of two literals above
+    ).fetchall()
+    return [EligibleScope(**row) for row in rows]
+
+
+def require_fireflies_scope(conn: Connection) -> list[EligibleScope]:
+    scopes = eligible_fireflies_users(conn)
+    if not scopes:
+        config = active_config(conn)
+        raise EmptyScopeError(
+            f"mode {config.mode} selects no Fireflies users (source enabled: "
+            f"{'fireflies' in config.enabled_providers}); capture refuses to run"
+        )
+    return scopes

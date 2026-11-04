@@ -1,0 +1,92 @@
+{
+  "id": "fft-0002-lender-call",
+  "title": "Harbor Bank: refinance terms for Oak Terrace",
+  "date": 1792697400000,
+  "dateString": "2026-10-22T19:30:00.000Z",
+  "duration": 24.0,
+  "organizer_email": "lena.banker@harborbank.example",
+  "host_email": null,
+  "participants": [
+    "lena.banker@harborbank.example",
+    "morgan.lee@finishessolutions.example"
+  ],
+  "transcript_url": "https://app.fireflies.ai/view/fft-0002-lender-call",
+  "meeting_link": "https://zoom.example/j/0002",
+  "meeting_attendees": [
+    {
+      "displayName": "Lena Banker",
+      "email": "lena.banker@harborbank.example"
+    },
+    {
+      "displayName": "Morgan Lee",
+      "email": "morgan.lee@finishessolutions.example"
+    }
+  ],
+  "speakers": [
+    {
+      "id": 0,
+      "name": "Lena Banker"
+    },
+    {
+      "id": 1,
+      "name": "Morgan Lee"
+    }
+  ],
+  "sentences": [
+    {
+      "index": 0,
+      "speaker_name": "Lena Banker",
+      "speaker_id": 0,
+      "text": "We can offer a five year term at six and a quarter with a two year interest only period.",
+      "start_time": 0.0,
+      "end_time": 6.0
+    },
+    {
+      "index": 1,
+      "speaker_name": "Morgan Lee",
+      "speaker_id": 1,
+      "text": "What debt service coverage do you need at stabilization?",
+      "start_time": 6.3,
+      "end_time": 9.5
+    },
+    {
+      "index": 2,
+      "speaker_name": "Lena Banker",
+      "speaker_id": 2,
+      "text": "One point two five, tested quarterly, and a completion guaranty from the sponsor.",
+      "start_time": 9.8,
+      "end_time": 15.2
+    },
+    {
+      "index": 3,
+      "speaker_name": "Morgan Lee",
+      "speaker_id": 0,
+      "text": "Send the term sheet and we will take it to Chuck next week.",
+      "start_time": 15.5,
+      "end_time": 19.0
+    }
+  ],
+  "summary": {
+    "overview": "Refinance discussion for Oak Terrace with Harbor Bank.",
+    "short_summary": "Harbor Bank proposes a five-year term at 6.25% with two years interest only, 1.25x DSCR and a completion guaranty; term sheet to follow.",
+    "action_items": "**Lena Banker**\nSend the term sheet (00:15)\n\n**Morgan Lee**\nReview the terms with Chuck next week (00:15)",
+    "keywords": [
+      "Oak Terrace",
+      "refinance",
+      "DSCR",
+      "term sheet"
+    ]
+  },
+  "meeting_info": {
+    "silent_meeting": false,
+    "summary_status": "processed"
+  },
+  "fixture": {
+    "expect": {
+      "stored": true,
+      "scopes": [
+        "ffu-morgan"
+      ]
+    }
+  }
+}

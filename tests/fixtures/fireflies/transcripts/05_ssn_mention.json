@@ -1,0 +1,76 @@
+{
+  "id": "fft-0005-ssn-mention",
+  "title": "Payroll onboarding for the new superintendent",
+  "date": 1793023200000,
+  "dateString": "2026-10-26T14:00:00.000Z",
+  "duration": 9.0,
+  "organizer_email": "morgan.lee@finishessolutions.example",
+  "host_email": "morgan.lee@finishessolutions.example",
+  "participants": [
+    "morgan.lee@finishessolutions.example",
+    "pat.example@finishessolutions.example"
+  ],
+  "transcript_url": "https://app.fireflies.ai/view/fft-0005-ssn-mention",
+  "meeting_link": "https://teams.microsoft.com/l/meetup-join/19:meeting_fixture0005@thread.v2/0",
+  "meeting_attendees": [
+    {
+      "displayName": "Morgan Lee",
+      "email": "morgan.lee@finishessolutions.example"
+    },
+    {
+      "displayName": "Pat Example",
+      "email": "pat.example@finishessolutions.example"
+    }
+  ],
+  "speakers": [
+    {
+      "id": 0,
+      "name": "Morgan Lee"
+    },
+    {
+      "id": 1,
+      "name": "Pat Example"
+    }
+  ],
+  "sentences": [
+    {
+      "index": 0,
+      "speaker_name": "Morgan Lee",
+      "speaker_id": 0,
+      "text": "For payroll I need the social, it is 123-45-6789, and the routing number.",
+      "start_time": 0.0,
+      "end_time": 6.5
+    },
+    {
+      "index": 1,
+      "speaker_name": "Pat Example",
+      "speaker_id": 1,
+      "text": "Please do not read those out on a recorded call. Send them through the HR portal.",
+      "start_time": 6.8,
+      "end_time": 12.0
+    }
+  ],
+  "summary": {
+    "overview": "Payroll onboarding.",
+    "short_summary": "Sensitive identifiers were read out; told to use the HR portal.",
+    "action_items": "",
+    "keywords": [
+      "payroll",
+      "onboarding"
+    ]
+  },
+  "meeting_info": {
+    "silent_meeting": false,
+    "summary_status": "processed"
+  },
+  "fixture": {
+    "expect": {
+      "stored": true,
+      "scopes": [
+        "ffu-morgan",
+        "ffu-pat"
+      ],
+      "note": "masking/screening in M2 must catch the SSN-like string"
+    }
+  }
+}

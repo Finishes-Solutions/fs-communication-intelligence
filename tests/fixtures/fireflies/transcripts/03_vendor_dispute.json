@@ -1,0 +1,88 @@
+{
+  "id": "fft-0003-vendor-dispute",
+  "title": "Northwind Paving: disputed invoice 4471",
+  "date": 1792771200000,
+  "dateString": "2026-10-23T16:00:00.000Z",
+  "duration": 18.2,
+  "organizer_email": "pat.example@finishessolutions.example",
+  "host_email": "pat.example@finishessolutions.example",
+  "participants": [
+    "pat.example@finishessolutions.example",
+    "dana.vendor@northwind-paving.example"
+  ],
+  "transcript_url": "https://app.fireflies.ai/view/fft-0003-vendor-dispute",
+  "meeting_link": null,
+  "meeting_attendees": [],
+  "speakers": [
+    {
+      "id": 0,
+      "name": "Pat Example"
+    },
+    {
+      "id": 1,
+      "name": "Dana Vendor"
+    }
+  ],
+  "sentences": [
+    {
+      "index": 0,
+      "speaker_name": "Pat Example",
+      "speaker_id": 0,
+      "text": "Invoice 4471 bills forty tons of base course we never received on site.",
+      "start_time": 0.0,
+      "end_time": 5.1
+    },
+    {
+      "index": 1,
+      "speaker_name": "Dana Vendor",
+      "speaker_id": 1,
+      "text": "The tickets show delivery on the fourteenth. I will send the scale tickets.",
+      "start_time": 5.4,
+      "end_time": 10.2
+    },
+    {
+      "index": 2,
+      "speaker_name": "Pat Example",
+      "speaker_id": 2,
+      "text": "If the tickets do not match the gate log we will short pay and you may file a lien notice, which we would dispute.",
+      "start_time": 10.5,
+      "end_time": 18.0
+    }
+  ],
+  "summary": {
+    "overview": "Dispute over Northwind Paving invoice 4471 quantities.",
+    "short_summary": "Forty tons on invoice 4471 are disputed; vendor to send scale tickets; short pay and possible lien notice discussed.",
+    "action_items": "**Dana Vendor**\nSend scale tickets for the 14th delivery (00:05)",
+    "keywords": [
+      "invoice 4471",
+      "Northwind Paving",
+      "lien",
+      "dispute"
+    ]
+  },
+  "meeting_info": {
+    "silent_meeting": false,
+    "summary_status": "processed"
+  },
+  "fixture": {
+    "expect": {
+      "stored": true,
+      "scopes": [
+        "ffu-pat"
+      ],
+      "new_version_after_edit": true
+    },
+    "after": {
+      "title": "Northwind Paving: disputed invoice 4471 (resolved)",
+      "sentences_append": [
+        {
+          "speaker_name": "Dana Vendor",
+          "speaker_id": 1,
+          "text": "Scale tickets confirm thirty tons; we will credit ten tons on the next invoice.",
+          "start_time": 18.3,
+          "end_time": 23.0
+        }
+      ]
+    }
+  }
+}

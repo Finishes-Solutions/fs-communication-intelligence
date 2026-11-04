@@ -229,7 +229,7 @@ Edit → new message version and a dirty window. Delete (`deletedDateTime`) → 
 
 ### 6.1 Console: a Teams section of its own (Matthew, 2026-11-04: "I need different tabs for teams messages so it won't all be in the messages tab. A place for me to find all chats for specific users, between specific users, etc.")
 
-Matthew's main use is "find messages relating to something". The second is people: everything a person said, and everything between two people. The section is built around chats and people, with search on top. Every page reads through the same authorized retrieval code as MCP (`Communications.Admin` sees all captured chat, as it sees all mail today).
+The top-level tabs are **Emails** (today's Messages page, renamed), **Messages** (Teams chat, and later any other message source) and **Meetings** (Matthew, 2026-11-04). The pages below sit under **Messages**. Matthew's main use is "find messages relating to something". The second is people: everything a person said, and everything between two people. The section is built around chats and people, with search on top. Every page reads through the same authorized retrieval code as MCP (`Communications.Admin` sees all captured chat, as it sees all mail today).
 
 | Page | What it shows | Filters |
 |---|---|---|

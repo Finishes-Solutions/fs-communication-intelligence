@@ -1,0 +1,29 @@
+{
+  "account_ref": "fixture-fireflies-team",
+  "key_user": "ffu-automation",
+  "backfill_since": "2026-01-01T00:00:00Z",
+  "users": [
+    {
+      "user_id": "ffu-automation",
+      "email": "svc.automation@finishessolutions.example",
+      "name": "Finishes Automation",
+      "is_admin": true
+    },
+    {
+      "user_id": "ffu-pat",
+      "email": "pat.example@finishessolutions.example",
+      "name": "Pat Example"
+    },
+    {
+      "user_id": "ffu-morgan",
+      "email": "morgan.lee@finishessolutions.example",
+      "name": "Morgan Lee"
+    },
+    {
+      "user_id": "ffu-river",
+      "email": "river.stone@finishessolutions.example",
+      "name": "River Stone",
+      "seed": "leave"
+    }
+  ]
+}

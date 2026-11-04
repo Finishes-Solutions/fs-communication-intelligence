@@ -220,6 +220,7 @@ class BackfillWindow:
     state: str
     run_id: int | None = None
     error_code: str | None = None
+    source: str = "email"  # email | fireflies | teams (migration 0027)
 
     @property
     def hours(self) -> float:
@@ -250,31 +251,37 @@ def plan_backfill(
     days: int,
     now: datetime,
     time_zone: str = "America/Chicago",
+    source: str = "email",
 ) -> dict[str, Any]:
-    """Create the pending windows of a new plan (operator). One plan at a time: a plan
-    with pending or running windows must be cancelled first."""
+    """Create the pending windows of a new plan (operator). One plan per source at a
+    time: a plan with pending or running windows must be cancelled first."""
+    if source not in BACKFILL_SOURCES:
+        raise OperatorError(f"unknown source {source!r}")
     since = local_midnight(since_day, time_zone)
     until = local_midnight(until_day, time_zone) if until_day else now
     if until > now:
         raise OperatorError("the end of the period is in the future")
     open_windows = conn.execute(
-        "SELECT count(*) AS n FROM ops_backfill_windows WHERE state IN ('pending', 'running')"
+        "SELECT count(*) AS n FROM ops_backfill_windows"
+        " WHERE state IN ('pending', 'running') AND source = %s",
+        (source,),
     ).fetchone()
     if open_windows and open_windows["n"]:
         raise OperatorError(
-            f"a backfill with {open_windows['n']} unfinished window(s) exists;"
+            f"a {source} backfill with {open_windows['n']} unfinished window(s) exists;"
             " `ci backfill status` shows it, `ci backfill cancel` stops it"
         )
     windows = plan_windows(since, until, days)
     plan_id = str(uuid.uuid4())
     for start, end in windows:
         conn.execute(
-            "INSERT INTO ops_backfill_windows (plan_id, since, until, created_by)"
-            " VALUES (%s, %s, %s, %s)",
-            (plan_id, start, end, actor),
+            "INSERT INTO ops_backfill_windows (plan_id, since, until, created_by, source)"
+            " VALUES (%s, %s, %s, %s, %s)",
+            (plan_id, start, end, actor, source),
         )
     summary = {
         "plan_id": plan_id,
+        "source": source,
         "since": since.isoformat(),
         "until": until.isoformat(),
         "windows": len(windows),
@@ -293,10 +300,14 @@ def _window(row: dict[str, Any]) -> BackfillWindow:
         state=row["state"],
         run_id=row["run_id"],
         error_code=row["error_code"],
+        source=str(row.get("source") or "email"),
     )
 
 
-_WINDOW_COLUMNS = "id, plan_id, since, until, state, run_id, error_code"
+_WINDOW_COLUMNS = "id, plan_id, since, until, state, run_id, error_code, source"
+BACKFILL_SOURCES = ("email", "fireflies", "teams")
+# ops_runs.kind per source (the email kind predates the source column).
+RUN_KIND = {"email": "capture", "fireflies": "fireflies_capture", "teams": "capture"}
 
 
 def next_backfill_window(conn: Connection) -> BackfillWindow | None:
@@ -308,23 +319,28 @@ def next_backfill_window(conn: Connection) -> BackfillWindow | None:
     return _window(row) if row else None
 
 
-def claim_backfill_window(conn: Connection, now: datetime) -> BackfillWindow | None:
+def claim_backfill_window(
+    conn: Connection, now: datetime, *, skip_sources: tuple[str, ...] = ()
+) -> BackfillWindow | None:
     """Claim the newest pending window and record its capture run; the caller commits.
-    Returns None when nothing is pending (or another worker holds the row)."""
+    Returns None when nothing is pending (or another worker holds the row).
+    ``skip_sources``: sources whose capture refused in this tick; their windows wait."""
     row = conn.execute(
         f"SELECT {_WINDOW_COLUMNS} FROM ops_backfill_windows WHERE state = 'pending'"  # noqa: S608
-        " ORDER BY until DESC LIMIT 1 FOR UPDATE SKIP LOCKED"
+        " AND NOT (source = ANY(%s::text[])) ORDER BY until DESC LIMIT 1 FOR UPDATE SKIP LOCKED",
+        (list(skip_sources),),
     ).fetchone()
     if row is None:
         return None
     window = _window(row)
-    run_id = start_run(conn, "capture", "backfill", round(window.hours, 2))
+    run_id = start_run(conn, RUN_KIND[window.source], "backfill", round(window.hours, 2))
     conn.execute(
         "UPDATE ops_backfill_windows SET state = 'running', run_id = %s, started_at = %s"
         " WHERE id = %s",
         (run_id, now, window.id),
     )
-    conn.execute("UPDATE ops_settings SET last_capture_started_at = %s WHERE id", (now,))
+    if window.source == "email":
+        conn.execute("UPDATE ops_settings SET last_capture_started_at = %s WHERE id", (now,))
     return replace(window, state="running", run_id=run_id)
 
 
@@ -359,13 +375,22 @@ def requeue_stale_windows(conn: Connection) -> int:
     return len(rows)
 
 
-def cancel_backfill(conn: Connection, actor: str) -> int:
-    """Pending windows become cancelled (a running one finishes its capture). Operator."""
+def cancel_backfill(conn: Connection, actor: str, source: str | None = None) -> int:
+    """Pending windows become cancelled (a running one finishes its capture). Operator.
+    ``source`` limits it to one source's plan; None cancels every pending window."""
     rows = conn.execute(
         "UPDATE ops_backfill_windows SET state = 'cancelled', finished_at = now()"
-        " WHERE state = 'pending' RETURNING id"
+        " WHERE state = 'pending' AND (%s::text IS NULL OR source = %s) RETURNING id",
+        (source, source),
     ).fetchall()
-    audit(conn, actor, "backfill_cancelled", "ops_backfill_windows", None, {"windows": len(rows)})
+    audit(
+        conn,
+        actor,
+        "backfill_cancelled",
+        "ops_backfill_windows",
+        None,
+        {"windows": len(rows), "source": source},
+    )
     return len(rows)
 
 
@@ -395,12 +420,18 @@ def backfill_status(conn: Connection) -> dict[str, Any]:
         " WHERE state = 'running' ORDER BY started_at DESC LIMIT 1"
     ).fetchone()
     done = conn.execute(
-        "SELECT since, until, state, started_at, finished_at, counts, error_code"
+        "SELECT since, until, state, started_at, finished_at, counts, error_code, source"
         " FROM ops_backfill_windows WHERE state IN ('done', 'failed')"
         " ORDER BY finished_at DESC LIMIT 10"
     ).fetchall()
+    by_source: dict[str, dict[str, int]] = {}
+    for r in conn.execute(
+        "SELECT source, state, count(*) AS n FROM ops_backfill_windows GROUP BY 1, 2"
+    ).fetchall():
+        by_source.setdefault(str(r["source"]), {})[str(r["state"])] = int(r["n"])
     return {
         "states": states,
+        "by_source": by_source,
         "pending_since": pending["since"].isoformat() if pending and pending["since"] else None,
         "pending_until": pending["until"].isoformat() if pending and pending["until"] else None,
         "running": _jsonable(running) if running else None,
