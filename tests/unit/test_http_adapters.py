@@ -20,6 +20,7 @@ from ci_processing.azure import (
     AzureOpenAIEmbedder,
     AzureScreener,
     AzureServiceError,
+    strip_nul,
 )
 from ci_processing.classification import LABELS, ClassificationInput
 from ci_processing.screening import CheckDecision
@@ -204,6 +205,34 @@ def test_classifier_parses_clamps_and_limits_action_for_to_recipients() -> None:
     messages = sent["messages"]
     assert isinstance(messages, list) and "untrusted" in messages[0]["content"]
     assert sent["response_format"]["json_schema"]["strict"] is True  # type: ignore[index]
+
+
+def test_classifier_drops_nul_characters_postgres_cannot_store() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        content = {
+            "labels": {lb.name: 0.0 for lb in LABELS},
+            "summary": "Pay app\u0000 attached.",
+            "action": "Review\u0000",
+            "action_for": [],
+            "due": None,
+        }
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": json.dumps(content)}}]}
+        )
+
+    item = ClassificationInput("Pay app", "See attached.", sender="v@vendor.example")
+    result = AzureOpenAIClassifier("https://aoai", "gpt", "2024-10-21", azure(handler)).classify(
+        item
+    )
+    assert result.summary == "Pay app attached."
+    assert "\x00" not in json.dumps(result.__dict__, default=str)
+
+
+def test_strip_nul_reaches_nested_strings() -> None:
+    assert strip_nul({"a\x00": ["x\x00y", {"b": "\x00"}], "n": 3}) == {
+        "a": ["xy", {"b": ""}],
+        "n": 3,
+    }
 
 
 def test_embedder_batches_and_keeps_order() -> None:

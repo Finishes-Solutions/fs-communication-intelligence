@@ -89,6 +89,26 @@ RESTRICTED_PII = frozenset(
 PII_MIN_CONFIDENCE = 0.8
 
 
+def strip_nul(value: Any) -> Any:
+    """``value`` with NUL characters removed from every string in it. PostgreSQL
+    stores no NUL: in a text column psycopg refuses it (DataError), in jsonb the
+    server rejects the \\u0000 escape (UntranslatableCharacter). A model answer
+    occasionally contains one, which failed the whole email (the 2026-11-03
+    backfill: about 260 of 700,000)."""
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {strip_nul(k): strip_nul(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [strip_nul(v) for v in value]
+    return value
+
+
+def chat_json(response: dict[str, Any]) -> Any:
+    """The JSON object a chat completion answered with, NUL characters removed."""
+    return strip_nul(json.loads(response["choices"][0]["message"]["content"]))
+
+
 class AzureServiceError(RuntimeError):
     """A call failed after retries. Carries status codes only."""
 
@@ -511,7 +531,7 @@ class AzureOpenAIClassifier:
         )
         if self._meter:
             self._meter.add_openai(OPENAI_CHAT, self.model, response)
-        content = json.loads(response["choices"][0]["message"]["content"])
+        content = chat_json(response)
         probabilities: dict[str, float | None] = {}
         for label in LABELS:
             value = content["labels"].get(label.name)
@@ -681,7 +701,7 @@ class AzureOpenAIPersonRouter:
         )
         if self._meter:
             self._meter.add_openai(OPENAI_CHAT, self.model, response)
-        content = json.loads(response["choices"][0]["message"]["content"])
+        content = chat_json(response)
         value = content.get("probability")
         probability = min(max(float(value), 0.0), 1.0) if isinstance(value, int | float) else None
         reason = content.get("reason") if content.get("reason") in REASONS else None
@@ -757,7 +777,7 @@ class AzureOpenAIRiskRater:
         )
         if self._meter:
             self._meter.add_openai(OPENAI_CHAT, self.model, response)
-        content = json.loads(response["choices"][0]["message"]["content"])
+        content = chat_json(response)
         return RiskRating(
             str(content.get("impact")),
             str(content.get("likelihood")),
@@ -855,7 +875,7 @@ class AzureOpenAIActionResolver:
         )
         if self._meter:
             self._meter.add_openai(OPENAI_CHAT, self.model, response)
-        content = json.loads(response["choices"][0]["message"]["content"])
+        content = chat_json(response)
         confidence = content.get("confidence")
         return Resolution(
             str(content.get("status")),
