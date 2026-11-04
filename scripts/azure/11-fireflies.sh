@@ -11,7 +11,14 @@
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
 SECRET_NAME=fireflies-api-key
-ROTATE=false; [ "${1:-}" = "--rotate" ] && ROTATE=true
+ROTATE=false; KEY_ONLY=false
+for arg in "$@"; do
+  case "$arg" in
+    --rotate) ROTATE=true ;;
+    --key-only) KEY_ONLY=true ;;  # store the key, leave the ingestion app alone (no restart)
+    *) echo "unknown option $arg" >&2; exit 2 ;;
+  esac
+done
 
 echo "== Key Vault $KV"
 KV_ID="$(az keyvault show -g "$RG" -n "$KV" --query id -o tsv)"
@@ -41,7 +48,21 @@ else
 fi
 SECRET_URI="$(az keyvault secret show --vault-name "$KV" -n "$SECRET_NAME" --query id -o tsv)"
 
-echo "== app settings on $ING_APP (capture off)"
+if [ "$KEY_ONLY" = true ]; then
+  cat <<TXT
+
+Key stored; the ingestion app was not changed (changing app settings restarts it, which
+stops a running backfill window). To run Fireflies commands from this shell:
+
+  export FIREFLIES_BACKEND=api
+  export FIREFLIES_API_KEY="\$(az keyvault secret show --vault-name $KV -n $SECRET_NAME --query value -o tsv)"
+
+Run this script again without --key-only when the app may restart.
+TXT
+  exit 0
+fi
+
+echo "== app settings on $ING_APP (capture off; this restarts the app)"
 az functionapp config appsettings set -g "$RG" -n "$ING_APP" --only-show-errors >/dev/null --settings \
   "FIREFLIES_BACKEND=api" "FIREFLIES_API_KEY=@Microsoft.KeyVault(SecretUri=$SECRET_URI)" \
   "FIREFLIES_CAPTURE_ENABLED=false" "FIREFLIES_CAPTURE_DAYS=14" "FIREFLIES_BACKFILL_SINCE=2025-01-01T00:00:00Z"

@@ -341,6 +341,9 @@ def _parser() -> argparse.ArgumentParser:
     bcancel = backfill_action.add_parser("cancel", help="drop the pending windows")
     bcancel.add_argument("--source", choices=["email", "fireflies"], help="only this source")
     backfill_action.add_parser("retry-failed", help="put failed windows back to pending")
+    backfill_action.add_parser(
+        "release", help="right after the ingestion app restarted: rerun its killed window now"
+    )
     sources = mode.add_parser("sources", help="which sources capture may read")
     sources.add_argument("names", help="comma-separated: email,fireflies")
 
@@ -364,8 +367,10 @@ def _parser() -> argparse.ArgumentParser:
     ffe.add_argument("--meeting", help="a transcript id instead of a person")
     ffe.add_argument("--reason")
     ffe.add_argument("--revoke", action="store_true")
-    ffc = ff_action.add_parser("capture", help="store the meetings of the last N days now")
-    ffc.add_argument("--days", type=int, default=14)
+    ffc = ff_action.add_parser("capture", help="store the meetings of a period now, from here")
+    ffc.add_argument("--days", type=int, default=14, help="the last N days (default 14)")
+    ffc.add_argument("--since", help="instead of --days: first day, midnight Central (YYYY-MM-DD)")
+    ffc.add_argument("--until", help="with --since: day after the last one (default: now)")
     teams = sub.add_parser("teams", help="Microsoft Teams source (docs/TEAMS_PLAN.md)")
     teams_action = teams.add_subparsers(dest="action", required=True)
     tprobe = teams_action.add_parser("probe", help="T0: can the Teams identity read chats?")
@@ -534,6 +539,12 @@ def _backfill(args: argparse.Namespace, conn: Connection, actor: str) -> None:
         print(f"cancelled {ops.cancel_backfill(conn, actor, args.source)} pending window(s)")
     elif args.action == "retry-failed":
         print(f"requeued {ops.retry_failed_windows(conn, actor)} failed window(s)")
+    elif args.action == "release":
+        released = ops.release_running_captures(conn, actor)
+        print(
+            f"released {released['runs']} running capture run(s);"
+            f" {released['windows']} window(s) back to pending (the app picks one up within 5 min)"
+        )
     status = ops.backfill_status(conn)
     states = ", ".join(f"{k}={v}" for k, v in sorted(status["states"].items())) or "none"
     print(f"windows: {states}")

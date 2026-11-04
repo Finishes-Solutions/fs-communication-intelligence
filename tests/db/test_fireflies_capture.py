@@ -162,3 +162,30 @@ def test_backfill_plan_and_rolling_tick_run_fireflies_windows() -> None:
     assert not second.due and "recently" in second.reason
     third = fireflies_tick(settings, NOW + timedelta(hours=3))
     assert third.due
+
+
+def test_release_after_restart_requeues_the_killed_window_at_once() -> None:
+    with connect() as conn:
+        seed(conn, "pytest")
+        set_mode(conn, "test", "pytest")
+        conn.commit()
+    with connect(role="ci_operator") as conn:
+        ops.cancel_backfill(conn, "pytest")
+        ops.plan_backfill(conn, "pytest", since_day="2026-10-01", until_day=None, days=93, now=NOW)
+        conn.commit()
+    # A window is claimed, then the host restarts before the capture records its end.
+    with connect(role="ci_ingest") as conn:
+        window = ops.claim_backfill_window(conn, NOW)
+        conn.commit()
+    assert window is not None
+    with connect(role="ci_ingest") as conn:
+        assert ops.capture_in_progress(conn, NOW)  # without release: blocked for 130 min
+    with connect(role="ci_operator") as conn:
+        released = ops.release_running_captures(conn, "pytest")
+        conn.commit()
+    assert released == {"runs": 1, "windows": 1}
+    with connect(role="ci_ingest") as conn:
+        assert not ops.capture_in_progress(conn, NOW)
+        pending = ops.next_backfill_window(conn)
+    assert pending is not None and pending.id == window.id
+    assert pending.error_code == "rerun_after_released_after_restart"

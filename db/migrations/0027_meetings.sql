@@ -7,6 +7,10 @@
 -- version_texts / transcript_segments rows for logs.
 
 SET search_path = ci, public;
+-- Safe beside a running mail backfill: give up after 5 s instead of queueing behind a
+-- long transaction (which would block every new capture and processing write while
+-- it waits). If it gives up, nothing is applied; run `make azure-migrate` again.
+SET LOCAL lock_timeout = '5s';
 
 -- One row per Fireflies team member (source_scopes.scope_kind = 'fireflies_user'),
 -- written by inventory sync. native_scope_id on the scope is the Fireflies user id.
@@ -41,9 +45,11 @@ CREATE INDEX fireflies_meetings_link ON fireflies_meetings (meeting_link)
 -- Transcript text (one "[mm:ss] Speaker: text" line per sentence) and the vendor's
 -- own summary (AI output, labelled as such) as version texts, so M2 can process
 -- meetings through the same text path as email.
+-- NOT VALID: no scan of the (large) table under the exclusive lock while a mail
+-- backfill is writing to it; 0028 validates it afterwards without blocking writes.
 ALTER TABLE version_texts DROP CONSTRAINT version_texts_text_kind_check;
 ALTER TABLE version_texts ADD CONSTRAINT version_texts_text_kind_check
-    CHECK (text_kind IN ('email_body', 'attachment', 'transcript', 'provider_summary'));
+    CHECK (text_kind IN ('email_body', 'attachment', 'transcript', 'provider_summary')) NOT VALID;
 
 ALTER TABLE ops_runs DROP CONSTRAINT ops_runs_kind_check;
 ALTER TABLE ops_runs ADD CONSTRAINT ops_runs_kind_check
@@ -73,5 +79,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON fireflies_users, fireflies_meetings TO c
 GRANT SELECT, INSERT, UPDATE, DELETE ON transcript_segments TO ci_ingest;
 GRANT UPDATE (last_fireflies_capture_at) ON ops_settings TO ci_ingest;
 GRANT SELECT ON published_meetings TO ci_search;
+-- `ci backfill release`: an operator closes runs a restart killed (state only, never content).
+GRANT UPDATE (status, finished_at, error_code) ON ops_runs TO ci_operator;
 -- Operators list the team for `ci fireflies scope list`; addresses are not evidence content.
 GRANT SELECT ON fireflies_users, fireflies_meetings TO ci_operator;

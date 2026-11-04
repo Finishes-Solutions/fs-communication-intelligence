@@ -375,6 +375,24 @@ def requeue_stale_windows(conn: Connection) -> int:
     return len(rows)
 
 
+def release_running_captures(conn: Connection, actor: str) -> dict[str, int]:
+    """Right after the ingestion app restarted (deploy, app-setting change): mark its
+    capture runs still 'running' as failed (``released_after_restart``) and put their
+    backfill windows back to pending, so the next tick goes on at once instead of
+    waiting out RUNNING_CAPTURE_GRACE. Operator. Run it only after a restart: a run
+    that is really still working would be started a second time (stored emails are
+    skipped, so the cost is repeated listing, not duplicate data)."""
+    runs = conn.execute(
+        "UPDATE ops_runs SET status = 'failed', finished_at = now(),"
+        " error_code = 'released_after_restart'"
+        " WHERE kind IN ('capture', 'fireflies_capture') AND status = 'running' RETURNING id"
+    ).fetchall()
+    windows = requeue_stale_windows(conn)
+    counts = {"runs": len(runs), "windows": windows}
+    audit(conn, actor, "captures_released", "ops_runs", None, counts)
+    return counts
+
+
 def cancel_backfill(conn: Connection, actor: str, source: str | None = None) -> int:
     """Pending windows become cancelled (a running one finishes its capture). Operator.
     ``source`` limits it to one source's plan; None cancels every pending window."""

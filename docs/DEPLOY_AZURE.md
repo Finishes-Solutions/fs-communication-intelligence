@@ -537,6 +537,21 @@ cd ~/fs-communication-intelligence && git fetch origin && git checkout matthew/n
 
 Then merge, set up the profile as above, and re-run the processed mail with `ci process --remask --limit 0`.
 
+## Setting up Teams and Fireflies while a mail backfill runs
+
+Two things interfere with a running backfill; everything else does not.
+
+- **Deploying code before migration 0027.** The new ingestion code reads `ops_backfill_windows.source`, which 0027 adds. Deployed first, every scheduler tick fails and the backfill stops. Always migrate first. The migration itself waits at most 5 seconds for a lock and is otherwise instant on a busy database (the one large table gets an unchecked constraint, checked by 0028 without blocking writes).
+- **Anything that restarts the ingestion app**: a deploy, `az functionapp identity assign`, or any app-setting change (scripts 10 and 11 do both). A restart kills the running window. It is rerun (stored emails are skipped), but normally only after a 130-minute wait. `ci backfill release`, run right after the restart, puts the window back at once.
+
+Order that keeps the backfill running:
+
+1. `make azure-migrate` (applies 0027 and 0028). No restart.
+2. `bash scripts/azure/11-fireflies.sh --key-only`: stores the key in Key Vault, leaves the app alone. Then the whole Fireflies history from Cloud Shell or the Mac, without the app: `ci fireflies check`, `ci fireflies init`, `ci mode sources email,fireflies`, `ci fireflies inventory`, `ci fireflies scope include --all-enrolled`, `ci fireflies capture --since 2025-01-01`. It calls only the Fireflies API and writes a few hundred rows.
+3. One planned restart, all changes together, ideally right after `ci backfill status` shows a window has just started: merge to `main` (deploy), `bash scripts/azure/10-teams-access.sh`, `bash scripts/azure/11-fireflies.sh` (without `--key-only`), then `ci backfill release`. Then run the Teams probe.
+
+Turn on `FIREFLIES_CAPTURE_ENABLED` (another restart) once the mail backfill has finished.
+
 ## 13. Teams: the access spike (T0)
 
 Decided 2026-11-04 (D-T1: tenant-wide chat read on a separate identity; D-T2: chats only, channels off). Nothing is captured yet; this step only finds out whether Microsoft lets the identity read chats without a user (`docs/TEAMS_PLAN.md` §2.3).

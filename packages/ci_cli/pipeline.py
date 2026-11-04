@@ -10,6 +10,7 @@ import json
 import logging
 import sys
 from collections import Counter
+from datetime import UTC, datetime
 from typing import Any
 
 from ci_cli import backends
@@ -538,9 +539,22 @@ def fireflies(conn: Connection, args: argparse.Namespace, actor: str) -> None:
     if args.action == "capture":
         from ci_cli.scheduled import fireflies_capture_now
 
+        tz = ops.read_schedule(conn).time_zone
         conn.commit()  # the capture opens its own connections
-        since, until = ff_capture.rolling_window(None, args.days)
-        status, counts = fireflies_capture_now(settings, since=since, until=until)
-        print(f"{status}: {dict(sorted(counts.items()))}")
+        if args.since:
+            since = ops.local_midnight(args.since, tz)
+            until = ops.local_midnight(args.until, tz) if args.until else datetime.now(UTC)
+        else:
+            since, until = ff_capture.rolling_window(None, args.days)
+        # Any length, run here in pieces of at most 93 days, newest first; the
+        # ingestion app is not involved (so a running mail backfill is not either).
+        total: Counter[str] = Counter()
+        for i, (start, end) in enumerate(ops.plan_windows(since, until, 93)):
+            status, counts = fireflies_capture_now(settings, since=start, until=end, sync=i == 0)
+            total.update(counts)
+            print(f"{status} {start:%Y-%m-%d} to {end:%Y-%m-%d}: {dict(sorted(counts.items()))}")
+            if status == "refused":
+                break
+        print(f"total: {dict(sorted(total.items()))}")
         return
     raise OperatorError(f"unknown fireflies action {args.action}")
