@@ -537,6 +537,30 @@ cd ~/fs-communication-intelligence && git fetch origin && git checkout matthew/n
 
 Then merge, set up the profile as above, and re-run the processed mail with `ci process --remask --limit 0`.
 
+## 13. Teams: the access spike (T0)
+
+Decided 2026-11-04 (D-T1: tenant-wide chat read on a separate identity; D-T2: chats only, channels off). Nothing is captured yet; this step only finds out whether Microsoft lets the identity read chats without a user (`docs/TEAMS_PLAN.md` §2.3).
+
+```bash
+bash scripts/azure/10-teams-access.sh
+```
+
+Creates `id-fs-ci-teams-dev`, attaches it to the ingestion app as a second identity (the mail identity is untouched), grants it `User.Read.All`, `Chat.Read.All` and `ChatMember.Read.All` on Microsoft Graph, and sets `AZURE_TEAMS_CLIENT_ID` and `TEAMS_CAPTURE_ENABLED=false` on the app. Needs an Entra role that can grant application permissions (Privileged Role or Application administrator), run as `svc_automation@`.
+
+The probe itself runs inside the ingestion app, because only the app can get the identity's token. So the app must carry this branch's code (merge, or **Actions → Deploy (development) → Run workflow**), then, after a few minutes for Entra:
+
+```bash
+KEY=$(az functionapp keys list -g fs-communication-intelligence -n func-fs-ci-ing-dev-1026 --query masterKey -o tsv)
+```
+
+```bash
+curl -s "https://func-fs-ci-ing-dev-1026.azurewebsites.net/api/teams-probe?code=$KEY&user=matthews@finishessolutions.com" | python3 -c 'import json,sys; print(json.load(sys.stdin)["text"])'
+```
+
+Check: the first line ends with `ok`. `protected_api_approval_required` means Microsoft wants its Protected APIs request form for this identity (search "Protected APIs in Microsoft Teams" on learn.microsoft.com); submit it and re-run after approval, which takes days to weeks. `forbidden` or `unauthorized` usually means the roles have not applied yet; re-run in ten minutes. The reply is counts, status codes, Graph error codes and role names only, never message content, so it can be pasted into a PR. Record the outcome in `docs/TEAMS_PLAN.md` §8 and ADR-022.
+
+Locally, `ci teams probe` runs the same code with the signed-in Azure CLI; a user token carries no app roles, so expect `forbidden` there.
+
 ## Deploys: only what changed
 
 A merge to `main` deploys only the apps its changes affect (`scripts/deploy-plan.sh`):

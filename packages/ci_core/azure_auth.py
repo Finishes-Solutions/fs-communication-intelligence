@@ -43,3 +43,20 @@ def default_credential() -> CachedCredential:
             exclude_managed_identity_credential=not in_azure,
         )
     )
+
+
+@lru_cache(maxsize=4)
+def identity_credential(client_id: str | None) -> CachedCredential:
+    """The credential for one named user-assigned identity (``client_id``).
+
+    Inside Azure a Function App can carry several user-assigned identities;
+    ``DefaultAzureCredential`` picks the one in ``AZURE_CLIENT_ID``, so another one
+    (the Teams identity) must be asked for by client id. Outside Azure, or with no
+    client id, this is the shared default credential (the signed-in Azure CLI).
+    """
+    in_azure = bool(os.environ.get("IDENTITY_ENDPOINT") or os.environ.get("MSI_ENDPOINT"))
+    if not client_id or not in_azure:
+        return default_credential()
+    from azure.identity import ManagedIdentityCredential
+
+    return CachedCredential(ManagedIdentityCredential(client_id=client_id))

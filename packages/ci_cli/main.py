@@ -336,6 +336,11 @@ def _parser() -> argparse.ArgumentParser:
     backfill_action.add_parser("status", help="windows per state and the one running")
     backfill_action.add_parser("cancel", help="drop the pending windows")
     backfill_action.add_parser("retry-failed", help="put failed windows back to pending")
+    teams = sub.add_parser("teams", help="Microsoft Teams source (docs/TEAMS_PLAN.md)")
+    teams_action = teams.add_subparsers(dest="action", required=True)
+    tprobe = teams_action.add_parser("probe", help="T0: can the Teams identity read chats?")
+    tprobe.add_argument("--user", help="UPN or object id to probe with (default: first user)")
+    tprobe.add_argument("--json", action="store_true", help="also print the report as JSON")
     return parser
 
 
@@ -700,6 +705,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             pipeline.stats()
         elif args.command == "mcp":
             pipeline.mcp()
+        elif args.command == "teams" and args.action == "probe":
+            pipeline.teams_probe(args)
         elif args.command == "knowledge" and args.action in ("list", "show"):
             pipeline.knowledge(args)
         else:

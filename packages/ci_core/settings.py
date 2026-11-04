@@ -129,6 +129,13 @@ class Settings(BaseSettings):
     graph_client_id: str | None = None
     graph_certificate_path: str | None = None
 
+    # Microsoft Teams (docs/TEAMS_PLAN.md). The Teams read permissions live on a
+    # second user-assigned identity, id-fs-ci-teams-dev, attached to the ingestion
+    # app (scripts/azure/10-teams-access.sh); this is its client id. Locally, with
+    # no Azure identity endpoint, the signed-in Azure CLI is used instead.
+    teams_client_id: str | None = None  # AZURE_TEAMS_CLIENT_ID
+    teams_capture_enabled: bool = False  # hard kill switch, like CAPTURE_ENABLED
+
     # Azure AI services in the Finishes tenant, reached with Entra tokens.
     azure_openai_endpoint: str | None = None
     azure_openai_api_version: str = "2024-10-21"

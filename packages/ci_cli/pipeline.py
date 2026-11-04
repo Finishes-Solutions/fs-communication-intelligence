@@ -442,3 +442,25 @@ def knowledge(args: argparse.Namespace) -> None:
         print("  often with: " + ", ".join(r["name"] for r in profile["related"][:8]))
     for m in profile["recent_emails"][:5]:
         print(f"  {m['received_at'][:10]}  {m['sender']}  {m['subject']}")
+
+
+def teams_probe(args: argparse.Namespace) -> None:
+    """``ci teams probe``: T0, can the Teams identity read chats app-only?
+
+    In Azure the ingestion app runs the same probe behind /api/teams-probe with the
+    Teams identity; here it uses AZURE_TEAMS_CLIENT_ID inside Azure or the signed-in
+    Azure CLI elsewhere (whose user token has no app roles, so expect "forbidden"
+    locally; the point of running it locally is the fixture of the report itself).
+    """
+    from ci_core.azure_auth import identity_credential
+    from ci_teams.probe import TeamsProbe, explain
+
+    settings = load_settings()
+    probe = TeamsProbe(identity_credential(settings.teams_client_id))
+    try:
+        report = probe.run(args.user)
+    finally:
+        probe.close()
+    print(explain(report))
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
