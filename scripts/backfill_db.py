@@ -107,9 +107,8 @@ def main(action: str, arg: str | None = None) -> None:
                 (minutes,),
             ).fetchall()
             c.commit()
-            print(
-                f"ended {sum(1 for r in rows if r[0])} session(s) idle in a transaction > {minutes} min"
-            )
+            ended = sum(1 for r in rows if r[0])
+            print(f"ended {ended} session(s) idle in a transaction > {minutes} min")
     else:
         print(__doc__)
         sys.exit(2)
