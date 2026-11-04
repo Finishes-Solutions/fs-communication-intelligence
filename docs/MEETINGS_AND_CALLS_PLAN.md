@@ -38,7 +38,7 @@ Months in the sample cluster in spring 2025 and autumn 2025 and 2026, so usage i
 
 **Who may read a meeting.** The attendee list (`meeting_attendees`, `participants`) is the meeting's own access list: a `Communications.Reader.Own` reader sees meetings they attended; `Reader.All` sees all; reader limits apply (Will does not see a meeting Chuck attended unless Will attended it too, under his existing `person` limit). Meetings with no attendee list (uploads) are visible to `Reader.All` only until an operator assigns them.
 
-**Decisions carried over** (`docs/FIREFLIES_PIPELINE.md` §5): FF-D1 which seat owns the API key (recommend a dedicated service seat, Matthew's key for development only); FF-D2 whether HR, board or 1:1 meetings are held for review by title keyword rather than indexed silently; FF-D5 index the Fireflies summary and action items as their own labelled chunks (recommend yes); FF-D6 scope = all seats, backfill from 2025-01-01.
+**Decisions carried over** (`docs/FIREFLIES_PIPELINE.md` §5): FF-D1 is settled by D-M2 (the automation account's key); FF-D2 whether HR, board or 1:1 meetings are held for review by title keyword rather than indexed silently; FF-D5 index the Fireflies summary and action items as their own labelled chunks (recommend yes); FF-D6 scope = all seats, backfill from 2025-01-01.
 
 ---
 
@@ -85,7 +85,7 @@ Reuses the source-neutral foundation exactly as the Fireflies plan intended: `co
 | ID | Question | Default until decided |
 |---|---|---|
 | D-M1 | Fireflies is the primary meeting source; backfill all 339 transcripts from 2025-01-01, all seats, exclusions by title or id. | Yes, as asked on 2026-11-04. |
-| D-M2 | Which Fireflies seat owns the API key and webhook. | A dedicated service seat; Matthew's key for development only (FF-D1). |
+| D-M2 (decided 2026-11-04) | Which Fireflies seat owns the API key and webhook. | **The automation account's seat** (`svc_automation@finishessolutions.com`) already has a Fireflies API key; it goes into Key Vault as `fireflies-api-key`, read by the ingestion identity through an app-setting reference, never into the repo, logs or chat. M1 must verify that this seat's key lists the whole team's transcripts (the count should match the 339 seen from Matthew's admin seat); if it lists only its own meetings, the seat needs the Fireflies admin role. Matthew's personal key is not used. |
 | D-M3 | Turn on Microsoft Graph transcript access and speaker attribution for the whole tenant, and grant the application access policy to all users or named organizers. | Not turned on until decided; Fireflies does not need it. |
 | D-M4 | Allow call transcription in the calling policy and ask people to use it; capture call records (metadata) at all. | Neither; revisit after M3. |
 | D-M5 | Who may read meetings: same roles as email with attendee-based "own" access, reader limits applied. | Same roles. |
