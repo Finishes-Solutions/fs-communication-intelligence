@@ -252,3 +252,37 @@ def test_failures_name_the_call_and_status_but_no_content() -> None:
     with pytest.raises(AzureServiceError) as emb:
         AzureOpenAIEmbedder("https://aoai", "emb", "v", 4, azure(handler)).embed(["Secret body"])
     assert str(emb.value) == "embeddings HTTP 401 PermissionDenied"
+
+
+def test_embedder_alternates_between_deployments_of_the_same_model() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path.split("/")[3])
+        body = json.loads(request.content)
+        data = [{"index": i, "embedding": [1.0, 0, 0, 0]} for i in range(len(body["input"]))]
+        return httpx.Response(200, json={"data": data})
+
+    embedder = AzureOpenAIEmbedder("https://aoai", "emb-global, emb-dz", "v", 4, azure(handler))
+    assert embedder.model == "azure-openai:emb-global"  # recorded under the first name
+    assert len(embedder.embed(["x"] * 40)) == 40  # three batches of at most 16
+    embedder.embed(["y"])
+    assert seen == ["emb-global", "emb-dz", "emb-global", "emb-dz"]
+    with pytest.raises(ValueError, match="no embedding deployment"):
+        AzureOpenAIEmbedder("https://aoai", " , ", "v", 4, azure(handler))
+
+
+def test_capture_profile_ignores_extra_embedding_deployments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ci_cli.pipeline import capture_profile
+    from ci_core.settings import load_settings
+
+    monkeypatch.setenv("EMBEDDER", "azure_openai")
+    monkeypatch.setenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-large")
+    one = capture_profile(load_settings())
+    monkeypatch.setenv(
+        "AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-large, text-embedding-3-large-dz"
+    )
+    two = capture_profile(load_settings())
+    assert one == two and one["embedding_model"] == "text-embedding-3-large"

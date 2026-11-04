@@ -157,7 +157,9 @@ def capture_profile(settings: Settings) -> dict[str, Any]:
         "chunker": CHUNKER_VERSION,
         "classifier_policy": POLICY_VERSION,
         "embedding_dimensions": settings.embedding_dimensions,
-        "embedding_model": settings.azure_openai_embedding_deployment
+        # The first deployment only: a second one for capacity is the same model and
+        # must not change the profile (which would capture every email again).
+        "embedding_model": settings.azure_openai_embedding_deployment.split(",")[0].strip()
         if settings.embedder.value != "fake"
         else "fake-hashing-v1",
     }

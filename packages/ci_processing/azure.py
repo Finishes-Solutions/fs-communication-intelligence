@@ -12,6 +12,7 @@ response is constrained to a JSON schema.
 from __future__ import annotations
 
 import contextlib
+import itertools
 import json
 import threading
 import time
@@ -550,23 +551,35 @@ class AzureOpenAIEmbedder:
         tokens_per_minute: int | None = None,
     ) -> None:
         """``tokens_per_minute``: pace requests below the deployment's quota, shared by
-        every thread using this embedder (None or 0: only back off after a 429)."""
-        self.model = f"azure-openai:{deployment}"
+        every thread using this embedder (None or 0: only back off after a 429).
+
+        ``deployment`` may list several deployments of the same model, comma-separated
+        (e.g. a GlobalStandard and a DataZoneStandard one, each with its own quota;
+        2026-11-03 backfill). Batches alternate between them and each is paced to
+        ``tokens_per_minute`` on its own. The vectors are the same model's, so search
+        is unaffected; the model recorded is the first deployment's name."""
+        names = [d.strip() for d in deployment.split(",") if d.strip()]
+        if not names:
+            raise ValueError("no embedding deployment given")
+        self.model = f"azure-openai:{names[0]}"
         self._meter = meter
         self.dimensions = dimensions
-        self._url = (
-            f"{endpoint.rstrip('/')}/openai/deployments/{deployment}/embeddings"
-            f"?api-version={api_version}"
-        )
+        self._urls = [
+            f"{endpoint.rstrip('/')}/openai/deployments/{name}/embeddings?api-version={api_version}"
+            for name in names
+        ]
         self._http = http or AzureHttp()
-        self._http.gate(self._url, tokens_per_minute)
+        for url in self._urls:
+            self._http.gate(url, tokens_per_minute)
+        self._next = itertools.count()
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
         for start in range(0, len(texts), 16):
             batch = list(texts[start : start + 16])
+            url = self._urls[next(self._next) % len(self._urls)]
             result = self._http.post(
-                self._url,
+                url,
                 {"input": batch, "dimensions": self.dimensions},
                 tokens=estimate_tokens(batch),
             )

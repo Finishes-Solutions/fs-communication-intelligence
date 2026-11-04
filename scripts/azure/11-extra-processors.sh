@@ -11,6 +11,9 @@
 #   bash scripts/azure/11-extra-processors.sh --status   # the apps and their state
 #   bash scripts/azure/11-extra-processors.sh --stop     # delete the extra apps
 #
+# EMBED_DEPLOYMENTS (optional): comma-separated embedding deployments of the same model
+# for the extras to alternate between, e.g. a GlobalStandard and a DataZoneStandard
+# one (each with its own quota); unset keeps the ingestion app's single deployment.
 # Settings (export before running): N (3 apps), WORKERS (96 per app), FIRST (1): the
 # first app number to create or redeploy, e.g. FIRST=4 N=6 adds p4..p6 and leaves
 # p1..p3 running untouched.
@@ -52,9 +55,9 @@ echo "  built $work/ingestion.zip"
 
 echo "== settings from $ING_APP (capture off on the extras)"
 az functionapp config appsettings list -g "$RG" -n "$ING_APP" -o json > "$work/all.json"
-python3 - "$work/all.json" "$work/settings.json" "$WORKERS" <<'PY'
+python3 - "$work/all.json" "$work/settings.json" "$WORKERS" "${EMBED_DEPLOYMENTS:-}" <<'PY'
 import json, sys
-src, dst, workers = sys.argv[1], sys.argv[2], sys.argv[3]
+src, dst, workers, embed = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 skip_prefixes = ("WEBSITE_", "SCM_", "FUNCTIONS_", "DEPLOYMENT_STORAGE")
 settings = [
     {"name": s["name"], "value": s["value"], "slotSetting": False}
@@ -65,6 +68,8 @@ settings = [
 ]
 override = {"CAPTURE_ENABLED": "false", "PROCESSING_ENABLED": "true",
             "PROCESSING_WORKERS": workers}
+if embed:
+    override["AZURE_OPENAI_EMBEDDING_DEPLOYMENT"] = embed
 settings = [s for s in settings if s["name"] not in override]
 settings += [{"name": k, "value": v, "slotSetting": False} for k, v in override.items()]
 json.dump(settings, open(dst, "w"))
