@@ -10,6 +10,11 @@ index     create the processing-queue index (migration 0027) without blocking wr
 explain   the plan of the processing claim query (should use that index)
 unstick   mark capture runs still 'running' after their host stopped as failed, so
           the next tick requeues their backfill window
+kill-idle [MINUTES]  end other users' sessions left idle inside a transaction for more
+          than MINUTES (default 8): workers of a restarted app whose connections
+          linger, still holding row locks other workers wait on. A live worker is
+          idle in a transaction only while it waits on an AI call (seconds to a
+          few minutes), so it is not affected at the default.
 """
 
 from __future__ import annotations
@@ -52,7 +57,7 @@ def connect(autocommit: bool = False) -> psycopg.Connection[tuple[object, ...]]:
     return psycopg.connect(autocommit=autocommit)
 
 
-def main(action: str) -> None:
+def main(action: str, arg: str | None = None) -> None:
     if action == "activity":
         with connect() as c:
             rows = c.execute(
@@ -91,10 +96,24 @@ def main(action: str) -> None:
             ).fetchall()
             c.commit()
             print(f"marked {len(rows)} capture run(s) as stale: {rows}")
+    elif action == "kill-idle":
+        minutes = int(arg or 8)
+        with connect() as c:
+            rows = c.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity"
+                " WHERE datname = current_database() AND pid <> pg_backend_pid()"
+                " AND usename <> current_user AND state = 'idle in transaction'"
+                " AND now() - state_change > make_interval(mins => %s)",
+                (minutes,),
+            ).fetchall()
+            c.commit()
+            print(
+                f"ended {sum(1 for r in rows if r[0])} session(s) idle in a transaction > {minutes} min"
+            )
     else:
         print(__doc__)
         sys.exit(2)
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "")
+    main(sys.argv[1] if len(sys.argv) > 1 else "", sys.argv[2] if len(sys.argv) > 2 else None)
