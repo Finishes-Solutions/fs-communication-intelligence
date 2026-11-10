@@ -471,3 +471,39 @@ def test_expired_or_forged_values_are_refused(client: TestClient) -> None:
     assert sealer.open("state", as_code) is None
     # A different broker secret (rotated) opens nothing.
     assert Sealer("another-secret").open("code", as_code) is None
+
+
+def basic(reg: dict[str, Any]) -> dict[str, str]:
+    raw = f"{reg['client_id']}:{reg['client_secret']}".encode()
+    return {"Authorization": "Basic " + base64.b64encode(raw).decode()}
+
+
+def test_client_id_and_secret_only_in_a_basic_header(client: TestClient, entra: FakeEntra) -> None:
+    """The metadata offers client_secret_basic, and a platform that picks it (AMP, with
+    the MCP TypeScript SDK) sends its id and secret only in the Authorization header."""
+    method = {"token_endpoint_auth_method": "client_secret_basic"}
+    reg = register(client, **method).json()
+    assert reg | method == reg
+    verifier, challenge = pkce()
+    code = sign_in(client, entra, reg, challenge)["code"]
+    form = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": CLAUDE,
+        "code_verifier": verifier,
+    }
+    wrong = basic(reg | {"client_secret": "guess"})
+    assert client.post("/token", data=form, headers=wrong).status_code == 401
+    other = register(client, **method).json()
+    assert client.post("/token", data=form, headers=basic(other)).status_code >= 400
+    tokens = client.post("/token", data=form, headers=basic(reg))
+    assert tokens.status_code == 200, tokens.text
+    refreshed = client.post(
+        "/token",
+        data={"grant_type": "refresh_token", "refresh_token": tokens.json()["refresh_token"]},
+        headers=basic(reg),
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    # An id in the form that differs from the header's is still refused.
+    mixed = client.post("/token", data=form | {"client_id": other["client_id"]}, headers=basic(reg))
+    assert mixed.status_code == 401
