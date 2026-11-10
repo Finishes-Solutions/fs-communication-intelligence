@@ -2982,13 +2982,294 @@ async function connectionsPage() {
   );
 }
 
+// ---------- search: top bar, Cmd+K palette, Search page -----------------------
+// One search behind all three: /api/messages?q=… (ci_retrieval.search: meaning and
+// keywords, the caller's own grants). It reads the text of emails and the text read
+// from attached documents; "in" narrows it to one of the two.
+
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || "");
+const SHORTCUT = IS_MAC ? "⌘K" : "Ctrl K";
+const WHERE = [["", "Everything"], ["email", "Email Text"], ["documents", "Documents"]];
+const SEARCH_RANGES = [["0", "Any time"], ["1", "Last day"], ["7", "Last week"], ["30", "Last 30 days"],
+  ["90", "Last 90 days"], ["365", "Last 12 months"], ["custom", "Custom dates"]];
+const SEARCH_FILTERS = ["in", "mailbox", "sender", "property", "entity", "label", "since_days", "from", "to"];
+
+// The words of a search, longest first, for marking them in results.
+function searchTerms(query) {
+  const words = (query || "").toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}'’.-]*/gu) || [];
+  return [...new Set(words.map(w => w.replace(/[.'’-]+$/, "")).filter(w => w.length > 1 && w !== "or" && w !== "and"))]
+    .sort((a, b) => b.length - a.length);
+}
+function termPattern(terms) {
+  // At the start of a word only: "lease" marks "leases", not the middle of "please".
+  return terms.length
+    ? new RegExp("(?<![\\p{L}\\p{N}])(?:" + terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")", "giu") : null;
+}
+// Text with the searched words marked. Built as DOM nodes: email text is never parsed as HTML.
+function highlight(text, terms) {
+  const re = termPattern(terms);
+  if (!re) return [text];
+  const out = [];
+  let at = 0;
+  for (const m of text.matchAll(re)) {
+    if (m.index > at) out.push(text.slice(at, m.index));
+    out.push(h("mark", {}, m[0]));
+    at = m.index + m[0].length;
+  }
+  if (at < text.length) out.push(text.slice(at));
+  return out;
+}
+// A short piece of a matching passage, around the first searched word in it. A passage
+// found by meaning alone has none of the words: it starts at its beginning.
+function snippet(text, terms, width = 240) {
+  const flat = (text || "").replace(/\s+/g, " ").trim();
+  if (flat.length <= width) return flat;
+  const re = termPattern(terms);
+  const hit = re ? flat.search(re) : -1;
+  let start = hit < 0 ? 0 : Math.max(0, hit - Math.round(width / 3));
+  if (start > 0) { const space = flat.indexOf(" ", start); if (space >= 0 && space < start + 24) start = space + 1; }
+  let end = Math.min(flat.length, start + width);
+  if (end < flat.length) { const space = flat.lastIndexOf(" ", end); if (space > start + width - 24) end = space; }
+  return (start > 0 ? "… " : "") + flat.slice(start, end) + (end < flat.length ? " …" : "");
+}
+// One matching passage: where it is from (the email, or a named document) and its text.
+function excerptEl(e, terms) {
+  const doc = e.source === "attachment";
+  return h("div", { class: "hit" },
+    h("span", { class: "hit-src" + (doc ? " doc" : "") }, icon(doc ? "file" : "mail"), doc ? (e.attachment_name || "Document") : "Email"),
+    h("span", { class: "hit-text" }, highlight(snippet(e.text, terms), terms)));
+}
+
+const recentSearches = {
+  list() { try { return JSON.parse(keep.get("recent_searches") || "[]").filter(x => typeof x === "string").slice(0, 6); } catch { return []; } },
+  add(q) { keep.set("recent_searches", JSON.stringify([q, ...this.list().filter(x => x !== q)].slice(0, 6))); },
+};
+function searchUrl(q, extra) {
+  const params = new URLSearchParams({ q });
+  for (const [k, v] of Object.entries(extra || {})) if (v) params.set(k, v);
+  return "/search?" + params;
+}
+
+function drawTopbar() {
+  const bar = document.getElementById("topbar");
+  bar.hidden = false;
+  bar.replaceChildren(h("button", { class: "topsearch", type: "button", "aria-keyshortcuts": IS_MAC ? "Meta+K" : "Control+K",
+    onclick: () => openPalette() }, icon("search"),
+    h("span", { class: "topsearch-text" }, "Search email and documents"), h("kbd", {}, SHORTCUT)));
+}
+const canSearch = () => !!token() && !isReader() && isAdmin();
+
+let paletteOpen = false;
+function openPalette() {
+  if (paletteOpen || !canSearch()) return;
+  paletteOpen = true;
+  const here = pageParams();
+  const onSearchPage = location.pathname === "/search";
+  // type "text": in a search field the first Escape only empties the field.
+  const input = h("input", { class: "pal-input", type: "text", inputmode: "search", enterkeyhint: "search", placeholder: "Search email and documents, or go to a page",
+    value: onSearchPage ? here.get("q") || "" : "", autocomplete: "off", spellcheck: "false", "aria-label": "Search",
+    role: "combobox", "aria-expanded": "true", "aria-controls": "pal-list" });
+  let where = onSearchPage ? here.get("in") || "" : "";
+  const seg = h("div", { class: "seg pal-where", role: "group", "aria-label": "Search in" }, WHERE.map(([v, t]) =>
+    h("button", { type: "button", class: v === where ? "on" : "", onclick: () => {
+      where = v;
+      seg.querySelectorAll("button").forEach((b, i) => b.classList.toggle("on", WHERE[i][0] === v));
+      input.focus(); refresh(true);
+    } }, t)));
+  const list = h("div", { class: "pal-list", id: "pal-list", role: "listbox" });
+  const dlg = h("dialog", { class: "palette", "aria-label": "Search" },
+    h("div", { class: "pal-top" }, icon("search"), input, h("kbd", {}, "Esc")),
+    h("div", { class: "pal-filters" }, h("span", { class: "muted small" }, "Search in"), seg),
+    list,
+    h("div", { class: "pal-foot" }, h("span", {}, h("kbd", {}, "↑"), h("kbd", {}, "↓"), "Move"), h("span", {}, h("kbd", {}, "Enter"), "Open"),
+      h("span", {}, h("kbd", {}, IS_MAC ? "⌘" : "Ctrl"), h("kbd", {}, "Enter"), "All results with filters")));
+  let items = [], picked = 0, timer = null, ctl = null, found = null, state = "idle";
+
+  function close() {
+    clearTimeout(timer); if (ctl) ctl.abort();
+    paletteOpen = false; dlg.close(); dlg.remove();
+  }
+  function go(path) { close(); navigate(path); }
+  function seeAll() { const q = input.value.trim(); if (q) { recentSearches.add(q); go(searchUrl(q, { in: where })); } }
+  function pick(i) {
+    picked = Math.max(0, Math.min(i, items.length - 1));
+    items.forEach((it, n) => { it.el.classList.toggle("on", n === picked); it.el.setAttribute("aria-selected", n === picked ? "true" : "false"); });
+    if (items[picked]) items[picked].el.scrollIntoView({ block: "nearest" });
+  }
+  function draw() {
+    const q = input.value.trim();
+    const terms = searchTerms(q);
+    const rows = [];
+    items = [];
+    const add = (el, run) => {
+      const n = items.length;
+      el.setAttribute("role", "option");
+      el.addEventListener("click", run);
+      el.addEventListener("mousemove", () => { if (picked !== n) pick(n); });
+      items.push({ el, run }); rows.push(el);
+    };
+    const heading = text => rows.push(h("div", { class: "pal-label" }, text));
+    const pageRow = n => h("button", { type: "button", class: "pal-item pal-page" }, icon(n[2]), h("span", {}, n[1]), h("span", { class: "pal-hint" }, "Go to page"));
+    if (!q) {
+      const recent = recentSearches.list();
+      if (recent.length) {
+        heading("Recent Searches");
+        recent.forEach(r => add(h("button", { type: "button", class: "pal-item pal-page" }, icon("clock"), h("span", {}, r)),
+          () => { input.value = r; refresh(true); input.focus(); }));
+      }
+      heading("Go To");
+      NAV.filter(Boolean).forEach(n => add(pageRow(n), () => go("/" + n[0])));
+    } else {
+      const pages = NAV.filter(n => n && n[1].toLowerCase().includes(q.toLowerCase())).slice(0, 4);
+      heading("Email and Documents");
+      if (state === "short") rows.push(h("div", { class: "pal-note" }, "Type at least 2 characters."));
+      else if (state === "loading" && !found) rows.push(h("div", { class: "pal-note" }, h("span", { class: "spinner" }), "Searching…"));
+      else if (state === "error") rows.push(h("div", { class: "pal-note status-failed" }, found && found.error || "The search failed."));
+      else if (found && !found.results.length) rows.push(h("div", { class: "pal-note" },
+        where ? "Nothing found. Try Everything, or other words." : "Nothing found in mail you are authorized to read. Try other words."));
+      else if (found) {
+        found.results.forEach(r => add(h("button", { type: "button", class: "pal-item pal-result" },
+          h("div", { class: "pal-line" }, h("span", { class: "pal-subject" }, highlight(r.subject || "(no subject)", terms)),
+            h("span", { class: "pal-date" }, short(r.received_at))),
+          h("div", { class: "pal-meta" }, r.sender || "Unknown sender", " · ", r.mailbox),
+          (r.excerpts || []).slice(0, 1).map(e => excerptEl(e, terms))),
+          () => { recentSearches.add(q); go(searchUrl(q, { in: where, open: r.communication_id })); }));
+      }
+      add(h("button", { type: "button", class: "pal-item pal-page" }, icon("search"),
+        h("span", {}, "See all results for “", q, "”"), h("span", { class: "pal-hint" }, "Filters and full list")), seeAll);
+      if (pages.length) { heading("Go To"); pages.forEach(n => add(pageRow(n), () => go("/" + n[0]))); }
+    }
+    list.replaceChildren(...rows);
+    list.classList.toggle("busy", state === "loading");
+    pick(Math.min(picked, Math.max(0, items.length - 1)));
+  }
+  async function run() {
+    const q = input.value.trim();
+    if (ctl) ctl.abort();
+    const mine = ctl = new AbortController();
+    try {
+      const params = new URLSearchParams({ q, limit: "8" });
+      if (where) params.set("in", where);
+      const d = await api("/api/messages?" + params, { signal: mine.signal });
+      if (mine !== ctl) return;
+      found = d; state = "done"; picked = 0;
+    } catch (e) {
+      if (aborted(e) || mine !== ctl) return;
+      if (e.message === "signing in") { close(); return; }
+      found = { error: e.message, results: [] }; state = "error";
+    }
+    draw();
+  }
+  function refresh(now) {
+    clearTimeout(timer);
+    const q = input.value.trim();
+    if (ctl) ctl.abort();
+    if (q.length < 2) { found = null; state = q ? "short" : "idle"; picked = 0; draw(); return; }
+    state = "loading"; draw();
+    timer = setTimeout(run, now ? 0 : 250);
+  }
+  input.addEventListener("input", () => { found = null; refresh(false); });
+  dlg.addEventListener("keydown", e => {
+    if (e.key === "Escape") { e.preventDefault(); close(); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); pick(picked + 1 >= items.length ? 0 : picked + 1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); pick(picked - 1 < 0 ? items.length - 1 : picked - 1); }
+    else if (e.key === "Enter" && !e.isComposing) {
+      e.preventDefault();
+      if (e.metaKey || e.ctrlKey) seeAll();
+      else if (items[picked]) items[picked].run();
+    }
+  });
+  dlg.addEventListener("cancel", e => { e.preventDefault(); close(); });
+  dlg.addEventListener("click", e => { if (e.target === dlg) close(); }); // the backdrop
+  document.body.append(dlg);
+  dlg.showModal();
+  input.focus(); input.select();
+  refresh(true);
+}
+document.addEventListener("keydown", e => {
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k" && canSearch()) {
+    e.preventDefault();
+    if (!document.querySelector("dialog[open]")) openPalette();
+  }
+});
+
+async function searchPage() {
+  const p = pageParams();
+  const query = (p.get("q") || "").trim();
+  const custom = p.has("from") || p.has("to");
+  const f = {
+    q: h("input", { type: "search", placeholder: "Words, a name, a number, or a question", value: query, "aria-label": "Search" }),
+    in: h("select", { "aria-label": "Search in" }, WHERE.map(([v, t]) => h("option", { value: v, selected: v === (p.get("in") || "") }, v ? t : "Email and documents"))),
+    mailbox: h("input", { placeholder: "Mailbox", value: p.get("mailbox") || "", class: "f-md" }),
+    sender: h("input", { placeholder: "Sender address", value: p.get("sender") || "", class: "f-md" }),
+    property: h("input", { placeholder: "Property / project", value: p.get("property") || "", class: "f-md" }),
+    entity: h("input", { placeholder: "Legal entity", value: p.get("entity") || "", class: "f-md" }),
+    label: labelSelect(p.get("label") || ""),
+    range: h("select", { "aria-label": "Dates" }, SEARCH_RANGES.map(([v, t]) =>
+      h("option", { value: v, selected: v === (custom ? "custom" : p.get("since_days") || "0") }, t))),
+    from: h("input", { type: "date", value: p.get("from") || "", "aria-label": "From date" }),
+    to: h("input", { type: "date", value: p.get("to") || "", "aria-label": "To date" }),
+  };
+  const dates = h("span", { class: "date-range", hidden: !custom }, f.from, h("span", { class: "muted small" }, "to"), f.to);
+  f.range.addEventListener("change", () => { dates.hidden = f.range.value !== "custom"; });
+  function go() {
+    const q = new URLSearchParams();
+    for (const k of ["q", "in", "mailbox", "sender", "property", "entity", "label"]) if (f[k].value.trim()) q.set(k, f[k].value.trim());
+    if (f.range.value === "custom") { if (f.from.value) q.set("from", f.from.value); if (f.to.value) q.set("to", f.to.value); }
+    else if (f.range.value !== "0") q.set("since_days", f.range.value);
+    if (q.get("q")) recentSearches.add(q.get("q"));
+    navigate("/search?" + q);
+  }
+  const filtered = SEARCH_FILTERS.filter(k => p.get(k));
+  const results = h("div", { class: "card" });
+  const detail = h("div", { class: "card reader" }, h("div", { class: "placeholder" },
+    h("div", {}, h("div", { class: "empty" }, h("div", { class: "i-wrap" }, icon("mail")),
+      h("div", { class: "empty-title" }, "Select a Result"), h("div", { class: "small" }, "The email, its files and its text appear here.")))));
+  show(pageHead("Search", "Finds words and meaning in the text of emails and of their attached documents, in mail you are authorized to read."),
+    card({},
+      h("form", { class: "search-form", onsubmit: e => { e.preventDefault(); go(); } },
+        h("div", { class: "toolbar" }, searchBox(f.q), h("button", { class: "btn primary", type: "submit" }, "Search")),
+        h("div", { class: "toolbar filters" }, h("span", { class: "muted small" }, "Filters"),
+          f.in, f.mailbox, f.sender, f.property, f.entity, f.label, f.range, dates,
+          filtered.length ? h("a", { class: "btn sm ghost", href: searchUrl(query) }, icon("x"), "Clear Filters") : null))),
+    h("div", { class: "inbox" }, results, detail),
+    note(`Press ${SHORTCUT} on any page to search. A search returns its 25 best matches; add filters to narrow it. Restricted, held and bulk mail is never searched.`));
+  if (!query) {
+    results.replaceChildren(emptyState("Search Email and Documents",
+      "Type words, a name, an invoice number or a question. Documents are the files attached to emails whose text could be read.", "search"));
+    f.q.focus();
+    return;
+  }
+  results.replaceChildren(h("div", { class: "empty" }, h("div", { class: "spinner" }), "Searching…"));
+  const q = new URLSearchParams({ q: query });
+  for (const k of SEARCH_FILTERS) if (p.get(k)) q.set(k, p.get(k));
+  const d = await api("/api/messages?" + q);
+  const terms = searchTerms(query);
+  const passages = d.results.reduce((n, r) => n + (r.excerpts || []).length, 0);
+  const open = p.get("open");
+  const rows = d.results.map(r => {
+    const el = msgRow(r, x => showMessage(x.communication_id, detail),
+      h("div", { class: "hits" }, (r.excerpts || []).map(e => excerptEl(e, terms))));
+    if (open && r.communication_id === open) el.classList.add("on");
+    return el;
+  });
+  results.replaceChildren(
+    h("div", { class: "card-head" }, h("h2", {}, "Best Matches"),
+      h("span", { class: "muted small" }, d.results.length ? `${num(d.results.length)} emails · ${num(passages)} matching passages` : "")),
+    d.results.length ? h("div", { class: "msg-list" }, rows)
+      : emptyState("Nothing Found", filtered.length ? "Try fewer filters, a wider date range or other words." : "Try other words. Only published mail you are authorized to read is searched.", "search"));
+  if (open) showMessage(open, detail);
+  const on = results.querySelector(".msg.on");
+  if (on) on.scrollIntoView({ block: "nearest" });
+}
+
 // ---------- router -----------------------------------------------------------
 
 const NAV = [
   ["overview", "Overview", "overview"], ["schedule", "Schedule & Runs", "clock"], ["costs", "Costs", "dollar"],
   ["mailboxes", "Mailboxes", "inbox"],
   null,
-  ["messages", "Messages", "mail"], ["actionable", "Action Items", "check"], ["unpublished", "Not Published", "hidden"],
+  ["search", "Search", "search"], ["messages", "Messages", "mail"], ["actionable", "Action Items", "check"], ["unpublished", "Not Published", "hidden"],
   null,
   ["risks", "Risk Analysis", "alert"], ["knowledge", "Knowledge", "layers"], ["reports", "Reports", "report"],
   ["review", "Label Review", "review"],
@@ -2996,7 +3277,7 @@ const NAV = [
   ["lab", "Lab", "lab"], ["connections", "Connections", "plug"], ["people", "People", "users"],
 ];
 const NAV_GROUPS = ["Operations", "Mail", "Insights", "Tools"];
-const PAGES = { overview, schedule: schedulePage, costs: costsPage, mailboxes: mailboxesPage, messages: messagesPage,
+const PAGES = { overview, schedule: schedulePage, costs: costsPage, mailboxes: mailboxesPage, messages: messagesPage, search: searchPage,
   actionable: actionablePage, unpublished: unpublishedPage, lab: labPage, connections: connectionsPage,
   risks: risksPage, knowledge: knowledgePage, reports: reportsPage, review: reviewPage, check: reviewPage, read: readerPage,
   people: peoplePage };
@@ -3065,6 +3346,7 @@ async function render() {
   if (!token()) {
     shell.classList.add("signed-out");
     nav.hidden = true; who.replaceChildren();
+    document.getElementById("topbar").hidden = true;
     main().replaceChildren(h("div", { class: "signin" }, h("div", { class: "signin-card" },
       h("div", { class: "brand-mark" }, icon("graph")),
       h("h1", {}, "FS Communication Intelligence"),
@@ -3081,6 +3363,7 @@ async function render() {
   shell.classList.toggle("reader-only", isReader());
   drawNav();
   nav.hidden = false;
+  if (canSearch()) drawTopbar(); else document.getElementById("topbar").hidden = true;
   const name = keep.get("who") || "Signed in";
   who.replaceChildren(
     CFG && CFG.environment ? h("div", { class: "env" }, h("span", { class: "dot " + (CFG.environment === "production" ? "good" : "info") }),

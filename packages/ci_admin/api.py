@@ -31,7 +31,7 @@ import re
 import secrets
 import time
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -117,6 +117,7 @@ PAGES = (
     "schedule",
     "mailboxes",
     "messages",
+    "search",
     "actionable",
     "unpublished",
     "risks",
@@ -547,16 +548,33 @@ def build_admin_app(
 
     # ----- content (ci_search, the caller's own grants) ----------------------
 
+    def _day(request: Request, name: str) -> datetime | None:
+        value = request.query_params.get(name)
+        if not value:
+            return None
+        try:
+            day = date.fromisoformat(value)
+            return datetime(day.year, day.month, day.day, tzinfo=UTC)
+        except ValueError as exc:
+            raise HTTPException(400, f"{name} must be a date (YYYY-MM-DD)") from exc
+
     def _filters(request: Request) -> retrieval.Filters:
         q = request.query_params
         days = _float(q.get("since_days"), "since_days")
+        # "from" and "to" are whole days (UTC), both included; "from" wins over since_days.
+        first, last = _day(request, "from"), _day(request, "to")
+        source = q.get("in") or None
+        if source not in (None, "email", "documents"):
+            raise HTTPException(400, "in must be email or documents")
         return retrieval.Filters(
             mailbox=q.get("mailbox") or None,
             sender=q.get("sender") or None,
-            since=datetime.now(UTC) - timedelta(days=days) if days else None,
+            since=first or (datetime.now(UTC) - timedelta(days=days) if days else None),
+            until=last + timedelta(days=1) if last else None,
             label=q.get("label") or None,
             property=q.get("property") or None,
             entity=q.get("entity") or None,
+            source=source,
         )
 
     def messages(request: Request, principal: Principal, body: dict[str, Any]) -> Any:

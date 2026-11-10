@@ -1072,3 +1072,36 @@ def test_people_page_reader_limits_and_access_log(client: TestClient, database_r
         rows[-1]["person"] == will and rows[-1]["actor_id"] == "matthew@finishessolutions.example"
     )
     assert {r["action"] for r in rows} >= {"reader_limit_add", "reader_limit_remove"}
+
+
+def test_search_page_filters_by_text_source_and_dates(client: TestClient) -> None:
+    """The console's Search page and Cmd+K palette: the same authorized search, narrowed
+    to the email's own text or to text read from attached documents, and to whole days."""
+    page = client.get("/search?q=invoice")
+    assert page.status_code == 200 and "app.js" in page.text
+
+    def sources(query: str) -> set[str]:
+        found = client.get(f"/api/messages?q=invoice{query}", headers=auth()).json()["results"]
+        return {e["source"] for r in found for e in r["excerpts"]}
+
+    assert sources("") == {"body", "attachment"}
+    assert sources("&in=email") == {"body"}
+    assert sources("&in=documents") == {"attachment"}
+    documents = client.get("/api/messages?q=invoice&in=documents", headers=auth()).json()
+    assert all(e["attachment_name"] for r in documents["results"] for e in r["excerpts"])
+    assert client.get("/api/messages?q=invoice&in=nonsense", headers=auth()).status_code == 400
+
+    everything = client.get("/api/messages?q=invoice", headers=auth()).json()["results"]
+    days = sorted(r["received_at"][:10] for r in everything)
+    first, last = days[0], days[-1]
+    one_day = client.get(f"/api/messages?q=invoice&from={first}&to={first}", headers=auth()).json()
+    assert one_day["results"]
+    assert {r["received_at"][:10] for r in one_day["results"]} == {first}
+    whole = client.get(f"/api/messages?q=invoice&from={first}&to={last}", headers=auth()).json()
+    assert len(whole["results"]) == len(everything)
+    after = client.get("/api/messages?q=invoice&from=2099-01-01", headers=auth()).json()
+    assert after["results"] == []
+    assert client.get("/api/messages?q=invoice&from=yesterday", headers=auth()).status_code == 400
+    # The grants still decide: an admin without a reader role finds nothing.
+    blind = client.get("/api/messages?q=invoice&in=documents", headers=auth(roles=[ADMIN_ROLE]))
+    assert blind.json()["results"] == []
