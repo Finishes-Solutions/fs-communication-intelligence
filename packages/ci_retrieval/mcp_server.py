@@ -38,7 +38,7 @@ from ci_core.settings import Settings
 from ci_processing.embedding import Embedder
 from ci_retrieval import knowledge, reports
 from ci_retrieval import search as retrieval
-from ci_retrieval.broker import CALLBACK_PATH, CONSENT_PATH, EntraBroker
+from ci_retrieval.broker import CALLBACK_PATH, CONSENT_PATH, BasicClientId, EntraBroker
 from ci_retrieval.entra import EntraAccessToken, EntraTokenVerifier
 from ci_retrieval.identity import Principal
 
@@ -587,6 +587,8 @@ def build_http_app(
         json_response=True,
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     )
+    if broker is not None:
+        app.add_middleware(BasicClientId)
     app.add_middleware(_RequestLog)
     return app
 

@@ -39,7 +39,7 @@ import re
 import secrets
 import time
 from typing import Any
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 
 import httpx
 from cryptography.exceptions import InvalidTag
@@ -58,6 +58,7 @@ from mcp.server.auth.provider import (
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ci_retrieval.entra import EntraTokenVerifier
 from ci_retrieval.identity import READER_ALL, READER_OWN
@@ -68,6 +69,7 @@ CALLBACK_PATH = "/oauth/callback"
 CONSENT_PATH = "/oauth/consent"
 _COOKIE = "__Host-fsci-consent"
 _MAX_SEALED = 8192  # longest sealed value accepted (an Entra refresh token is about 2 KB)
+_MAX_FORM = 65536  # longest token request read to find the client id
 
 # Return addresses the broker sends sign-ins back to: host, then path (a path ending
 # in "/" is a prefix). Every host is the platform's own, so a sign-in can only ever
@@ -130,6 +132,79 @@ class Sealer:
 
     def mac(self, value: str) -> str:
         return _b64(hmac.new(self._mac_key, value.encode(), hashlib.sha256).digest())
+
+
+class BasicClientId:
+    """Lets a platform send its client id and secret only in an ``Authorization:
+    Basic`` header (RFC 6749 section 2.3.1, "client_secret_basic").
+
+    The MCP SDK offers that method in the server metadata, but its token and
+    revocation handlers look the client up by a ``client_id`` form field and answer
+    "Missing client_id" without one. The MCP TypeScript SDK sends none with Basic
+    (AMP, 2026-11-10). So the id from the header is added to the form. Nothing is
+    checked here: the SDK still compares the header's id with the form's and
+    verifies the secret."""
+
+    def __init__(self, app: ASGIApp, paths: tuple[str, ...] = ("/token", "/revoke")) -> None:
+        self.app = app
+        self.paths = paths
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope["type"] != "http"
+            or scope.get("method") != "POST"
+            or scope.get("path") not in self.paths
+        ):
+            await self.app(scope, receive, send)
+            return
+        headers = {k.lower(): v for k, v in scope.get("headers", [])}
+        client_id = self._basic_id(headers.get(b"authorization", b""))
+        form = headers.get(b"content-type", b"").startswith(b"application/x-www-form-urlencoded")
+        if client_id is None or not form:
+            await self.app(scope, receive, send)
+            return
+        body = b""
+        more = True
+        while more:
+            message = await receive()
+            if message["type"] != "http.request":
+                return  # the platform went away
+            body += message.get("body", b"")
+            more = bool(message.get("more_body"))
+            if len(body) > _MAX_FORM:
+                await Response(status_code=413)(scope, receive, send)
+                return
+        try:
+            has_id = "client_id" in parse_qs(body.decode("ascii"), keep_blank_values=True)
+        except UnicodeDecodeError:
+            has_id = True  # not a form this can read: passed on as it is
+        if not has_id:
+            body += (b"&" if body else b"") + b"client_id=" + quote(client_id, safe="").encode()
+            scope = dict(scope)
+            scope["headers"] = [
+                (k, v) for k, v in scope["headers"] if k.lower() != b"content-length"
+            ] + [(b"content-length", str(len(body)).encode())]
+        sent = False
+
+        async def replay() -> Message:
+            nonlocal sent
+            if sent:
+                return await receive()
+            sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        await self.app(scope, replay, send)
+
+    @staticmethod
+    def _basic_id(header: bytes) -> str | None:
+        if header[:6].lower() != b"basic ":
+            return None
+        try:
+            decoded = base64.b64decode(header[6:], validate=True).decode()
+        except ValueError, UnicodeDecodeError:  # binascii.Error is a ValueError
+            return None
+        name, colon, _ = decoded.partition(":")
+        return unquote(name) if colon and name else None
 
 
 class BrokerCode(AuthorizationCode):
