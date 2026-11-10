@@ -81,6 +81,13 @@ class Filters:
     # property="willow" matches "Willow Creek Retail".
     property: str | None = None
     entity: str | None = None
+    # Search only: "email" matches the message text alone, "documents" the text
+    # extracted from attachments alone. None matches both.
+    source: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.source not in (None, "email", "documents"):
+            raise ValueError("source must be 'email' or 'documents'")
 
 
 NO_FILTERS = Filters()
@@ -193,6 +200,7 @@ def _params(auth: Authorization, filters: Filters) -> dict[str, Any]:
         "label": filters.label,
         "property": _like(filters.property),
         "entity": _like(filters.entity),
+        "docs": None if filters.source is None else filters.source == "documents",
     }
 
 
@@ -205,6 +213,14 @@ def _like(term: str | None) -> str | None:
 
 def _scope(alias: str) -> str:
     return _AUTH.format(a=alias) + _FILTERS.format(a=alias)
+
+
+# Search only (Filters.source): chunks of the message text, or of attachment text.
+_KIND = " AND (%(docs)s::boolean IS NULL OR ({a}.chunk_kind = 'attachment_text') = %(docs)s)"
+# The index-first function returns no chunk kind, so it is read by id.
+_NEAR_KIND = """ AND (%(docs)s::boolean IS NULL OR EXISTS (
+        SELECT 1 FROM published_chunks k
+        WHERE k.id = near.id AND (k.chunk_kind = 'attachment_text') = %(docs)s))"""
 
 
 def _set_search_options(conn: Connection) -> bool:
@@ -244,10 +260,10 @@ def _hybrid(conn: Connection, vec: str, params: dict[str, Any]) -> list[dict[str
     """Fused rows, best first, after one header row's worth of counts: every row
     carries vec_hits (vector candidates left after grants and filters) and scanned
     (chunks taken from the index); score is NULL when nothing matched."""
-    scope = _scope("pc")
+    scope = _scope("pc") + _KIND.format(a="pc")
     rows: list[dict[str, Any]] = conn.execute(
         f"""
-        WITH {vec.format(scope=scope, near_scope=_scope("near"))}
+        WITH {vec.format(scope=scope, near_scope=_scope("near") + _NEAR_KIND)}
         fts AS (
             SELECT id, row_number() OVER (ORDER BY rank DESC) AS r FROM (
                 SELECT pc.id, ts_rank_cd(pc.tsv, tq) AS rank
