@@ -25,6 +25,7 @@ run as a page of this site.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -42,6 +43,7 @@ from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 from starlette.middleware import Middleware
+from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES, GZipMiddleware
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
@@ -132,6 +134,8 @@ PAGES = (
 )
 
 Connector = Callable[[str], AbstractContextManager[Connection]]
+# Stored attachment files are sent as they are, never compressed again.
+NO_GZIP_TYPES = ("application/pdf", "application/octet-stream", "image/*")
 # Types the browser may preview; everything else is served as an opaque download.
 PREVIEW_TYPES = {
     "application/pdf",
@@ -252,6 +256,21 @@ def _actor(principal: Principal) -> str:
     return principal.upn or principal.oid
 
 
+def _file_version(path: Path) -> str:
+    """A short fingerprint of a file's contents, for cache-busting its URL."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+
+
+def _versioned_index(versions: dict[str, str]) -> str:
+    page = (STATIC / "index.html").read_text(encoding="utf-8")
+    for name, version in versions.items():
+        plain = f'"/{name}"'
+        if plain not in page:
+            raise RuntimeError(f"index.html no longer names /{name}")
+        page = page.replace(plain, f'"/{name}?v={version}"')
+    return page
+
+
 def _int(request: Request, name: str, default: int, low: int, high: int) -> int:
     try:
         value = int(request.query_params.get(name, default))
@@ -312,6 +331,9 @@ def build_admin_app(
         deployment_lister = models.DeploymentLister(
             settings.azure_subscription_id, settings.azure_resource_group, openai_account
         )
+
+    asset_versions = {name: _file_version(STATIC / name) for name in ("app.js", "app.css")}
+    index_html = _versioned_index(asset_versions)
 
     def classifier_for(deployment: str | None) -> Classifier:
         """A classifier on that chat deployment (None: the app setting), for a test call."""
@@ -1198,12 +1220,30 @@ def build_admin_app(
         return connections.connection_settings(settings, tenant)
 
     async def page(request: Request) -> Response:
-        return FileResponse(STATIC / "index.html", media_type="text/html")
+        # The page itself is never cached (SecurityHeaders: no-store); it names the
+        # script and stylesheet with a version, so a deploy is picked up at once.
+        return Response(index_html, media_type="text/html")
+
+    def asset(name: str, media_type: str) -> Callable[[Request], Awaitable[Response]]:
+        async def serve(request: Request) -> Response:
+            # The versioned URL never changes content: the browser may keep it for a
+            # year. Any other URL for the file is checked with the server each time.
+            current = request.query_params.get("v") == asset_versions[name]
+            cache = "public, max-age=31536000, immutable" if current else "no-cache"
+            return FileResponse(
+                STATIC / name, media_type=media_type, headers={"Cache-Control": cache}
+            )
+
+        return serve
 
     async def health(request: Request) -> Response:
         return _json({"ok": True})
 
     routes = [
+        Route("/", page),
+        Route("/index.html", page),
+        Route("/app.js", asset("app.js", "text/javascript")),
+        Route("/app.css", asset("app.css", "text/css")),
         Route("/config.json", config),
         Route("/healthz", health),
         Route("/api/overview", endpoint(overview)),
@@ -1246,5 +1286,17 @@ def build_admin_app(
         Mount("/", StaticFiles(directory=STATIC, html=True)),
     ]
     return Starlette(
-        routes=routes, middleware=[Middleware(RequestTiming), Middleware(SecurityHeaders)]
+        routes=routes,
+        middleware=[
+            Middleware(RequestTiming),
+            Middleware(SecurityHeaders),
+            # Text (the page, script, stylesheet and API replies) is sent compressed.
+            # Stored files are not: PDFs and office files are already compressed.
+            Middleware(
+                GZipMiddleware,
+                minimum_size=1000,
+                compresslevel=6,
+                exclude_content_types=(*DEFAULT_EXCLUDED_CONTENT_TYPES, *NO_GZIP_TYPES),
+            ),
+        ],
     )

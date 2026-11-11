@@ -1105,3 +1105,45 @@ def test_search_page_filters_by_text_source_and_dates(client: TestClient) -> Non
     # The grants still decide: an admin without a reader role finds nothing.
     blind = client.get("/api/messages?q=invoice&in=documents", headers=auth(roles=[ADMIN_ROLE]))
     assert blind.json()["results"] == []
+
+
+def test_page_files_are_compressed_and_versioned_for_caching(client: TestClient) -> None:
+    """The page names its script and stylesheet with a content version, so the browser
+    keeps them for a year and still picks up a deploy; text is sent compressed and
+    stored files are not."""
+    page = client.get("/", headers={"Accept-Encoding": "gzip"})
+    assert page.headers["cache-control"] == "no-store"
+    versions = dict(re.findall(r'"/(app\.(?:js|css))\?v=([0-9a-f]{12})"', page.text))
+    assert set(versions) == {"app.js", "app.css"}
+    assert client.get("/overview").text == page.text
+    for name, version in versions.items():
+        kept = client.get(f"/{name}?v={version}", headers={"Accept-Encoding": "gzip"})
+        assert kept.status_code == 200
+        assert kept.headers["cache-control"] == "public, max-age=31536000, immutable"
+        assert kept.headers["content-encoding"] == "gzip"
+        assert kept.num_bytes_downloaded < len(kept.content) / 2  # sent vs. decoded size
+        assert kept.headers["content-security-policy"]  # still locked down
+        # An old or missing version is always checked with the server.
+        for url in (f"/{name}", f"/{name}?v=000000000000"):
+            assert client.get(url).headers["cache-control"] == "no-cache"
+    assert client.get("/app.js").headers["content-type"].startswith("text/javascript")
+    # API replies are compressed too; without Accept-Encoding nothing is.
+    listed = client.get("/api/messages?since_days=0", headers={**auth(), "Accept-Encoding": "gzip"})
+    assert listed.headers["content-encoding"] == "gzip" and listed.json()["results"]
+    plain = client.get(
+        "/api/messages?since_days=0", headers={**auth(), "Accept-Encoding": "identity"}
+    )
+    assert "content-encoding" not in plain.headers
+
+
+def test_stored_files_are_not_compressed_again(client: TestClient) -> None:
+    found = client.get("/api/messages?q=invoice&in=documents", headers=auth()).json()
+    detail = client.get(
+        f"/api/messages/{found['results'][0]['communication_id']}", headers=auth()
+    ).json()
+    stored = [a for a in detail["attachments"] if a.get("file_id")]
+    assert stored, "the fixture invoice keeps its original PDF"
+    message_id = found["results"][0]["communication_id"]
+    url = f"/api/messages/{message_id}/files/{stored[0]['file_id']}"
+    got = client.get(url, headers={**auth(), "Accept-Encoding": "gzip"})
+    assert got.status_code == 200 and "content-encoding" not in got.headers
