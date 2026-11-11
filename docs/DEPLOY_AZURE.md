@@ -278,6 +278,12 @@ Each search logs its timings to App Insights, with no query text: `search timing
 traces | where message startswith "search timings" | order by timestamp desc | take 50
 ```
 
+**Reused database connections.** The search app and the console keep up to `DB_POOL_SIZE` (default 4) open database connections per role and lend them to requests one at a time (`ci_core.db.ConnectionPool`), so a request no longer pays for a new connection: a TLS handshake, an Entra token and four setup statements. A connection is replaced after 30 minutes, checked with `SELECT 1` when it sat unused for over a minute, and closed instead of reused when it is broken or left in a transaction. To turn reuse off without a deploy, set the app setting to 0 on the app in question:
+
+```bash
+az functionapp config appsettings set -g fs-communication-intelligence -n func-fs-ci-srch-dev-1026 --settings DB_POOL_SIZE=0 -o none
+```
+
 Other things that make a search slow:
 - **The first search after a quiet period** starts the search app (a cold start, several seconds).
 - **Processing running at full speed** competes with search for the embedding quota (a search waits at most 20 seconds) and for the database's CPU.
@@ -311,7 +317,7 @@ Each platform then needs only the MCP server URL. The person sees "Connect <plat
 az functionapp config appsettings set -g fs-communication-intelligence -n func-fs-ci-srch-dev-1026 --settings MCP_BROKER_EXTRA_REDIRECTS=https://finishesamp-staging-web.azurewebsites.net/api/mcp/oauth/callback -o none
 ```
 
-In AMP (Configuration, Connections, AI tools, New connection): the `/mcp` URL, Sign-in method **Sign in with the system (OAuth)**, scope and client ID left empty. AMP keeps **one sign-in per connection, shared by every agent given its tools**: signed in as `svc_automation@`, those agents read whatever that account may read, and other people's reader limits do not apply to them. Give the tools to named agents only, and put reader limits on the `svc_automation@` address if some mail must stay out. AMP sends its client id and secret in an `Authorization: Basic` header only; the broker accepts that since 2026-11-10 (`BasicClientId`; before, the answer was "Missing client_id"). The tools carry no read-only mark, so AMP asks an Admin for Allow write on each. Registration and the Microsoft sign-in from AMP worked on 2026-11-10; the token step is covered by a test only, **not yet verified from AMP**.
+In AMP (Configuration, Connections, AI tools, New connection): the `/mcp` URL, Sign-in method **Sign in with the system (OAuth)**, scope and client ID left empty. AMP keeps **one sign-in per connection, shared by every agent given its tools**: signed in as `svc_automation@`, those agents read whatever that account may read, and other people's reader limits do not apply to them. Give the tools to named agents only, and put reader limits on the `svc_automation@` address if some mail must stay out. AMP sends its client id and secret in an `Authorization: Basic` header only; the broker accepts that since 2026-11-10 (`BasicClientId`; before, the answer was "Missing client_id"). The tools carry no read-only mark, so AMP asks an Admin for Allow write on each. Signing in from AMP staging and using the tools worked on 2026-11-10 (Matthew).
 
 The manual setup below still works, with or without the broker. The console's **Connections** page (under Lab) has these steps for each platform, with every value filled in and a Copy button. Fill it once with `bash scripts/azure/7-connections-page.sh` (it writes the search app's address and each platform's client ID to the console's app settings; IDs only, no secrets). It never shows a client secret: it gives the command that creates a new one for that platform (`az ad app credential reset --append`, so the other platforms' secrets keep working).
 
