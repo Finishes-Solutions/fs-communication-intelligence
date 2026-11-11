@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 import io
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Any
@@ -247,8 +248,8 @@ def run(
     req: ReportRequest,
     principal: Principal,
     *,
-    search_conn: Callable[[], Connection],
-    operator_conn: Callable[[], Connection],
+    search_conn: Callable[[], AbstractContextManager[Connection]],
+    operator_conn: Callable[[], AbstractContextManager[Connection]],
     tz_name: str,
     limit: int,
     action: str,

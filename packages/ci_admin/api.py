@@ -31,6 +31,7 @@ import re
 import secrets
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractContextManager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -49,7 +50,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ci_admin import billing, calibration, connections, costs, lab, models, reports
 from ci_core import ops
-from ci_core.db import Connection, connect, required
+from ci_core.db import Connection, pooled, required
 from ci_core.operator import (
     OperatorError,
     approve_all_enrolled,
@@ -130,7 +131,7 @@ PAGES = (
     "people",
 )
 
-Connector = Callable[[str], Connection]
+Connector = Callable[[str], AbstractContextManager[Connection]]
 # Types the browser may preview; everything else is served as an opaque download.
 PREVIEW_TYPES = {
     "application/pdf",
@@ -224,8 +225,9 @@ class RequestTiming:
             )
 
 
-def _role_connect(role: str) -> Connection:
-    return connect(role=role)  # type: ignore[arg-type]
+def _role_connect(role: str) -> AbstractContextManager[Connection]:
+    """A pooled connection for the role (ci_core.db.ConnectionPool)."""
+    return pooled(role)  # type: ignore[arg-type]
 
 
 def _json(data: Any, status: int = 200) -> Response:

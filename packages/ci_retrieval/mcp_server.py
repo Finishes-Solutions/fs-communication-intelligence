@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from urllib.parse import quote
@@ -33,7 +34,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from ci_core.db import Connection, connect
+from ci_core.db import Connection, pooled
 from ci_core.settings import Settings
 from ci_processing.embedding import Embedder
 from ci_retrieval import knowledge, reports
@@ -76,11 +77,12 @@ _KNOWLEDGE = (
 )
 
 PrincipalSource = Callable[[], Principal]
-Connector = Callable[[], Connection]
+Connector = Callable[[], AbstractContextManager[Connection]]
 
 
-def _search_connection() -> Connection:
-    return connect(role="ci_search")
+def _search_connection() -> AbstractContextManager[Connection]:
+    """A pooled connection (ci_core.db.ConnectionPool): reused across tool calls."""
+    return pooled("ci_search")
 
 
 def build_server(
