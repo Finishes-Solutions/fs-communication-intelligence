@@ -278,6 +278,8 @@ Each search logs its timings to App Insights, with no query text: `search timing
 traces | where message startswith "search timings" | order by timestamp desc | take 50
 ```
 
+**Console page loading.** The console sends its page, script, stylesheet and API replies compressed (about 280 KB of script and styles becomes about 80 KB), and stored files as they are. The page names its script and stylesheet with a version taken from their contents, so the browser keeps them for a year and downloads them again only after a deploy changes them; the page itself is never cached. The label names are kept in the browser from the last visit and refreshed in the background, so a page's data is no longer requested only after the label list arrives. The first visit after a quiet period still waits for the console app to start.
+
 **Reused database connections.** The search app and the console keep up to `DB_POOL_SIZE` (default 4) open database connections per role and lend them to requests one at a time (`ci_core.db.ConnectionPool`), so a request no longer pays for a new connection: a TLS handshake, an Entra token and four setup statements. A connection is replaced after 30 minutes, checked with `SELECT 1` when it sat unused for over a minute, and closed instead of reused when it is broken or left in a transaction. To turn reuse off without a deploy, set the app setting to 0 on the app in question:
 
 ```bash

@@ -3378,11 +3378,23 @@ async function render() {
     h("div", { class: "who" }, h("span", { class: "avatar" }, initials(name)),
       h("div", { class: "who-text", style: "min-width:0" }, h("div", { class: "who-name" }, name), h("div", { class: "who-role" }, "Console admin")),
       h("button", { class: "btn sm ghost", title: "Sign out", "aria-label": "Sign out", onclick: signOut }, icon("logout"))));
+  // The label list rarely changes: the copy kept from the last visit is used at once
+  // and refreshed in the background, so the page's own data is not kept waiting.
+  // Only the very first visit waits for it.
+  const useLabels = list => { LABELS = list; LABEL_NAMES = Object.fromEntries(list.map(l => [l.name, l.title])); };
+  const fetchLabels = () => api("/api/labels", { signal: null }).then(d => {
+    useLabels(d.labels);
+    prefs.set("labels", JSON.stringify(d.labels));
+  });
   if (!LABELS.length) {
-    try {
-      LABELS = (await api("/api/labels")).labels;
-      LABEL_NAMES = Object.fromEntries(LABELS.map(l => [l.name, l.title]));
-    } catch { /* filters fall back to none, names to the key */ }
+    let kept = null;
+    try { kept = JSON.parse(prefs.get("labels") || "null"); } catch { /* ignore a damaged copy */ }
+    if (Array.isArray(kept) && kept.length) {
+      useLabels(kept);
+      fetchLabels().catch(() => { /* the kept copy stays */ });
+    } else {
+      try { await fetchLabels(); } catch { /* filters fall back to none, names to the key */ }
+    }
   }
   await route();
 }
