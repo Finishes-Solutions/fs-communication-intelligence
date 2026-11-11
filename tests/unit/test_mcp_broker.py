@@ -507,3 +507,67 @@ def test_client_id_and_secret_only_in_a_basic_header(client: TestClient, entra: 
     # An id in the form that differs from the header's is still refused.
     mixed = client.post("/token", data=form | {"client_id": other["client_id"]}, headers=basic(reg))
     assert mixed.status_code == 401
+
+
+def test_sign_in_finishes_only_in_the_browser_that_confirmed(
+    client: TestClient, entra: FakeEntra
+) -> None:
+    """Someone who confirms the connection themselves and sends only the Microsoft link
+    to a person with access gets nothing: that person's browser never saw the page."""
+    reg = register(client).json()
+    _, challenge = pkce()
+    start = client.get(
+        "/authorize",
+        params={
+            "response_type": "code",
+            "client_id": reg["client_id"],
+            "redirect_uri": CLAUDE,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "state": "attacker-state",
+        },
+    )
+    page = client.get(start.headers["location"])
+    csrf = page.text.split('name=csrf value="')[1].split('"')[0]
+    request = query(start.headers["location"])["request"]
+    to_ms = client.post("/oauth/consent", data={"request": request, "csrf": csrf})
+    ms = query(to_ms.headers["location"])
+    flow = [c for c in client.cookies.jar if c.name.startswith("__Host-fsci-flow-")]
+    assert len(flow) == 1 and "httponly" in to_ms.headers["set-cookie"].lower()
+    back = {"code": entra.issue_code(ms["code_challenge"]), "state": ms["state"]}
+    # The person the link was sent to: another browser, no cookie.
+    client.cookies.clear()
+    victim = client.get("/oauth/callback", params=back)
+    assert victim.status_code == 400 and "location" not in victim.headers
+    # A cookie from another sign-in does not pass either.
+    client.cookies.set(flow[0].name, "someone-elses-value")
+    assert client.get("/oauth/callback", params=back).status_code == 400
+    # The browser that confirmed finishes, once.
+    client.cookies.clear()
+    client.cookies.set(flow[0].name, flow[0].value or "")
+    done = client.get("/oauth/callback", params=back)
+    assert done.status_code == 302 and done.headers["location"].startswith(CLAUDE + "?")
+    assert "max-age=0" in done.headers["set-cookie"].lower()
+
+
+@pytest.mark.parametrize(
+    "redirect",
+    [
+        "https://chatgpt.com/connector/oauth/../../somewhere",
+        "https://chatgpt.com/connector/oauth/%2e%2e/%2E%2E/somewhere",
+        "https://chatgpt.com/connector/oauth/a%2fb",
+        "https://chatgpt.com/connector/oauth/a\\b",
+    ],
+)
+def test_return_addresses_with_path_tricks_are_refused(redirect: str) -> None:
+    from ci_retrieval.broker import EntraBroker
+
+    broker = EntraBroker(
+        base_url=BASE,
+        tenant_id=TENANT,
+        client_id=BROKER_ID,
+        client_secret=BROKER_SECRET,
+        verifier=EntraTokenVerifier(TENANT, API_ID, API_URI, keys=StaticKeys()),
+    )
+    assert broker.platform("https://chatgpt.com/connector/oauth/abc123") == "ChatGPT"
+    assert broker.platform(redirect) is None

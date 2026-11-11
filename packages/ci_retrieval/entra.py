@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any, Protocol
 
 import jwt
@@ -50,8 +51,9 @@ def _describe(token: str) -> dict[str, Any]:
         claims = jwt.decode(token, options={"verify_signature": False})
     except jwt.PyJWTError:
         return {}
+    # Anyone can send a token with any claims: keep what is logged short and printable.
     return {
-        k: claims.get(k)
+        k: re.sub(r"[^\x20-\x7e]", "?", str(claims.get(k)))[:120]
         for k in ("aud", "iss", "ver", "scp", "roles", "azp", "appid")
         if claims.get(k) is not None
     }
