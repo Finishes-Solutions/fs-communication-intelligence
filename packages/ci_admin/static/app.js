@@ -3083,7 +3083,7 @@ function openPalette() {
     list,
     h("div", { class: "pal-foot" }, h("span", {}, h("kbd", {}, "↑"), h("kbd", {}, "↓"), "Move"), h("span", {}, h("kbd", {}, "Enter"), "Open"),
       h("span", {}, h("kbd", {}, IS_MAC ? "⌘" : "Ctrl"), h("kbd", {}, "Enter"), "All results with filters")));
-  let items = [], picked = 0, timer = null, ctl = null, found = null, state = "idle";
+  let items = [], picked = 0, timer = null, waiting = false, ctl = null, found = null, state = "idle";
 
   function close() {
     clearTimeout(timer); if (ctl) ctl.abort();
@@ -3122,7 +3122,7 @@ function openPalette() {
     } else {
       const pages = NAV.filter(n => n && n[1].toLowerCase().includes(q.toLowerCase())).slice(0, 4);
       heading("Email and Documents");
-      if (state === "short") rows.push(h("div", { class: "pal-note" }, "Type at least 2 characters."));
+      if (state === "short") rows.push(h("div", { class: "pal-note" }, "Keep typing, or press Enter to search."));
       else if (state === "loading" && !found) rows.push(h("div", { class: "pal-note" }, h("span", { class: "spinner" }), "Searching…"));
       else if (state === "error") rows.push(h("div", { class: "pal-note status-failed" }, found && found.error || "The search failed."));
       else if (found && !found.results.length) rows.push(h("div", { class: "pal-note" },
@@ -3144,6 +3144,7 @@ function openPalette() {
     pick(Math.min(picked, Math.max(0, items.length - 1)));
   }
   async function run() {
+    waiting = false;
     const q = input.value.trim();
     if (ctl) ctl.abort();
     const mine = ctl = new AbortController();
@@ -3160,13 +3161,17 @@ function openPalette() {
     }
     draw();
   }
+  // Every search is a full search on the server, and one the person typed past keeps
+  // running there. So a search starts only after a pause in typing, from 3 characters
+  // on; Enter (or a recent search, or the Search In switch) starts it at once.
   function refresh(now) {
-    clearTimeout(timer);
+    clearTimeout(timer); waiting = false;
     const q = input.value.trim();
     if (ctl) ctl.abort();
-    if (q.length < 2) { found = null; state = q ? "short" : "idle"; picked = 0; draw(); return; }
+    if (q.length < (now ? 1 : 3)) { found = null; state = q ? "short" : "idle"; picked = 0; draw(); return; }
     state = "loading"; draw();
-    timer = setTimeout(run, now ? 0 : 250);
+    waiting = !now;
+    timer = setTimeout(run, now ? 0 : 450);
   }
   input.addEventListener("input", () => { found = null; refresh(false); });
   dlg.addEventListener("keydown", e => {
@@ -3176,6 +3181,7 @@ function openPalette() {
     else if (e.key === "Enter" && !e.isComposing) {
       e.preventDefault();
       if (e.metaKey || e.ctrlKey) seeAll();
+      else if (state === "short" || waiting) refresh(true); // search now, without the pause
       else if (items[picked]) items[picked].run();
     }
   });

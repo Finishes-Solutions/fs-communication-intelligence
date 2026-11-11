@@ -40,9 +40,9 @@ on:
       - uv.lock
       - scripts/build-function-app.sh
 
+# Only the deploy job may ask for the Azure sign-in token (set on that job).
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
   group: deploy-dev
@@ -89,6 +89,9 @@ jobs:
     if: needs.plan.outputs.ingestion == 'true' || needs.plan.outputs.search == 'true' || needs.plan.outputs.admin == 'true'
     runs-on: ubuntu-24.04
     environment: development
+    permissions:
+      contents: read
+      id-token: write
     env:
       DO_INGESTION: ${{ needs.plan.outputs.ingestion }}
       DO_SEARCH: ${{ needs.plan.outputs.search }}

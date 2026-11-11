@@ -68,6 +68,9 @@ log = logging.getLogger(__name__)
 CALLBACK_PATH = "/oauth/callback"
 CONSENT_PATH = "/oauth/consent"
 _COOKIE = "__Host-fsci-consent"
+# Set when the person continues from the consent page, read when Microsoft sends
+# them back: the sign-in finishes only in the browser that confirmed it.
+_FLOW_COOKIE = "__Host-fsci-flow-"
 _MAX_SEALED = 8192  # longest sealed value accepted (an Entra refresh token is about 2 KB)
 _MAX_FORM = 65536  # longest token request read to find the client id
 
@@ -261,6 +264,9 @@ class EntraBroker:
             return None
         if parts.username is not None or parts.password is not None:
             return None
+        # No path tricks: the path is compared as written, so it must be plain.
+        if re.search(r"\.\.|\\|%2e|%2f|%5c", parts.path, re.IGNORECASE):
+            return None
         host = (parts.hostname or "").lower()
         for name, allowed_host, path in ALLOWED_REDIRECTS:
             if host == allowed_host and (
@@ -380,7 +386,11 @@ class EntraBroker:
         if not sent or not hmac.compare_digest(sent, request.cookies.get(_COOKIE, "")):
             return _page("Please try again", "Open the connection link again.", status=400)
         verifier = secrets.token_urlsafe(48)
-        state = self._seal.seal("state", {**req, "v": verifier}, ttl=900)
+        # The page shown above must not be skippable: without this, someone could
+        # confirm for themselves and send only the Microsoft link to a person with
+        # access, whose sign-in would then return a code for the sender's request.
+        flow = secrets.token_urlsafe(32)
+        state = self._seal.seal("state", {**req, "v": verifier, "n": _flow_hash(flow)}, ttl=900)
         challenge = _b64(hashlib.sha256(verifier.encode()).digest())
         to_entra = f"{self.login}/authorize?" + urlencode(
             {
@@ -401,6 +411,17 @@ class EntraBroker:
         response.set_cookie(
             _COOKIE, "", max_age=0, secure=True, httponly=True, samesite="lax", path="/"
         )
+        # Lax: sent on the top-level return from Microsoft. Named per sign-in, so
+        # two connections started in one browser don't replace each other's.
+        response.set_cookie(
+            _FLOW_COOKIE + _flow_hash(flow)[:12],
+            flow,
+            max_age=900,
+            secure=True,
+            httponly=True,
+            samesite="lax",
+            path="/",
+        )
         return response
 
     async def callback_route(self, request: Request) -> Response:
@@ -408,6 +429,17 @@ class EntraBroker:
         state = self._seal.open("state", request.query_params.get("state"))
         if state is None:
             return _page("This link has expired", "Start connecting again.", status=400)
+        expected = str(state.get("n") or "")
+        cookie = _FLOW_COOKIE + expected[:12]
+        sent = request.cookies.get(cookie, "")
+        if not expected or not sent or not hmac.compare_digest(_flow_hash(sent), expected):
+            log.warning("mcp sign-in refused: not the browser that confirmed the connection")
+            return _page(
+                "Start connecting again",
+                "This sign-in was not started in this browser. Start connecting again from "
+                "Claude, ChatGPT or Copilot Studio, and finish it in the same browser.",
+                status=400,
+            )
         code = request.query_params.get("code")
         if not code:
             error = re.sub(r"[^a-z_]", "", request.query_params.get("error", ""))[:40]
@@ -439,10 +471,13 @@ class EntraBroker:
             },
             ttl=300,
         )
-        return RedirectResponse(
+        done = RedirectResponse(
             construct_redirect_uri(str(state["r"]), code=sealed, state=state.get("st")),
             status_code=302,
         )
+        # One sign-in per confirmation. Max-Age only (see the consent cookie above).
+        done.set_cookie(cookie, "", max_age=0, secure=True, httponly=True, samesite="lax", path="/")
+        return done
 
     # ----- tokens ----------------------------------------------------------------
 
@@ -593,6 +628,10 @@ def _html(title: str, body: str, status: int = 200) -> HTMLResponse:
         f"<body><main class=card>{body}</main></body></html>"
     )
     return HTMLResponse(page, status_code=status, headers=_HEADERS)
+
+
+def _flow_hash(value: str) -> str:
+    return _b64(hashlib.sha256(value.encode()).digest())
 
 
 def _page(title: str, text: str, status: int = 200) -> HTMLResponse:
