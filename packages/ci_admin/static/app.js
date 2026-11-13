@@ -582,7 +582,7 @@ async function schedulePage() {
   );
 }
 
-// Mail rules (migration 0028): keep recurring emails out of risks and action items
+// Mail rules (migration 0030): keep recurring emails out of risks and action items
 // while they stay searchable, or do not process them at all.
 function mailRulesCard(rules) {
   const EFFECTS = { quiet: "Keep searchable, leave out of risks and action items", skip: "Do not process at all (new mail only)" };
@@ -908,7 +908,7 @@ const ACCESS = [
   ["files", "Communications.Files", "Email & File Links", "Opening email and file links without the console. Which emails open follows their AI Search access."],
   ["risks", "Communications.Reader.Risks", "Risks Only", "Project risks from every mailbox through the AI tools, with only the details chosen under Risks Only Details: no email links, no email text, no other tools. Give it instead of AI Search, not with it."],
 ];
-// What a Risks Only person may be shown of each risk email (migration 0027).
+// What a Risks Only person may be shown of each risk email (migration 0029).
 const RISK_FIELD_NAMES = {
   date: "Date", property: "Property", category: "Category", summary: "AI risk summary",
   rating: "Impact & likelihood", sender_domain: "Sender's company", subject: "Subject",

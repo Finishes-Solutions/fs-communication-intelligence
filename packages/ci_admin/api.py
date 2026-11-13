@@ -960,7 +960,7 @@ def build_admin_app(
 
     def mail_rules(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
         """Rules that keep matching emails out of risks and action items, or
-        unprocessed (migration 0028)."""
+        unprocessed (migration 0030)."""
         with connector("ci_operator") as conn:
             applied = None
             if request.method == "POST":
@@ -979,7 +979,7 @@ def build_admin_app(
             return {"mail_rules": list_mail_rules(conn), "applied": applied}
 
     def risk_fields(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
-        """Which fields of each risk email a risk-only reader is shown (migration 0027)."""
+        """Which fields of each risk email a risk-only reader is shown (migration 0029)."""
         with connector("ci_operator") as conn:
             if request.method == "POST":
                 fields = body.get("fields")

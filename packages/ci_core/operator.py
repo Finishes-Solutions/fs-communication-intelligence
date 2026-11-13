@@ -295,7 +295,7 @@ def limit_reader(
 
 
 # What a risk-only reader (Communications.Reader.Risks) is shown of each risk
-# email (migration 0027); ci_retrieval.risk_access applies it.
+# email (migration 0029); ci_retrieval.risk_access applies it.
 RISK_FIELDS = (
     "date",
     "property",
@@ -310,7 +310,7 @@ RISK_FIELDS = (
 
 
 def list_risk_fields(conn: Connection) -> list[dict[str, Any]]:
-    """Each risk-only reader's chosen fields; none before migration 0027."""
+    """Each risk-only reader's chosen fields; none before migration 0029."""
     found = conn.execute("SELECT to_regclass('ci.reader_risk_fields') AS t").fetchone()
     if not found or not found["t"]:
         return []
@@ -357,7 +357,7 @@ MAIL_RULE_EFFECTS = ("quiet", "skip")
 
 
 def list_mail_rules(conn: Connection) -> list[dict[str, Any]]:
-    """Active mail rules (migration 0028) with how many stored emails each matches;
+    """Active mail rules (migration 0030) with how many stored emails each matches;
     none before the migration is applied."""
     found = conn.execute("SELECT to_regclass('ci.mail_rules') AS t").fetchone()
     if not found or not found["t"]:

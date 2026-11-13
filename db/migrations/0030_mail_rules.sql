@@ -1,4 +1,4 @@
--- 0028_mail_rules.sql
+-- 0030_mail_rules.sql
 -- Mail rules (Matthew, 2026-11-13): recurring emails that read like risks or
 -- requests but are not useful as such (e.g. automated "ESCALATION: Unresolved
 -- Governance Violations" notices sent from a person's own address) can be kept

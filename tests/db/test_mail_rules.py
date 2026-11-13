@@ -1,4 +1,4 @@
-"""Mail rules (migration 0028, Matthew 2026-11-13): recurring emails that read like
+"""Mail rules (migration 0030, Matthew 2026-11-13): recurring emails that read like
 risks or requests stay searchable but are left out of risks and action items
 ("quiet"), or are not processed at all ("skip"). Synthetic tenant, fake backends."""
 

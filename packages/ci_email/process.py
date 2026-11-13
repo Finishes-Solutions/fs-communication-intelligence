@@ -596,7 +596,7 @@ def _screen_text(
 
 
 def _has_mail_rules(conn: Connection) -> bool:
-    """False on a database without migration 0028."""
+    """False on a database without migration 0030."""
     row = conn.execute("SELECT to_regclass('ci.mail_rules') IS NOT NULL AS on_").fetchone()
     return bool(row and row["on_"])
 
@@ -604,7 +604,7 @@ def _has_mail_rules(conn: Connection) -> bool:
 def _quiet_by_rule(conn: Connection, version_id: str) -> None:
     """Applies the operators' "quiet" rules to this message before it is published:
     a matching email keeps its text and labels except risk and action, which
-    become "no" (migration 0028)."""
+    become "no" (migration 0030)."""
     if _has_mail_rules(conn):
         conn.execute("SELECT * FROM apply_mail_rules(%s::uuid)", (version_id,)).fetchall()
 
@@ -636,7 +636,7 @@ def _prefilter(
         allowed_domains=backends.prefilter_allow_domains,
     )
     if reason is None and _has_mail_rules(conn):
-        # An operator's "skip" rule for this subject (migration 0028).
+        # An operator's "skip" rule for this subject (migration 0030).
         rule = conn.execute(
             "SELECT mail_rule_for(%s, %s, 'skip') AS id", (job["title"], sender)
         ).fetchone()
