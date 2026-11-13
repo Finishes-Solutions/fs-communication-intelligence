@@ -353,6 +353,84 @@ def set_risk_fields(
     return chosen
 
 
+MAIL_RULE_EFFECTS = ("quiet", "skip")
+
+
+def list_mail_rules(conn: Connection) -> list[dict[str, Any]]:
+    """Active mail rules (migration 0028) with how many stored emails each matches;
+    none before the migration is applied."""
+    found = conn.execute("SELECT to_regclass('ci.mail_rules') AS t").fetchone()
+    if not found or not found["t"]:
+        return []
+    return conn.execute(
+        "SELECT r.id::text, r.subject_contains, r.sender_address, r.effect, r.note,"
+        " r.created_by, r.created_at, mail_rule_matches(r.id) AS matching_emails"
+        " FROM mail_rules r WHERE r.revoked_at IS NULL ORDER BY r.id"
+    ).fetchall()
+
+
+def apply_mail_rules(conn: Connection) -> dict[str, int]:
+    """Makes stored risk and action answers match the current quiet rules."""
+    row = required(conn.execute("SELECT * FROM apply_mail_rules()").fetchone())
+    return {
+        "muted_emails": int(row["muted_emails"]),
+        "restored_emails": int(row["restored_emails"]),
+    }
+
+
+def add_mail_rule(
+    conn: Connection,
+    subject_contains: str,
+    effect: str,
+    actor: str,
+    *,
+    sender: str | None = None,
+    note: str | None = None,
+) -> dict[str, int]:
+    """Keeps emails whose subject contains these words out of risks and action
+    items (``quiet``) or unprocessed (``skip``); replies and forwards never match."""
+    words = " ".join(subject_contains.lower().split())
+    if not 6 <= len(words) <= 200:
+        raise OperatorError("the subject words need 6 to 200 characters, so a rule stays narrow")
+    if effect not in MAIL_RULE_EFFECTS:
+        raise OperatorError(f"effect must be one of {', '.join(MAIL_RULE_EFFECTS)}")
+    who = (sender or "").strip().lower() or None
+    if who and not _ADDRESS.match(who):
+        raise OperatorError("the sender must be an email address")
+    text = (note or "").strip()[:200] or None
+    row = conn.execute(
+        "INSERT INTO mail_rules (subject_contains, sender_address, effect, note, created_by)"
+        " VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING RETURNING id::text",
+        (words, who, effect, text, actor),
+    ).fetchone()
+    if row is None:
+        raise OperatorError("that rule already exists")
+    audit(
+        conn,
+        actor,
+        "mail_rule_add",
+        "mail_rule",
+        row["id"],
+        {"effect": effect, "sender": who, "subject_chars": len(words)},
+    )
+    return apply_mail_rules(conn)
+
+
+def remove_mail_rule(conn: Connection, rule_id: str, actor: str) -> dict[str, int]:
+    """Removes a rule; quieted emails get the AI's original answers back."""
+    if not rule_id.isdigit():
+        raise OperatorError("no such rule")
+    row = conn.execute(
+        "UPDATE mail_rules SET revoked_at = now(), revoked_by = %s"
+        " WHERE id = %s AND revoked_at IS NULL RETURNING id::text",
+        (actor, int(rule_id)),
+    ).fetchone()
+    if row is None:
+        raise OperatorError("no such rule")
+    audit(conn, actor, "mail_rule_remove", "mail_rule", row["id"])
+    return apply_mail_rules(conn)
+
+
 def approve_all_enrolled(conn: Connection, dataset: Dataset, actor: str) -> int:
     """Approve every reachable (``enrolled``) mailbox not yet approved; exclusions still win."""
     column = {"test": "test_approved", "production": "production_approved"}[dataset]
