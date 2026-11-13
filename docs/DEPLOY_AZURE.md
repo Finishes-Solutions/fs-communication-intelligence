@@ -503,7 +503,7 @@ The set for Will (2026-11-02: everything except PNS Capital and Chuck's personal
 
 Give the reader `search` and `files`, never `console`: the console shows all mail and does not apply limits. Limits are matched by the reader's sign-in address; while any limit exists, a sign-in without an address gets no results at all. "Words in the email" errs toward hiding (a newsletter that mentions PNS Capital is hidden too), and private mail that names no listed mailbox, person, domain or words is **not** hidden: add a limit for it. After adding limits, check with the reader (or `ci search` signed in as them) that a known PNS email is not found.
 
-**Risks only, without links** (`risks`, role `Communications.Reader.Risks`, migration 0027). Use this for an agent or a person whose AI answers should show project risks but never email links, email text or anything else. A common case is an AMP agent whose answers many people see:
+**Risks only, without links** (`risks`, role `Communications.Reader.Risks`, migration 0029). Use this for an agent or a person whose AI answers should show project risks but never email links, email text or anything else. A common case is an AMP agent whose answers many people see:
 
 ```bash
 bash scripts/azure/people.sh add svc_amp@finishessolutions.com risks
@@ -517,7 +517,7 @@ bash scripts/azure/people.sh add svc_amp@finishessolutions.com risks
 - **Give it instead of `search`, not with it.** Roles add up, so `search`, `console` or Reader.Own on the same account wins and Risks Only does nothing (the People page flags it). For AMP, that means a separate account (for example `svc_amp@`) holding only `risks`, and reconnecting AMP's MCP connection signed in as it. `svc_automation@` keeps its admin roles for setup.
 - Reader limits still apply on top. The first `people.sh add … risks` creates the role on the search API registration; the People page cannot create roles.
 
-**Recurring emails that are not really risks or requests** (mail rules, migration 0028). Some emails read like a risk or a request every time but are not useful as one, for example an automated escalation notice sent from a person's own address. The bulk filter does not catch them (a real address, no unsubscribe link). In the console, **Mailboxes & Scope > Mail Rules**, add a rule:
+**Recurring emails that are not really risks or requests** (mail rules, migration 0030). Some emails read like a risk or a request every time but are not useful as one, for example an automated escalation notice sent from a person's own address. The bulk filter does not catch them (a real address, no unsubscribe link). In the console, **Mailboxes & Scope > Mail Rules**, add a rule:
 
 | Field | Meaning |
 |---|---|

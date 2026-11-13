@@ -10,7 +10,7 @@ A caller whose only reading role is ``Communications.Reader.Risks``
 - may use only ``risk_overview`` and the risk part of ``list_actionable``; every
   other MCP tool refuses (``REFUSAL``);
 - gets each risk email cut down to the fields chosen for them in the console's
-  People page (migration 0027, ``ci_core.operator.set_risk_fields``). No choice
+  People page (migration 0029, ``ci_core.operator.set_risk_fields``). No choice
   means counts and charts only;
 - never gets ``view_url``, ``download_url``, ``web_link``, ``communication_id``,
   mailbox addresses or email text, whatever was chosen.
@@ -61,7 +61,7 @@ _AGGREGATES = (
 
 def fields_for(conn: Connection, principal: Principal) -> frozenset[str]:
     """The fields this reader is shown; empty (counts only) without a choice, an
-    address, or migration 0027."""
+    address, or migration 0029."""
     if not principal.upn:
         return frozenset()
     row = conn.execute(

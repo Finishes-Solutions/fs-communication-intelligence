@@ -28,7 +28,7 @@ from collections.abc import Collection
 from ci_processing.routing import AUTOMATED_SENDER
 
 PREFILTER_VERSION = "prefilter-2026-10-28"
-# A message an operator's "skip" mail rule matched (migration 0028; ci_email.process).
+# A message an operator's "skip" mail rule matched (migration 0030; ci_email.process).
 OPERATOR_RULE = "operator_rule"
 REASONS = ("automated_sender", "bulk_unsubscribe", OPERATOR_RULE)
 

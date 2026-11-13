@@ -1,4 +1,4 @@
--- 0027_risk_only_access.sql
+-- 0029_risk_only_access.sql
 -- Risk-only access (Matthew, 2026-11-13): an agent may surface project-risk
 -- emails without returning email links, and how much of each risk email it
 -- shows is chosen per reader.

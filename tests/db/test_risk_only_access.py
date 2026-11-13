@@ -1,4 +1,4 @@
-"""Risk-only access (migration 0027, Matthew 2026-11-13): an account with only
+"""Risk-only access (migration 0029, Matthew 2026-11-13): an account with only
 Communications.Reader.Risks sees project-risk emails, through the risk tools only,
 with the fields chosen for it and never an email link or email text.
 Synthetic tenant, fake backends."""
