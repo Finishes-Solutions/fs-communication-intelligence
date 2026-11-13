@@ -582,8 +582,35 @@ async function schedulePage() {
   );
 }
 
+// Mail rules (migration 0028): keep recurring emails out of risks and action items
+// while they stay searchable, or do not process them at all.
+function mailRulesCard(rules) {
+  const EFFECTS = { quiet: "Keep searchable, leave out of risks and action items", skip: "Do not process at all (new mail only)" };
+  const subject = h("input", { placeholder: "words in the subject, e.g. escalation: unresolved governance violations", style: "width:380px" });
+  const sender = h("input", { placeholder: "any sender, or one address", style: "width:230px" });
+  const effect = h("select", {}, Object.entries(EFFECTS).map(([k, t]) => h("option", { value: k }, t)));
+  const act = guard(async data => {
+    const r = await post("/api/mail-rules", data);
+    toast(data.action === "add" ? `Rule added: ${num(r.applied.muted_emails)} stored emails changed` : `Rule removed: ${num(r.applied.restored_emails)} emails restored`);
+    route();
+  });
+  return card({ title: "Mail Rules", flush: true,
+    sub: "For recurring emails that read like risks or requests but are not useful as such. A rule matches the subject (and one sender, if given); replies and forwards never match, so a person's answer is kept. Removing a rule brings the AI's original answers back.",
+    foot: h("form", { class: "toolbar", onsubmit: e => { e.preventDefault();
+        act({ action: "add", subject: subject.value, sender: sender.value, effect: effect.value }); } },
+      field("Subject Contains", subject), field("From", sender), field("What Happens", effect),
+      h("button", { class: "btn primary", type: "submit", style: "align-self:flex-end" }, icon("plus"), "Add Rule")) },
+  table([["Subject Contains", r => h("span", { class: "mono" }, r.subject_contains)],
+    ["From", r => r.sender_address || h("span", { class: "muted" }, "Any sender")],
+    ["What Happens", r => badge(r.effect === "quiet" ? "Searchable, not a risk or action" : "Not processed", r.effect === "quiet" ? "info" : "warn")],
+    ["Stored Emails", r => num(r.matching_emails)], ["Added By", r => r.created_by],
+    ["", r => h("div", { class: "actions", style: "justify-content:flex-end" },
+      h("button", { class: "btn sm", onclick: () => act({ action: "remove", id: r.id }) }, "Remove"))]],
+  rules, null, emptyState("No Mail Rules", "Add a rule below.", "ban")));
+}
+
 async function mailboxesPage() {
-  const [d, m] = await Promise.all([api("/api/mailboxes"), api("/api/mode")]);
+  const [d, m, rules] = await Promise.all([api("/api/mailboxes"), api("/api/mode"), api("/api/mail-rules").then(x => x.mail_rules)]);
   const q = h("input", { placeholder: "Filter by address", value: store.get("mb_q") || "" });
   const state = h("select", {}, ["", "enrolled", "excluded_by_rule", "not_approved", "no_exchange_access", "no_mailbox", "paused"]
     .map(s => h("option", { value: s }, s ? nice(s) : "Any state")));
@@ -653,6 +680,7 @@ async function mailboxesPage() {
         ["", r => h("div", { class: "actions", style: "justify-content:flex-end" }, h("button", { class: "btn sm", onclick: () => act("unexclude-participant",
           { pattern: r.exclusion_kind === "participant_domain" ? "@" + r.pattern : r.pattern }, "Exclusion removed") }, "Remove"))]],
       d.participant_exclusions, null, emptyState("No Exclusions", "Add a person or @domain below.", "ban"))),
+    mailRulesCard(rules),
     note("Reader limits (keeping some mail from one person) are on the People page."),
   );
   draw();

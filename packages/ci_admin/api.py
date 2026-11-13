@@ -56,6 +56,7 @@ from ci_core.db import Connection, pooled, required
 from ci_core.operator import (
     RISK_FIELDS,
     OperatorError,
+    add_mail_rule,
     approve_all_enrolled,
     approve_mailbox,
     audit,
@@ -65,6 +66,7 @@ from ci_core.operator import (
     hide_knowledge,
     knowledge_entry,
     limit_reader,
+    list_mail_rules,
     list_mailboxes,
     list_participant_exclusions,
     list_people,
@@ -73,6 +75,7 @@ from ci_core.operator import (
     merge_knowledge,
     merge_knowledge_many,
     reclassify_knowledge,
+    remove_mail_rule,
     rename_knowledge,
     set_knowledge_detail,
     set_mode,
@@ -955,6 +958,26 @@ def build_admin_app(
                 conn.commit()
             return {"reader_limits": list_reader_limits(conn)}
 
+    def mail_rules(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        """Rules that keep matching emails out of risks and action items, or
+        unprocessed (migration 0028)."""
+        with connector("ci_operator") as conn:
+            applied = None
+            if request.method == "POST":
+                if body.get("action") == "remove":
+                    applied = remove_mail_rule(conn, str(body.get("id") or ""), _actor(principal))
+                else:
+                    applied = add_mail_rule(
+                        conn,
+                        str(body.get("subject") or ""),
+                        str(body.get("effect") or "quiet"),
+                        _actor(principal),
+                        sender=str(body.get("sender") or "") or None,
+                        note=str(body.get("note") or "") or None,
+                    )
+                conn.commit()
+            return {"mail_rules": list_mail_rules(conn), "applied": applied}
+
     def risk_fields(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
         """Which fields of each risk email a risk-only reader is shown (migration 0027)."""
         with connector("ci_operator") as conn:
@@ -1295,6 +1318,7 @@ def build_admin_app(
         Route("/api/people", endpoint(people), methods=["GET", "PUT"]),
         Route("/api/reader-limits", endpoint(reader_limits), methods=["GET", "POST"]),
         Route("/api/risk-fields", endpoint(risk_fields), methods=["GET", "POST"]),
+        Route("/api/mail-rules", endpoint(mail_rules), methods=["GET", "POST"]),
         Route("/api/access-log", endpoint(access_log), methods=["POST"]),
         Route("/api/calibration", endpoint(calibration_report)),
         Route("/api/lab/classify", endpoint(lab_classify), methods=["POST"]),

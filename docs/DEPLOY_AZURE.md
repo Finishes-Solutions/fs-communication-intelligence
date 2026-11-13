@@ -517,6 +517,16 @@ bash scripts/azure/people.sh add svc_amp@finishessolutions.com risks
 - **Give it instead of `search`, not with it.** Roles add up, so `search`, `console` or Reader.Own on the same account wins and Risks Only does nothing (the People page flags it). For AMP, that means a separate account (for example `svc_amp@`) holding only `risks`, and reconnecting AMP's MCP connection signed in as it. `svc_automation@` keeps its admin roles for setup.
 - Reader limits still apply on top. The first `people.sh add … risks` creates the role on the search API registration; the People page cannot create roles.
 
+**Recurring emails that are not really risks or requests** (mail rules, migration 0028). Some emails read like a risk or a request every time but are not useful as one, for example an automated escalation notice sent from a person's own address. The bulk filter does not catch them (a real address, no unsubscribe link). In the console, **Mailboxes & Scope > Mail Rules**, add a rule:
+
+| Field | Meaning |
+|---|---|
+| Subject Contains | words in the subject, at least 6 characters, any case; replies and forwards (`RE:`, `FW:`) never match |
+| From | optional: only from this address |
+| What Happens | **Keep searchable, leave out of risks and action items** (default), or **Do not process at all** |
+
+"Keep searchable" changes stored mail at once and every new matching email before it is published: it stays in search, lists and the knowledge base, but is in no risk list, risk chart, action list or count. Removing the rule restores the AI's original answers. "Do not process at all" applies only to mail processed after the rule is added; such mail is not searchable (`ci process --retry-skipped` processes it in full later). The email's AI summary is not rewritten, so a search result can still show its risk line.
+
 ### Action items in two steps, and person profiles
 
 1. **Step 1, the classifier,** tags whether an email asks *someone* to act (`action_required`, `approval_required`). It is told to say no for FYI, newsletters, marketing, automated notifications and requests to a whole group.

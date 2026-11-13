@@ -57,7 +57,7 @@ from ci_processing.extraction import (
 from ci_processing.knowledge import Knowledge, LearnedName
 from ci_processing.originals import OriginalStore, OriginalStoreError
 from ci_processing.policy import Disposition, Outcome, classification_outcome, screening_gate
-from ci_processing.prefilter import PREFILTER_VERSION, bulk_skip_reason
+from ci_processing.prefilter import OPERATOR_RULE, PREFILTER_VERSION, bulk_skip_reason
 from ci_processing.redaction import RedactionUnavailable, Redactor
 from ci_processing.routing import ROUTING_VERSION, PersonProfile, PersonRouter, rule_out
 from ci_processing.screening import DISABLED, Screener
@@ -595,6 +595,20 @@ def _screen_text(
     )
 
 
+def _has_mail_rules(conn: Connection) -> bool:
+    """False on a database without migration 0028."""
+    row = conn.execute("SELECT to_regclass('ci.mail_rules') IS NOT NULL AS on_").fetchone()
+    return bool(row and row["on_"])
+
+
+def _quiet_by_rule(conn: Connection, version_id: str) -> None:
+    """Applies the operators' "quiet" rules to this message before it is published:
+    a matching email keeps its text and labels except risk and action, which
+    become "no" (migration 0028)."""
+    if _has_mail_rules(conn):
+        conn.execute("SELECT * FROM apply_mail_rules(%s::uuid)", (version_id,)).fetchall()
+
+
 def _prefilter(
     conn: Connection, job: dict[str, Any], backends: Backends, sender: str, body: str
 ) -> Outcome | None:
@@ -621,6 +635,12 @@ def _prefilter(
         has_real_attachment=has_real_attachment,
         allowed_domains=backends.prefilter_allow_domains,
     )
+    if reason is None and _has_mail_rules(conn):
+        # An operator's "skip" rule for this subject (migration 0028).
+        rule = conn.execute(
+            "SELECT mail_rule_for(%s, %s, 'skip') AS id", (job["title"], sender)
+        ).fetchone()
+        reason = OPERATOR_RULE if rule and rule["id"] is not None else None
     if reason is None:
         return None
     conn.execute(
@@ -719,6 +739,7 @@ def process_version(conn: Connection, job: dict[str, Any], backends: Backends) -
         _route_people(conn, job, backends.router, result, item)
     if result is not None and item is not None:
         _record_knowledge(conn, job, result, item)
+    _quiet_by_rule(conn, job["version_id"])
 
     pieces = _chunks(job, sender, body, attachments)
     vectors = backends.embedder.embed([p[4] for p in pieces]) if pieces else []
