@@ -32,7 +32,7 @@ from typing import Any
 
 from ci_core.db import Connection
 from ci_processing.embedding import Embedder
-from ci_retrieval.identity import Principal
+from ci_retrieval.identity import READER_ALL, Principal
 
 log = logging.getLogger(__name__)
 
@@ -100,6 +100,9 @@ class Authorization:
     # Set when this reader has per-reader limits (migration 0024): their sign-in
     # address, checked against ci.reader_hidden() for every message.
     restricted_reader: str | None = None
+    # Risk-only callers (identity.READER_RISKS): every query is narrowed to
+    # published project-risk emails, whichever tool or page asks.
+    risk_only: bool = False
 
     @property
     def empty(self) -> bool:
@@ -129,15 +132,26 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def _grant_roles(principal: Principal) -> list[str]:
+    """The roles whose access_grants apply. Risk-only callers read the corpora of
+    READER_ALL, but _AUTH then keeps only project-risk emails for them."""
+    roles = list(principal.roles)
+    if principal.risk_only:
+        roles.append(READER_ALL)
+    return roles
+
+
 def authorize(conn: Connection, principal: Principal) -> Authorization:
     rows = conn.execute(
         "SELECT DISTINCT corpus_id::text FROM access_grants WHERE revoked_at IS NULL"
         " AND valid_from <= now() AND (valid_to IS NULL OR valid_to > now())"
         " AND ((principal_type = 'entra_app_role' AND principal_id = ANY(%s))"
         "   OR (principal_type = 'entra_user' AND principal_id = %s))",
-        (list(principal.roles), principal.oid),
+        (_grant_roles(principal), principal.oid),
     ).fetchall()
-    auth = Authorization([r["corpus_id"] for r in rows], principal.own_mailbox)
+    auth = Authorization(
+        [r["corpus_id"] for r in rows], principal.own_mailbox, risk_only=principal.risk_only
+    )
     limits = conn.execute(
         "SELECT r.* FROM (SELECT to_regprocedure('ci.reader_restricted(text)') IS NOT NULL AS on_)"
         " o LEFT JOIN LATERAL ci.reader_restricted(%s) r ON o.on_",
@@ -153,13 +167,18 @@ def authorize(conn: Connection, principal: Principal) -> Authorization:
 
 
 # Applied to a row alias exposing corpus_id and communication_id. The last
-# part applies per-reader limits (migration 0024); it only ever narrows.
+# parts apply per-reader limits (migration 0024) and risk-only access (only
+# published project-risk emails); they only ever narrow.
 _AUTH = """((
     {a}.corpus_id = ANY(%(corpora)s::uuid[])
     OR (%(own)s::text IS NOT NULL AND EXISTS (
         SELECT 1 FROM published_email_messages own
         WHERE own.communication_id = {a}.communication_id AND own.mailbox_address = %(own)s)))
-    AND (%(limited)s::text IS NULL OR NOT ci.reader_hidden({a}.communication_id, %(limited)s)))"""
+    AND (%(limited)s::text IS NULL OR NOT ci.reader_hidden({a}.communication_id, %(limited)s))
+    AND (NOT %(risk_only)s::boolean OR EXISTS (
+        SELECT 1 FROM published_classifications ro
+        WHERE ro.communication_id = {a}.communication_id
+          AND ro.yes_labels && %(risk_only_labels)s::text[])))"""
 
 _FILTERS = """
     AND (%(mailbox)s::text IS NULL OR EXISTS (
@@ -193,6 +212,8 @@ def _params(auth: Authorization, filters: Filters) -> dict[str, Any]:
         "corpora": auth.corpora,
         "own": auth.own_mailbox,
         "limited": auth.restricted_reader,
+        "risk_only": auth.risk_only,
+        "risk_only_labels": list(RISK_LABELS),
         "mailbox": filters.mailbox.lower() if filters.mailbox else None,
         "sender": filters.sender.lower() if filters.sender else None,
         "since": filters.since,
@@ -1132,7 +1153,11 @@ MAX_LINK_EMAILS = 25
 
 
 def file_links(
-    conn: Connection, principal: Principal, communication_ids: Sequence[str]
+    conn: Connection,
+    principal: Principal,
+    communication_ids: Sequence[str],
+    *,
+    action: str = "get_file_links",
 ) -> dict[str, Any]:
     """Each authorized email's files with what is needed to link to them (name, type,
     size, and ``file_id`` when the original file is kept), for putting links on a
@@ -1177,7 +1202,7 @@ def file_links(
     _audit(
         conn,
         principal,
-        "get_file_links",
+        action,
         {"result_ids": [f["communication_id"] for f in found], "asked": len(wanted)},
     )
     conn.commit()

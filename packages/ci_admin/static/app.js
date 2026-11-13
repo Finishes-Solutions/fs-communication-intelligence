@@ -878,6 +878,19 @@ const ACCESS = [
   ["console", "Communications.Admin", "Console", "The admin console: all captured mail, settings, scope and costs. Reader limits do not apply."],
   ["search", "Communications.Reader.All", "AI Search", "Searching every enrolled mailbox from Claude, ChatGPT and Copilot, minus their reader limits."],
   ["files", "Communications.Files", "Email & File Links", "Opening email and file links without the console. Which emails open follows their AI Search access."],
+  ["risks", "Communications.Reader.Risks", "Risks Only", "Project risks from every mailbox through the AI tools, with only the details chosen under Risks Only Details: no email links, no email text, no other tools. Give it instead of AI Search, not with it."],
+];
+// What a Risks Only person may be shown of each risk email (migration 0027).
+const RISK_FIELD_NAMES = {
+  date: "Date", property: "Property", category: "Category", summary: "AI risk summary",
+  rating: "Impact & likelihood", sender_domain: "Sender's company", subject: "Subject",
+  sender: "Sender", documents: "Document names",
+};
+const RISK_PRESETS = [
+  ["Counts only", []],
+  ["Summary", ["date", "property", "category", "summary", "rating", "sender_domain"]],
+  ["Summary + documents", ["date", "property", "category", "summary", "rating", "sender_domain", "documents"]],
+  ["Subject & sender", ["date", "property", "category", "summary", "rating", "sender_domain", "subject", "sender"]],
 ];
 
 async function graph(path, options = {}) {
@@ -931,8 +944,10 @@ async function changeAccess(acc, person, key, grant) {
   const me = (keep.get("who") || "").toLowerCase();
   if (grant) {
     if (!acc.roleIds[key]) throw new Error(`The ${title} role does not exist yet. Create it once with: bash scripts/azure/people.sh add ${person.upn || "someone@finishessolutions.com"} ${key}`);
+    const broader = key === "risks" && (person.roles.search || person.roles.console)
+      ? " They already have AI Search or Console, which is broader and wins: remove those for Risks Only to limit them." : "";
     const ok = await ask({ title: `Give ${person.name || person.upn} ${title}?`, confirm: "Grant Access", danger: key !== "files",
-      text: `${what} ${key === "files" ? "" : "This lets them read other people's mail."}` });
+      text: `${what} ${key === "files" ? "" : key === "risks" ? "Everyone who sees their AI answers sees these details." : "This lets them read other people's mail."}${broader}` });
     if (!ok) return false;
     await graph(`servicePrincipals/${acc.sp}/appRoleAssignedTo`, { method: "POST",
       body: JSON.stringify({ principalId: person.id, resourceId: acc.sp, appRoleId: acc.roleIds[key] }) });
@@ -957,7 +972,7 @@ function accessCard(acc, limits) {
     if (await changeAccess(acc, person, key, grant)) { toast(grant ? "Access granted" : "Access removed"); route(); }
   });
   const email = h("input", { placeholder: "someone@finishessolutions.com", style: "width:280px" });
-  const pick = Object.fromEntries(ACCESS.map(([k]) => [k, h("input", { type: "checkbox", checked: k !== "console" })]));
+  const pick = Object.fromEntries(ACCESS.map(([k]) => [k, h("input", { type: "checkbox", checked: k === "search" || k === "files" })]));
   const add = guard(async () => {
     const upn = email.value.trim().toLowerCase();
     if (!upn.includes("@")) throw new Error("Enter their sign-in email address.");
@@ -990,6 +1005,8 @@ function accessCard(acc, limits) {
       return h("div", { class: "badges" }, badge(`${n} limit${n === 1 ? "" : "s"}`, "info"),
         p.roles.console ? badge("Console ignores limits", "warn") : null);
     }],
+    ["", p => p.roles.risks && (p.roles.search || p.roles.console)
+      ? badge("Risks Only has no effect: a broader role wins", "warn") : null],
   ], acc.people, null, emptyState("Nobody Has Access", "Grant access below.", "users")));
 }
 
@@ -1013,23 +1030,57 @@ function readerLimitsCard(limits) {
   limits, null, emptyState("No Reader Limits", "Everyone sees what their role allows. Add a limit below.", "shield")));
 }
 
+function riskFieldsCard(risk, acc) {
+  const saved = Object.fromEntries(risk.risk_fields.map(r => [r.reader_address, r]));
+  const holders = acc ? acc.people.filter(p => p.roles.risks && p.upn).map(p => p.upn) : [];
+  const readers = [...new Set([...holders, ...Object.keys(saved)])].sort();
+  const save = guard(async (reader, fields) => {
+    await post("/api/risk-fields", { reader, fields });
+    toast(fields && fields.length ? "Risk details saved" : "Counts only saved"); route();
+  });
+  const editor = (reader, current) => {
+    const boxes = Object.fromEntries(risk.choices.map(f => [f, h("input", { type: "checkbox", checked: current.includes(f) })]));
+    const preset = h("select", { onchange: () => {
+      const chosen = (RISK_PRESETS.find(x => x[0] === preset.value) || [, null])[1];
+      if (chosen) risk.choices.forEach(f => { boxes[f].checked = chosen.includes(f); });
+    } }, h("option", { value: "" }, "Preset…"), RISK_PRESETS.map(([t]) => h("option", { value: t }, t)));
+    return h("div", { style: "display:flex;flex-wrap:wrap;gap:10px;align-items:center" },
+      preset,
+      ...risk.choices.map(f => h("label", { class: "check", style: "display:flex;gap:4px;align-items:center" }, boxes[f], RISK_FIELD_NAMES[f] || f)),
+      h("button", { class: "btn sm primary", onclick: () => save(reader, risk.choices.filter(f => boxes[f].checked)) }, "Save"));
+  };
+  const reader = h("input", { placeholder: "agent-or-person@finishessolutions.com", style: "width:280px" });
+  return card({ title: "Risks Only Details", flush: true,
+    sub: "What each Risks Only account's AI answers show of a risk email. Email links, email text and mailbox names are never shown. Nothing chosen = counts and charts only. Everyone who sees that account's AI answers (for example every AMP user of a shared agent) sees what is chosen here.",
+    foot: h("form", { class: "toolbar", onsubmit: e => { e.preventDefault(); save(reader.value.trim().toLowerCase(), []); } },
+      field("Account", reader),
+      h("button", { class: "btn", type: "submit", style: "align-self:flex-end" }, icon("plus"), "Add (Counts Only)")) },
+  table([
+    ["Account", r => h("div", {}, h("div", {}, r), holders.includes(r) ? null
+      : h("div", { class: "muted small" }, acc ? "No Risks Only role: these details apply only once it is granted" : ""))],
+    ["Shows", r => editor(r, (saved[r] && saved[r].fields) || [])],
+    ["Changed By", r => saved[r] ? h("span", { class: "muted small" }, saved[r].updated_by) : h("span", { class: "muted" }, "Counts only (default)")],
+  ], readers, null, emptyState("No Risks Only Accounts", "Grant Risks Only above, or add an account below.", "shield")));
+}
+
 async function peoplePage() {
-  const [limits, profiles] = await Promise.all([api("/api/reader-limits").then(d => d.reader_limits), peoplePanel()]);
-  let access;
+  const [limits, profiles, risk] = await Promise.all([api("/api/reader-limits").then(d => d.reader_limits), peoplePanel(),
+    api("/api/risk-fields")]);
+  let access, acc = null;
   if (!graphToken()) {
     access = card({ title: "Access", sub: "Who may use the console, AI search and email links." },
       graphNote ? note(`Microsoft Entra did not connect: ${graphNote}`, "warn") : null,
       h("p", { class: "muted", style: "margin:0 0 16px" }, "Viewing and changing access happens in Microsoft Entra as you. Connect once per browser tab; it lasts about an hour."),
       h("button", { class: "btn primary", onclick: () => signIn(false, "graph") }, icon("users"), "Connect to Microsoft Entra"));
   } else {
-    try { access = accessCard(await loadAccess(), limits); }
+    try { acc = await loadAccess(); access = accessCard(acc, limits); }
     catch (e) {
       if (aborted(e)) throw e;
       access = card({ title: "Access" }, note(e.message, "warn"),
         h("button", { class: "btn", style: "margin-top:12px", onclick: () => signIn(false, "graph") }, icon("refresh"), "Connect Again"));
     }
   }
-  show(pageHead("People", "Access, reader limits and person checks in one place."), access, readerLimitsCard(limits), profiles);
+  show(pageHead("People", "Access, reader limits and person checks in one place."), access, riskFieldsCard(risk, acc), readerLimitsCard(limits), profiles);
 }
 
 async function unpublishedPage() {

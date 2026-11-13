@@ -7,6 +7,7 @@
 #   bash scripts/azure/people.sh add someone@finishessolutions.com console    # admin console only
 #   bash scripts/azure/people.sh add someone@finishessolutions.com search     # Claude/ChatGPT/Copilot only
 #   bash scripts/azure/people.sh add someone@finishessolutions.com files      # open email/file links, no console
+#   bash scripts/azure/people.sh add svc_amp@finishessolutions.com risks      # project risks only, no links
 #   bash scripts/azure/people.sh remove someone@finishessolutions.com         # console + search
 #   bash scripts/azure/people.sh remove someone@finishessolutions.com files
 #
@@ -19,6 +20,11 @@
 #             MCP results and on monday boards point to, and downloading its files,
 #             without the console. Which emails open still follows the person's
 #             search role (with search, every enrolled mailbox).
+#   risks   = Communications.Reader.Risks: project-risk emails from every enrolled
+#             mailbox through the AI tools' risk_overview and list_actionable only,
+#             without email links or email text, showing only the details chosen in
+#             the console (People > Risks Only Details; counts only until chosen).
+#             Give it INSTEAD of search: roles add up, so search or console wins.
 # Each grant is a decision about who may read everyone's mail; keep the list short
 # and review it (bash scripts/azure/people.sh list).
 # The console's People page does the same in the browser, as the signed-in admin
@@ -39,28 +45,39 @@ role_id() { az ad app show --id "$API_APP_ID" --query "appRoles[?value=='$1'].id
 ADMIN_ROLE="$(role_id Communications.Admin)"
 READER_ROLE="$(role_id Communications.Reader.All)"
 FILES_ROLE="$(role_id Communications.Files)"
-if [ -z "$FILES_ROLE" ] && [ "$action" = "add" ] && [ "${3:-}" = "files" ]; then
+RISKS_ROLE="$(role_id Communications.Reader.Risks)"
+add_role() {  # add_role <value> <display name> <description>
   # First use: add the role to the registration. Graph replaces appRoles whole on
   # PATCH, so the existing roles are sent back with it.
   API_OBJ="$(az ad app show --id "$API_APP_ID" --query id -o tsv)"
-  graph PATCH "applications/$API_OBJ" "$(graph GET "applications/$API_OBJ?\$select=appRoles" | python3 -c '
-import json, sys, uuid
+  graph PATCH "applications/$API_OBJ" "$(graph GET "applications/$API_OBJ?\$select=appRoles" | \
+    VALUE="$1" NAME="$2" DESC="$3" python3 -c '
+import json, os, sys, uuid
 roles = json.load(sys.stdin)["appRoles"]
-roles.append({"id": str(uuid.uuid4()), "value": "Communications.Files",
-    "allowedMemberTypes": ["User"], "displayName": "Communications Files (open links)",
-    "description": "Open emails and download their files from links, without the admin console.",
-    "isEnabled": True})
+roles.append({"id": str(uuid.uuid4()), "value": os.environ["VALUE"],
+    "allowedMemberTypes": ["User"], "displayName": os.environ["NAME"],
+    "description": os.environ["DESC"], "isEnabled": True})
 print(json.dumps({"appRoles": roles}))')" >/dev/null
-  echo "  added the Communications.Files role"
+  echo "  added the $1 role"
+}
+if [ -z "$FILES_ROLE" ] && [ "$action" = "add" ] && [ "${3:-}" = "files" ]; then
+  add_role Communications.Files "Communications Files (open links)" \
+    "Open emails and download their files from links, without the admin console."
   FILES_ROLE="$(role_id Communications.Files)"
+fi
+if [ -z "$RISKS_ROLE" ] && [ "$action" = "add" ] && [ "${3:-}" = "risks" ]; then
+  add_role Communications.Reader.Risks "Communications Reader (project risks only)" \
+    "Project-risk emails from every enrolled mailbox, without email links or email text."
+  RISKS_ROLE="$(role_id Communications.Reader.Risks)"
 fi
 
 if [ "$action" = "list" ]; then
-  graph GET "servicePrincipals/$API_SP/appRoleAssignedTo?\$top=999" | ADMIN_ROLE="$ADMIN_ROLE" READER_ROLE="$READER_ROLE" FILES_ROLE="$FILES_ROLE" python3 -c '
+  graph GET "servicePrincipals/$API_SP/appRoleAssignedTo?\$top=999" | ADMIN_ROLE="$ADMIN_ROLE" READER_ROLE="$READER_ROLE" FILES_ROLE="$FILES_ROLE" RISKS_ROLE="$RISKS_ROLE" python3 -c '
 import json, os, sys
 names = {os.environ["ADMIN_ROLE"]: "console (Communications.Admin)",
          os.environ["READER_ROLE"]: "search (Communications.Reader.All)",
-         os.environ["FILES_ROLE"] or "-": "files (Communications.Files)"}
+         os.environ["FILES_ROLE"] or "-": "files (Communications.Files)",
+         os.environ["RISKS_ROLE"] or "--": "risks (Communications.Reader.Risks)"}
 rows = sorted((a["principalDisplayName"], names.get(a["appRoleId"], a["appRoleId"]))
               for a in json.load(sys.stdin)["value"])
 for who, role in rows:
@@ -69,14 +86,16 @@ print(f"{len(rows)} assignment(s)")'
   exit 0
 fi
 
-[ -n "$upn" ] || { echo "usage: people.sh add|remove someone@finishessolutions.com [console|search|files|both]" >&2; exit 2; }
+[ -n "$upn" ] || { echo "usage: people.sh add|remove someone@finishessolutions.com [console|search|files|risks|both]" >&2; exit 2; }
 case "$which" in
   console) roles="$ADMIN_ROLE" ;;
   search) roles="$READER_ROLE" ;;
   files) roles="$FILES_ROLE"
     [ -n "$roles" ] || { echo "  nobody has the files role yet (it is created by the first add)"; exit 0; } ;;
+  risks) roles="$RISKS_ROLE"
+    [ -n "$roles" ] || { echo "  nobody has the risks role yet (it is created by the first add)"; exit 0; } ;;
   both) roles="$ADMIN_ROLE $READER_ROLE" ;;
-  *) echo "the third argument is console, search, files or both" >&2; exit 2 ;;
+  *) echo "the third argument is console, search, files, risks or both" >&2; exit 2 ;;
 esac
 oid="$(az ad user show --id "$upn" --query id -o tsv 2>/dev/null)" \
   || { echo "ERROR: no Entra user $upn (check the spelling)" >&2; exit 1; }
@@ -90,6 +109,7 @@ for role in $roles; do
   # if/elif, not case inside $(...): macOS bash 3.2 cannot parse a case there.
   if [ "$role" = "$ADMIN_ROLE" ]; then label=console
   elif [ "$role" = "$FILES_ROLE" ]; then label=files
+  elif [ "$role" = "$RISKS_ROLE" ]; then label=risks
   else label=search; fi
   assignment="$(echo "$existing" | awk -v r="$role" '$1 == r {print $2}')"
   if [ "$action" = "add" ]; then

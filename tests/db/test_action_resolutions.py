@@ -23,6 +23,14 @@ from ci_retrieval import search as retrieval
 from ci_retrieval.identity import READER_ALL, Principal
 
 NOW = datetime(2026, 10, 28, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def fixture_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Action-item windows ("hours" back) end on the fixtures' date, not today."""
+    monkeypatch.setattr(retrieval, "utcnow", lambda: NOW)
+
+
 READER = Principal("reader-oid", None, (READER_ALL,))
 PAT = "pat.example@finishessolutions.example"
 CO8_SUBJECT = "Change Order 8 - Building D plumbing reroute"

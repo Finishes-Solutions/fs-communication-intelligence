@@ -37,7 +37,7 @@ from ci_processing.routing import FakePersonRouter
 from ci_processing.screening import FakeScreener
 from ci_retrieval import search as retrieval
 from ci_retrieval.entra import EntraTokenVerifier
-from ci_retrieval.identity import READER_ALL
+from ci_retrieval.identity import READER_ALL, READER_RISKS
 
 TENANT = "11111111-1111-1111-1111-111111111111"
 API_ID = "22222222-2222-2222-2222-222222222222"
@@ -556,6 +556,51 @@ def test_files_role_opens_emails_and_files_but_not_the_console(client: TestClien
     files_only = auth(oid="chuck-oid", roles=[FILES_ROLE])
     assert client.get(email, headers=files_only).status_code == 404
     assert client.get(file, headers=files_only).status_code == 404
+
+
+def test_risk_only_access_never_opens_emails_or_files(client: TestClient) -> None:
+    """Risks Only (Communications.Reader.Risks) gives agents risks without links:
+    even with the files role, the read-only page refuses it."""
+    detail = invoice_detail(client)
+    pdf = next(a for a in detail["attachments"] if a["name"] == "Invoice-4471.pdf")
+    email = f"/api/messages/{detail['communication_id']}"
+    risky = auth(oid="agent-oid", roles=[READER_RISKS, FILES_ROLE])
+    assert client.get(email, headers=risky).status_code == 403
+    assert client.get(f"{email}/files/{pdf['file_id']}", headers=risky).status_code == 403
+    assert client.get("/api/risk-fields", headers=risky).status_code == 403
+
+
+def test_risk_fields_are_set_by_admins_and_audited(client: TestClient, database_ready: str) -> None:
+    admin = auth(roles=[ADMIN_ROLE])
+    empty = client.get("/api/risk-fields", headers=admin).json()
+    assert "summary" in empty["choices"]
+    saved = client.post(
+        "/api/risk-fields",
+        headers=admin,
+        json={"reader": "Agent@FinishesSolutions.example", "fields": ["summary", "date"]},
+    ).json()["risk_fields"]
+    assert [(r["reader_address"], r["fields"]) for r in saved] == [
+        ("agent@finishessolutions.example", ["date", "summary"])
+    ]
+    assert latest_audit(database_ready, "risk_fields_set") is not None
+    bad = client.post(
+        "/api/risk-fields",
+        headers=admin,
+        json={"reader": "agent@finishessolutions.example", "fields": ["body"]},
+    )
+    assert bad.status_code == 400
+    cleared = client.post(
+        "/api/risk-fields",
+        headers=admin,
+        json={"reader": "agent@finishessolutions.example", "fields": None},
+    ).json()["risk_fields"]
+    assert cleared == []
+    logged = client.post(
+        "/api/access-log",
+        headers=admin,
+        json={"action": "grant", "person": "agent@finishessolutions.example", "role": "risks"},
+    )
+    assert logged.status_code == 200
 
 
 def test_missing_originals_are_backfilled(database_ready: str, files: DirectoryStore) -> None:
