@@ -228,6 +228,26 @@ ci backfill status
 
 shows windows per state, the period still to capture, the running window and the last ten outcomes. `ci backfill cancel` drops the pending windows; `ci backfill retry-failed` requeues failed ones. The app setting `CAPTURE_ENABLED` must be true; the schedule's own on/off switch and active hours do not apply to a plan, and a scheduled or requested capture goes first when one is due. Inside a mailbox, attachment listings are fetched four at a time (Graph's per-mailbox concurrency limit), and `CAPTURE_WORKERS` mailboxes are captured at once.
 
+**A temporary processing worker.** The Function App processes on one instance. For a large backfill, `bash scripts/azure/10-backfill-worker.sh` creates one VM (default `Standard_D16s_v5`, about $0.80 an hour) with the ingestion managed identity attached and runs `PROCS` x `WORKERS` (default 3 x 64) `ci process` loops on it with attachment extraction and original-file storage on, using the same identity, grants and Exchange scope as the app (nothing new is granted; no inbound ports). `--status` shows the processes and log tails, `--stop` deletes the VM and its PostgreSQL firewall rule. The VM opts in to managed identity with `AZURE_MANAGED_IDENTITY=1` (`ci_core.azure_auth`). `REF` picks the branch the VM runs (default `main`).
+
+**Extra processors without VM quota.** When the subscription has no VM cores (2026-11-03: Central US allowed 10 regional and 0 DSv5 cores), `bash scripts/azure/11-extra-processors.sh` builds the ingestion package locally and deploys it to `N` (default 3) more Flex Consumption apps named `<ingestion app>-p1..pN`, with the ingestion identity, storage and settings, capture off and `WORKERS` (96) processing workers each. They work the same queue; `--status` lists them and `--stop` deletes them. Later GitHub deploys update only the main app.
+
+**Scale back down when the backfill is done** (all windows `done` in `ci backfill status`, and `ci runs` shows nothing waiting to be processed). Run as svc_automation:
+
+```bash
+bash scripts/azure/11-extra-processors.sh --stop
+bash scripts/azure/10-backfill-worker.sh --stop
+az functionapp config appsettings set -g fs-communication-intelligence -n func-fs-ci-ing-dev-1026 --settings PROCESSING_WORKERS=4 PROCESSING_MINUTES=8 CAPTURE_WORKERS=6 EMBEDDING_TOKENS_PER_MINUTE=300000 -o none
+az functionapp scale config set -g fs-communication-intelligence -n func-fs-ci-ing-dev-1026 --instance-memory 2048
+az postgres flexible-server update -g fs-communication-intelligence -n psql-fs-ci-dev-1026b --tier Burstable --sku-name Standard_B2ms
+uv run --env-file local/azure-dev.env python -c "import os,psycopg,subprocess; os.environ['PGPASSWORD']=subprocess.check_output(['az','account','get-access-token','--resource-type','oss-rdbms','--query','accessToken','-o','tsv'],text=True).strip(); psycopg.connect(autocommit=True).execute('ALTER DATABASE ci RESET synchronous_commit')"
+az postgres flexible-server update -g fs-communication-intelligence -n psql-fs-ci-dev-1026b --performance-tier P10
+```
+
+During the 2026-11-03 backfill the disk, not the CPU, became the limit: hundreds of workers waited on `WALWrite` with the 128 GB disk at its baseline 500 IOPS (P10). Two settings fixed it for the run: `synchronous_commit=off`, set with `ALTER DATABASE ci SET` because Azure makes the server parameter read-only (a commit no longer waits for the disk; after a server crash the last fraction of a second of finished work can be lost and those emails are processed again, nothing is corrupted) and the disk's performance tier raised to P40 (7,500 IOPS). Both are undone above; Azure allows lowering the tier only 12 hours after raising it.
+
+The database restarts for a few minutes. Its storage cannot shrink (128 GB stays). Azure OpenAI capacity is a rate limit, billed per token used, so it can stay raised. The paid safety checks stay as they were set for the run; `ci schedule set --shield-on --masking-on` turns them back on (that raises the cost per email).
+
 **How long and how much.** Volume since 2026-09-01 is about 19,000 indexed emails a month across 176 mailboxes, so a backfill to 2025-01-01 is roughly 380,000 emails, less where mailboxes are newer or mail was deleted. Capture is bounded by Microsoft Graph (10,000 requests per 10 minutes and 4 concurrent requests per mailbox): the busiest mailboxes take several hours each, in parallel. Processing is bounded by the Azure OpenAI quotas and `PROCESSING_WORKERS`: at the default 4 workers about 20,000 emails a day; raise the deployments' capacity and the workers for a faster run (see *Processing speed and Azure OpenAI rate limits*). The AI cost does not depend on speed: at the unverified list prices about $0.005 per indexed email with the paid checks off and about $0.012 with masking and Prompt Shields on. Check the Costs page's billed figure per email before a large run.
 
 ## 8. Test
@@ -550,6 +570,7 @@ Action items show when they have been dealt with (Matthew, 2026-11-03: "it never
 
 - **Console Action Items** has a status selector: *Open and in progress* (default), *Resolved*, *All*. Each item shows a badge with the status, the reason and who replied when.
 - **MCP `list_actionable`** returns `status` and `resolution_ai` on each action item and takes `status` (`open` default, `resolved`, `all`), so an agent asked for Chuck's open items does not list what was already approved. The resolving reply is named only when the reader may read it; otherwise only the status is shown.
+- **A helper processor without Graph access** (e.g. `ATTACHMENT_EXTRACTION_ENABLED=false ci process --workers 48` on a Mac during a backfill, 2026-11-03) indexes bodies but leaves attachments `not_attempted`. Afterwards `ci process --extract-pending --limit 0` requeues those published messages for the Function App, which reads the files and classifies them again (one more chat call each, since the input changes).
 - **`ci resolve --limit 2000`** checks the backlog without the run's time budget, for example after a backfill (each check is one chat call of roughly 1,500 to 4,000 input tokens; resolved items are never re-checked).
 
 Status is an AI reading of the replies, uncalibrated until reviewed. Whether a thread's replies carry the same Graph `conversationId` in every mailbox is not verified; a reply recorded under another id is not seen.

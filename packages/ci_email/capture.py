@@ -87,7 +87,7 @@ def direction(message: dict[str, Any], mailbox_address: str) -> str:
 def body_text(message: dict[str, Any]) -> str:
     """Plain-text body. Graph should honor the text preference; strip HTML if it did not."""
     body = message.get("body") or {}
-    content = str(body.get("content") or "")
+    content = str(body.get("content") or "").replace("\x00", "")  # PostgreSQL stores no NUL
     if str(body.get("contentType", "text")).lower() == "html":
         content = re.sub(r"(?is)<(script|style).*?</\1>", " ", content)
         content = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</tr>", "\n", content)

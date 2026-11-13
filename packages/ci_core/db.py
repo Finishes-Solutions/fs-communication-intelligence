@@ -31,6 +31,8 @@ import psycopg
 from psycopg import pq, sql
 from psycopg.rows import DictRow, dict_row
 
+log = logging.getLogger(__name__)
+
 Connection = psycopg.Connection[DictRow]
 AppRole = Literal["ci_ingest", "ci_search", "ci_operator"]
 
@@ -67,15 +69,38 @@ def _entra_password() -> str:
     return str(default_credential().get_token(POSTGRES_ENTRA_SCOPE).token)
 
 
-def connect(conninfo: str = "", *, role: AppRole | None = None, **kwargs: Any) -> Connection:
+# Opening a connection is retried this many times on a connection timeout, with a
+# growing pause: under heavy load (the 2026-11-03 backfill) the server sometimes takes
+# longer than connect_timeout to accept one, and a capture week opens one per mailbox,
+# so a single slow handshake used to fail the whole week.
+CONNECT_ATTEMPTS = 4
+CONNECT_BACKOFF_SECONDS = (2.0, 5.0, 10.0)
+
+
+def connect(
+    conninfo: str = "",
+    *,
+    role: AppRole | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    **kwargs: Any,
+) -> Connection:
     if os.environ.get("DATABASE_AUTH", "password").lower() == "entra":
         kwargs.setdefault("password", _entra_password())
         kwargs.setdefault("sslmode", os.environ.get("PGSSLMODE", "require"))
     for key, value in KEEPALIVE.items():
         kwargs.setdefault(key, value)
-    conn = psycopg.connect(
-        conninfo, row_factory=dict_row, options="-c search_path=ci,public", **kwargs
-    )
+    for attempt in range(CONNECT_ATTEMPTS):
+        try:
+            conn = psycopg.connect(
+                conninfo, row_factory=dict_row, options="-c search_path=ci,public", **kwargs
+            )
+            break
+        except psycopg.errors.ConnectionTimeout:
+            if attempt == CONNECT_ATTEMPTS - 1:
+                raise
+            pause = CONNECT_BACKOFF_SECONDS[min(attempt, len(CONNECT_BACKOFF_SECONDS) - 1)]
+            log.warning("database connection timed out; retrying in %.0f s", pause)
+            sleep(pause)
     if role is not None:
         conn.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role)))
         statement, idle = LIMITS[role]
@@ -83,9 +108,6 @@ def connect(conninfo: str = "", *, role: AppRole | None = None, **kwargs: Any) -
         conn.execute("SELECT set_config('idle_in_transaction_session_timeout', %s, false)", (idle,))
         conn.commit()
     return conn
-
-
-log = logging.getLogger(__name__)
 
 
 class ConnectionPool:

@@ -12,6 +12,7 @@ response is constrained to a JSON schema.
 from __future__ import annotations
 
 import contextlib
+import itertools
 import json
 import threading
 import time
@@ -86,6 +87,26 @@ RESTRICTED_PII = frozenset(
     }
 )
 PII_MIN_CONFIDENCE = 0.8
+
+
+def strip_nul(value: Any) -> Any:
+    """``value`` with NUL characters removed from every string in it. PostgreSQL
+    stores no NUL: in a text column psycopg refuses it (DataError), in jsonb the
+    server rejects the \\u0000 escape (UntranslatableCharacter). A model answer
+    occasionally contains one, which failed the whole email (the 2026-11-03
+    backfill: about 260 of 700,000)."""
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {strip_nul(k): strip_nul(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [strip_nul(v) for v in value]
+    return value
+
+
+def chat_json(response: dict[str, Any]) -> Any:
+    """The JSON object a chat completion answered with, NUL characters removed."""
+    return strip_nul(json.loads(response["choices"][0]["message"]["content"]))
 
 
 class AzureServiceError(RuntimeError):
@@ -510,7 +531,7 @@ class AzureOpenAIClassifier:
         )
         if self._meter:
             self._meter.add_openai(OPENAI_CHAT, self.model, response)
-        content = json.loads(response["choices"][0]["message"]["content"])
+        content = chat_json(response)
         probabilities: dict[str, float | None] = {}
         for label in LABELS:
             value = content["labels"].get(label.name)
@@ -550,23 +571,35 @@ class AzureOpenAIEmbedder:
         tokens_per_minute: int | None = None,
     ) -> None:
         """``tokens_per_minute``: pace requests below the deployment's quota, shared by
-        every thread using this embedder (None or 0: only back off after a 429)."""
-        self.model = f"azure-openai:{deployment}"
+        every thread using this embedder (None or 0: only back off after a 429).
+
+        ``deployment`` may list several deployments of the same model, comma-separated
+        (e.g. a GlobalStandard and a DataZoneStandard one, each with its own quota;
+        2026-11-03 backfill). Batches alternate between them and each is paced to
+        ``tokens_per_minute`` on its own. The vectors are the same model's, so search
+        is unaffected; the model recorded is the first deployment's name."""
+        names = [d.strip() for d in deployment.split(",") if d.strip()]
+        if not names:
+            raise ValueError("no embedding deployment given")
+        self.model = f"azure-openai:{names[0]}"
         self._meter = meter
         self.dimensions = dimensions
-        self._url = (
-            f"{endpoint.rstrip('/')}/openai/deployments/{deployment}/embeddings"
-            f"?api-version={api_version}"
-        )
+        self._urls = [
+            f"{endpoint.rstrip('/')}/openai/deployments/{name}/embeddings?api-version={api_version}"
+            for name in names
+        ]
         self._http = http or AzureHttp()
-        self._http.gate(self._url, tokens_per_minute)
+        for url in self._urls:
+            self._http.gate(url, tokens_per_minute)
+        self._next = itertools.count()
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
         for start in range(0, len(texts), 16):
             batch = list(texts[start : start + 16])
+            url = self._urls[next(self._next) % len(self._urls)]
             result = self._http.post(
-                self._url,
+                url,
                 {"input": batch, "dimensions": self.dimensions},
                 tokens=estimate_tokens(batch),
             )
@@ -668,7 +701,7 @@ class AzureOpenAIPersonRouter:
         )
         if self._meter:
             self._meter.add_openai(OPENAI_CHAT, self.model, response)
-        content = json.loads(response["choices"][0]["message"]["content"])
+        content = chat_json(response)
         value = content.get("probability")
         probability = min(max(float(value), 0.0), 1.0) if isinstance(value, int | float) else None
         reason = content.get("reason") if content.get("reason") in REASONS else None
@@ -744,7 +777,7 @@ class AzureOpenAIRiskRater:
         )
         if self._meter:
             self._meter.add_openai(OPENAI_CHAT, self.model, response)
-        content = json.loads(response["choices"][0]["message"]["content"])
+        content = chat_json(response)
         return RiskRating(
             str(content.get("impact")),
             str(content.get("likelihood")),
@@ -842,7 +875,7 @@ class AzureOpenAIActionResolver:
         )
         if self._meter:
             self._meter.add_openai(OPENAI_CHAT, self.model, response)
-        content = json.loads(response["choices"][0]["message"]["content"])
+        content = chat_json(response)
         confidence = content.get("confidence")
         return Resolution(
             str(content.get("status")),

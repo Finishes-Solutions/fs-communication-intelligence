@@ -192,6 +192,12 @@ def _parser() -> argparse.ArgumentParser:
         help="re-read attachments that failed and reprocess their messages",
     )
     process.add_argument(
+        "--extract-pending",
+        action="store_true",
+        help="reprocess published messages whose attachments were never read"
+        " (processed with extraction off); with --limit N, at most N messages",
+    )
+    process.add_argument(
         "--remask",
         action="store_true",
         help="reprocess every processed message so the current masking rules apply",
