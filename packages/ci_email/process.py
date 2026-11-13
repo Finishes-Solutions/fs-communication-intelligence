@@ -896,6 +896,26 @@ def _requeue(conn: Connection, versions: list[Any]) -> int:
     return len(versions)
 
 
+def requeue_unextracted_attachments(conn: Connection, limit: int | None = None) -> int:
+    """Reprocess published messages whose real (non-inline) attachments were never
+    read, e.g. processed by a worker running with attachment extraction off (a
+    backfill helper without Graph access). The reprocessing worker must have
+    extraction on. Each message is classified again, since its input changes.
+    Returns the number of messages requeued."""
+    versions = [
+        r["version_id"]
+        for r in conn.execute(
+            "SELECT DISTINCT a.version_id FROM email_attachments a"
+            " JOIN communication_versions v ON v.id = a.version_id"
+            " WHERE a.extraction_status = 'not_attempted' AND NOT a.is_inline"
+            " AND v.processing_state = 'published'"
+            " LIMIT %s",
+            (limit if limit else 10**9,),
+        ).fetchall()
+    ]
+    return _requeue(conn, versions)
+
+
 def requeue_failed_attachments(conn: Connection) -> int:
     """Reprocess every message with an attachment whose extraction failed or timed out,
     reading those attachments again. Returns the number of messages requeued."""

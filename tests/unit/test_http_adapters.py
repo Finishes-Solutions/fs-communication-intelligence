@@ -8,6 +8,7 @@ import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any
 
 import httpx
 import pytest
@@ -20,6 +21,7 @@ from ci_processing.azure import (
     AzureOpenAIEmbedder,
     AzureScreener,
     AzureServiceError,
+    strip_nul,
 )
 from ci_processing.classification import LABELS, ClassificationInput
 from ci_processing.screening import CheckDecision
@@ -206,6 +208,34 @@ def test_classifier_parses_clamps_and_limits_action_for_to_recipients() -> None:
     assert sent["response_format"]["json_schema"]["strict"] is True  # type: ignore[index]
 
 
+def test_classifier_drops_nul_characters_postgres_cannot_store() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        content: dict[str, Any] = {
+            "labels": {lb.name: 0.0 for lb in LABELS},
+            "summary": "Pay app\u0000 attached.",
+            "action": "Review\u0000",
+            "action_for": [],
+            "due": None,
+        }
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": json.dumps(content)}}]}
+        )
+
+    item = ClassificationInput("Pay app", "See attached.", sender="v@vendor.example")
+    result = AzureOpenAIClassifier("https://aoai", "gpt", "2024-10-21", azure(handler)).classify(
+        item
+    )
+    assert result.summary == "Pay app attached."
+    assert "\x00" not in json.dumps(result.__dict__, default=str)
+
+
+def test_strip_nul_reaches_nested_strings() -> None:
+    assert strip_nul({"a\x00": ["x\x00y", {"b": "\x00"}], "n": 3}) == {
+        "a": ["xy", {"b": ""}],
+        "n": 3,
+    }
+
+
 def test_embedder_batches_and_keeps_order() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
@@ -252,3 +282,39 @@ def test_failures_name_the_call_and_status_but_no_content() -> None:
     with pytest.raises(AzureServiceError) as emb:
         AzureOpenAIEmbedder("https://aoai", "emb", "v", 4, azure(handler)).embed(["Secret body"])
     assert str(emb.value) == "embeddings HTTP 401 PermissionDenied"
+
+
+def test_embedder_alternates_between_deployments_of_the_same_model() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path.split("/")[3])
+        body = json.loads(request.content)
+        data = [{"index": i, "embedding": [1.0, 0, 0, 0]} for i in range(len(body["input"]))]
+        return httpx.Response(200, json={"data": data})
+
+    embedder = AzureOpenAIEmbedder("https://aoai", "emb-global, emb-dz", "v", 4, azure(handler))
+    assert embedder.model == "azure-openai:emb-global"  # recorded under the first name
+    assert len(embedder.embed(["x"] * 40)) == 40  # three batches of at most 16
+    embedder.embed(["y"])
+    assert seen == ["emb-global", "emb-dz", "emb-global", "emb-dz"]
+    with pytest.raises(ValueError, match="no embedding deployment"):
+        AzureOpenAIEmbedder("https://aoai", " , ", "v", 4, azure(handler))
+
+
+def test_capture_profile_ignores_extra_embedding_deployments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ci_cli.pipeline import capture_profile
+    from ci_core.settings import load_settings
+
+    monkeypatch.setenv("DEPLOYMENT_ENVIRONMENT", "local")
+    monkeypatch.setenv("ATTACHMENT_UNSUPPORTED_POLICY", "publish_partial")
+    monkeypatch.setenv("EMBEDDER", "azure_openai")
+    monkeypatch.setenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-large")
+    one = capture_profile(load_settings())
+    monkeypatch.setenv(
+        "AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-large, text-embedding-3-large-dz"
+    )
+    two = capture_profile(load_settings())
+    assert one == two and one["embedding_model"] == "text-embedding-3-large"
