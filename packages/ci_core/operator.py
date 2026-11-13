@@ -294,6 +294,65 @@ def limit_reader(
     )
 
 
+# What a risk-only reader (Communications.Reader.Risks) is shown of each risk
+# email (migration 0027); ci_retrieval.risk_access applies it.
+RISK_FIELDS = (
+    "date",
+    "property",
+    "category",
+    "summary",
+    "rating",
+    "sender_domain",
+    "subject",
+    "sender",
+    "documents",
+)
+
+
+def list_risk_fields(conn: Connection) -> list[dict[str, Any]]:
+    """Each risk-only reader's chosen fields; none before migration 0027."""
+    found = conn.execute("SELECT to_regclass('ci.reader_risk_fields') AS t").fetchone()
+    if not found or not found["t"]:
+        return []
+    return conn.execute(
+        "SELECT reader_address, fields, updated_by, updated_at FROM reader_risk_fields"
+        " ORDER BY reader_address"
+    ).fetchall()
+
+
+def set_risk_fields(
+    conn: Connection, reader: str, fields: list[str] | None, actor: str
+) -> list[str] | None:
+    """Sets which fields of each risk email one reader is shown; ``None`` removes
+    the row (counts and charts only, the same as an empty list)."""
+    who = reader.strip().lower()
+    if not _ADDRESS.match(who):
+        raise OperatorError("the reader must be their sign-in email address")
+    if fields is None:
+        conn.execute("DELETE FROM reader_risk_fields WHERE reader_address = %s", (who,))
+        audit(conn, actor, "risk_fields_clear", "reader_risk_fields", None, {"reader": who})
+        return None
+    unknown = sorted(set(fields) - set(RISK_FIELDS))
+    if unknown:
+        raise OperatorError(f"unknown field {', '.join(unknown)}; use {', '.join(RISK_FIELDS)}")
+    chosen = [f for f in RISK_FIELDS if f in fields]
+    conn.execute(
+        "INSERT INTO reader_risk_fields (reader_address, fields, updated_by) VALUES (%s, %s, %s)"
+        " ON CONFLICT (reader_address) DO UPDATE SET fields = EXCLUDED.fields,"
+        " updated_by = EXCLUDED.updated_by, updated_at = now()",
+        (who, chosen, actor),
+    )
+    audit(
+        conn,
+        actor,
+        "risk_fields_set",
+        "reader_risk_fields",
+        None,
+        {"reader": who, "fields": chosen},
+    )
+    return chosen
+
+
 def approve_all_enrolled(conn: Connection, dataset: Dataset, actor: str) -> int:
     """Approve every reachable (``enrolled``) mailbox not yet approved; exclusions still win."""
     column = {"test": "test_approved", "production": "production_approved"}[dataset]

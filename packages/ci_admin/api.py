@@ -54,6 +54,7 @@ from ci_admin import billing, calibration, connections, costs, lab, models, repo
 from ci_core import ops
 from ci_core.db import Connection, pooled, required
 from ci_core.operator import (
+    RISK_FIELDS,
     OperatorError,
     approve_all_enrolled,
     approve_mailbox,
@@ -68,6 +69,7 @@ from ci_core.operator import (
     list_participant_exclusions,
     list_people,
     list_reader_limits,
+    list_risk_fields,
     merge_knowledge,
     merge_knowledge_many,
     reclassify_knowledge,
@@ -75,6 +77,7 @@ from ci_core.operator import (
     set_knowledge_detail,
     set_mode,
     set_person,
+    set_risk_fields,
     unmerge_knowledge,
 )
 from ci_core.runtime import RuntimeConfigError, active_config, eligible_mailboxes
@@ -95,7 +98,7 @@ from ci_retrieval import knowledge as kb
 from ci_retrieval import reports as report_queries
 from ci_retrieval import search as retrieval
 from ci_retrieval.entra import EntraTokenVerifier
-from ci_retrieval.identity import Principal
+from ci_retrieval.identity import READER_RISKS, Principal
 
 log = logging.getLogger("ci.admin")
 
@@ -108,6 +111,8 @@ ACCESS_ROLES = {
     "console": ADMIN_ROLE,
     "search": "Communications.Reader.All",
     "files": FILES_ROLE,
+    # Project risks only, through the risk tools, without links (ci_retrieval.risk_access).
+    "risks": READER_RISKS,
 }
 # What the read-only page calls: one email, its files and the label names.
 READER_PAGE = (ADMIN_ROLE, FILES_ROLE)
@@ -403,6 +408,10 @@ def build_admin_app(
         if not set(allowed) & set(principal.roles):
             log.info("admin refused: none of the roles %s", ", ".join(allowed))
             return JSONResponse({"error": "you are not an admin of this console"}, 403)
+        if principal.risk_only:
+            # Risk-only access never opens emails or files, even with the files role.
+            log.info("admin refused: risk-only access")
+            return JSONResponse({"error": "risk-only access cannot open emails or files"}, 403)
         return principal
 
     def endpoint(
@@ -946,6 +955,19 @@ def build_admin_app(
                 conn.commit()
             return {"reader_limits": list_reader_limits(conn)}
 
+    def risk_fields(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        """Which fields of each risk email a risk-only reader is shown (migration 0027)."""
+        with connector("ci_operator") as conn:
+            if request.method == "POST":
+                fields = body.get("fields")
+                if fields is not None and not (
+                    isinstance(fields, list) and all(isinstance(f, str) for f in fields)
+                ):
+                    raise OperatorError("fields must be a list of field names")
+                set_risk_fields(conn, str(body.get("reader") or ""), fields, _actor(principal))
+                conn.commit()
+            return {"risk_fields": list_risk_fields(conn), "choices": list(RISK_FIELDS)}
+
     def access_log(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
         """Records an app role change the People page just made in Entra (with the
         admin's own Graph token). Entra's audit log is the authoritative record;
@@ -953,7 +975,9 @@ def build_admin_app(
         action, role_name = body.get("action"), body.get("role")
         person = str(body.get("person") or "")
         if action not in ("grant", "remove") or role_name not in ACCESS_ROLES:
-            raise OperatorError("action must be grant or remove, role console, search or files")
+            raise OperatorError(
+                "action must be grant or remove, role console, search, files or risks"
+            )
         if not re.fullmatch(r"[^@\s]{1,64}@[a-z0-9.-]{3,190}", person.lower()):
             raise OperatorError("person must be a sign-in address")
         with connector("ci_operator") as conn:
@@ -1270,6 +1294,7 @@ def build_admin_app(
         Route("/api/review/next", endpoint(review_next)),
         Route("/api/people", endpoint(people), methods=["GET", "PUT"]),
         Route("/api/reader-limits", endpoint(reader_limits), methods=["GET", "POST"]),
+        Route("/api/risk-fields", endpoint(risk_fields), methods=["GET", "POST"]),
         Route("/api/access-log", endpoint(access_log), methods=["POST"]),
         Route("/api/calibration", endpoint(calibration_report)),
         Route("/api/lab/classify", endpoint(lab_classify), methods=["POST"]),

@@ -22,6 +22,13 @@ from ci_core.settings import AuthMode, Settings
 
 READER_ALL = "Communications.Reader.All"
 READER_OWN = "Communications.Reader.Own"
+# Risk-only access (Matthew, 2026-11-13): project-risk emails from every enrolled
+# mailbox, through the risk tools only, showing only the fields chosen for the
+# reader (ci_retrieval.risk_access), never email links or email text.
+READER_RISKS = "Communications.Reader.Risks"
+# The admin console's role (ci_admin.api.ADMIN_ROLE); named here so a console
+# admin who also holds READER_RISKS is not narrowed to risks.
+CONSOLE_ADMIN = "Communications.Admin"
 _ARM_SCOPE = "https://management.azure.com/.default"
 
 
@@ -38,6 +45,14 @@ class Principal:
     @property
     def own_mailbox(self) -> str | None:
         return self.upn if READER_OWN in self.roles and self.upn else None
+
+    @property
+    def risk_only(self) -> bool:
+        """True when READER_RISKS is this caller's only reading role. Roles add up,
+        so a broader role (all mailboxes, own mailbox, console) takes precedence."""
+        return READER_RISKS in self.roles and not (
+            {READER_ALL, READER_OWN, CONSOLE_ADMIN} & set(self.roles)
+        )
 
 
 def _claims(token: str) -> dict[str, object]:

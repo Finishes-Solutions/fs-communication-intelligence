@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import UTC, date, datetime, time, timedelta
@@ -37,7 +38,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from ci_core.db import Connection, pooled
 from ci_core.settings import Settings
 from ci_processing.embedding import Embedder
-from ci_retrieval import knowledge, reports
+from ci_retrieval import knowledge, reports, risk_access
 from ci_retrieval import search as retrieval
 from ci_retrieval.broker import CALLBACK_PATH, CONSENT_PATH, BasicClientId, EntraBroker
 from ci_retrieval.entra import EntraAccessToken, EntraTokenVerifier
@@ -108,7 +109,9 @@ def build_server(
         "entity or period; "
         "risk_overview shows project-risk trends; find_knowledge and get_profile answer who "
         "and what: properties, companies, people, terms and how they relate, learned from "
-        "the email over time." + _TRUST,
+        "the email over time. An account with risk-only access gets only risk_overview and"
+        " list_actionable, with project risks cut to the fields chosen for it and no links;"
+        " the other tools tell it so." + _TRUST,
         **server_options,
     )
 
@@ -124,6 +127,41 @@ def build_server(
     def linked(data: dict[str, Any]) -> dict[str, Any]:
         result: dict[str, Any] = fit(with_links(data, view_base))
         return result
+
+    def short(data: dict[str, Any]) -> dict[str, Any]:
+        """Kept under the size limit, without links (risk-only answers)."""
+        result: dict[str, Any] = fit(data)
+        return result
+
+    def risks_only(caller: Principal, hours: float, limit: int, offset: int) -> dict[str, Any]:
+        """list_actionable for a risk-only caller: the risk emails of the last
+        ``hours`` with that caller's fields, no action items, no links."""
+        hours = max(1.0, min(float(hours), 366 * 24))
+        since = datetime.now(UTC) - timedelta(hours=hours)
+        with connector() as conn:
+            fields = risk_access.fields_for(conn, caller)
+            found = reports.risk_overview(conn, caller, days=max(1, math.ceil(hours / 24)))
+            recent = [
+                r for r in found["items"] if datetime.fromisoformat(r["received_at"]) >= since
+            ]
+            found["items"] = recent[offset : offset + limit]
+            shaped = risk_access.overview(conn, caller, found, fields, limit)
+        out: dict[str, Any] = {
+            "note": risk_access.RISK_ONLY_NOTE,
+            "since": since.isoformat(),
+            "actions": [],
+            "possible": [],
+            "fields_shown": shaped["fields_shown"],
+            # risk_overview keeps the newest 200 risk emails of its window.
+            "risk_count": len(recent),
+        }
+        if "items" in shaped:
+            out["risks"] = shaped["items"]
+        else:
+            out["items_note"] = shaped["items_note"]
+        if offset:
+            out["offset"] = offset
+        return short(out)
 
     @server.tool(
         description="Search authorized, indexed company email by meaning and keywords."
@@ -144,6 +182,8 @@ def build_server(
         entity: str | None = None,
         limit: int = 10,
     ) -> dict[str, Any]:
+        if principal_of().risk_only:
+            return dict(risk_access.REFUSAL)
         with connector() as conn:
             found = retrieval.search(
                 conn,
@@ -170,6 +210,8 @@ def build_server(
         " after sign-in)." + _LINKS + _TRUST
     )
     def get_email(communication_id: str, max_chars: int = 8000) -> dict[str, Any]:
+        if principal_of().risk_only:
+            return dict(risk_access.REFUSAL)
         with connector() as conn:
             found = retrieval.get_email(conn, principal_of(), communication_id, max_chars)
         return linked(found) if found else {"found": False, "note": NOT_FOUND}
@@ -184,6 +226,8 @@ def build_server(
     def get_attachment(
         communication_id: str, attachment_id: str, offset: int = 0, max_chars: int = 20_000
     ) -> dict[str, Any]:
+        if principal_of().risk_only:
+            return dict(risk_access.REFUSAL)
         with connector() as conn:
             found = retrieval.get_attachment(
                 conn, principal_of(), communication_id, attachment_id, offset, max_chars
@@ -206,6 +250,8 @@ def build_server(
         limit: int = 25,
         offset: int = 0,
     ) -> dict[str, Any]:
+        if principal_of().risk_only:
+            return dict(risk_access.REFUSAL)
         limit, offset = max(1, min(limit, 100)), max(0, min(offset, 100))
         with connector() as conn:
             found = retrieval.list_email(
@@ -249,6 +295,9 @@ def build_server(
         limit, offset = max(1, min(limit, 100)), max(0, min(offset, MAX_OFFSET))
         if status not in retrieval.ACTION_STATUSES:
             return {"error": "status must be open, resolved or all"}
+        caller = principal_of()
+        if caller.risk_only:
+            return risks_only(caller, hours, limit, offset)
         with connector() as conn:
             found = retrieval.list_actionable(
                 conn,
@@ -267,6 +316,8 @@ def build_server(
         " action and risk. Use get_email for one message's full text." + _LINKS + _TRUST
     )
     def get_thread(communication_id: str, limit: int = 50) -> dict[str, Any]:
+        if principal_of().risk_only:
+            return dict(risk_access.REFUSAL)
         with connector() as conn:
             found = retrieval.get_thread(conn, principal_of(), communication_id, limit)
         return linked(found) if found else {"found": False, "note": NOT_FOUND}
@@ -295,6 +346,8 @@ def build_server(
         person: str | None = None,
         limit: int = 25,
     ) -> dict[str, Any]:
+        if principal_of().risk_only:
+            return dict(risk_access.REFUSAL)
         with connector() as conn:
             found = reports.report_groups(
                 conn,
@@ -341,10 +394,11 @@ def build_server(
         likelihood: str | None = None,
         item_limit: int = 25,
     ) -> dict[str, Any]:
+        caller = principal_of()
         with connector() as conn:
             found = reports.risk_overview(
                 conn,
-                principal_of(),
+                caller,
                 days=days,
                 mailbox=mailbox,
                 category=category,
@@ -352,6 +406,12 @@ def build_server(
                 impact=impact,
                 likelihood=likelihood,
             )
+            if caller.risk_only:
+                return short(
+                    risk_access.overview(
+                        conn, caller, found, risk_access.fields_for(conn, caller), item_limit
+                    )
+                )
         items = found["items"]
         top = max(0, min(item_limit, 200))
         return linked(found | {"items": items[:top], "items_total": len(items)})
@@ -367,6 +427,8 @@ def build_server(
         " without download_url carry no_link: say so instead of linking. Returns no email text."
     )
     def get_file_links(communication_ids: list[str]) -> dict[str, Any]:
+        if principal_of().risk_only:
+            return dict(risk_access.REFUSAL)
         with connector() as conn:
             found = retrieval.file_links(conn, principal_of(), communication_ids)
         if not view_base:
@@ -390,6 +452,8 @@ def build_server(
         since_days: float | None = None,
         limit: int = 20,
     ) -> dict[str, Any]:
+        if principal_of().risk_only:
+            return dict(risk_access.REFUSAL)
         with connector() as conn:
             return knowledge.find_knowledge(
                 conn, principal_of(), query, kind=kind, since=_since(since_days), limit=limit
@@ -412,6 +476,8 @@ def build_server(
         kind: str | None = None,
         recent_emails: int = 10,
     ) -> dict[str, Any]:
+        if principal_of().risk_only:
+            return dict(risk_access.REFUSAL)
         with connector() as conn:
             found = knowledge.get_profile(
                 conn, principal_of(), entity_id, name=name, kind=kind, recent=recent_emails

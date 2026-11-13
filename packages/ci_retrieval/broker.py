@@ -61,7 +61,7 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ci_retrieval.entra import EntraTokenVerifier
-from ci_retrieval.identity import READER_ALL, READER_OWN
+from ci_retrieval.identity import READER_ALL, READER_OWN, READER_RISKS
 
 log = logging.getLogger(__name__)
 
@@ -576,7 +576,7 @@ class EntraBroker:
         self, client: OAuthClientInformationFull, tokens: dict[str, Any], scopes: list[str]
     ) -> OAuthToken:
         access = await asyncio.to_thread(self.verifier.verify, str(tokens["access_token"]))
-        if access is None or not {READER_ALL, READER_OWN} & set(access.roles):
+        if access is None or not {READER_ALL, READER_OWN, READER_RISKS} & set(access.roles):
             log.warning("mcp sign-in refused: the account has no reader role")
             raise TokenError(
                 "invalid_grant", "This account isn't allowed to use FS Communication Intelligence."

@@ -467,7 +467,7 @@ bash scripts/azure/people.sh add someone@finishessolutions.com
 
 `add` grants both the admin console and search from Claude, ChatGPT and Copilot; add `console` or `search` after the address for just one. `remove` takes the same arguments. Both kinds of access show everyone's captured mail, so keep the list short.
 
-**The console's People page** (sidebar **People**) does the same in the browser: who has Console, AI Search and Email & File Links, grant or remove each, and next to each person their reader limits; the reader limits and the person-check profiles are managed on the same page. Changes are made in Microsoft Entra **as the signed-in admin**, with that person's own delegated Microsoft Graph token (kept in the browser tab for its hour); the console's server and identity get no new permission, and each change is in Entra's audit log under the admin's name (and in the console's history as `access_grant`/`access_remove`). Turn it on once for the admins who may change access:
+**The console's People page** (sidebar **People**) does the same in the browser: who has Console, AI Search, Email & File Links and Risks Only, grant or remove each, and next to each person their reader limits; the reader limits and the person-check profiles are managed on the same page. Changes are made in Microsoft Entra **as the signed-in admin**, with that person's own delegated Microsoft Graph token (kept in the browser tab for its hour); the console's server and identity get no new permission, and each change is in Entra's audit log under the admin's name (and in the console's history as `access_grant`/`access_remove`). Turn it on once for the admins who may change access:
 
 ```bash
 ADMINS="svc_automation@finishessolutions.com matthews@finishessolutions.com codyv@finishessolutions.com" bash scripts/azure/9-console-people.sh
@@ -502,6 +502,20 @@ The set for Will (2026-11-02: everything except PNS Capital and Chuck's personal
 | Words in the email | `pns capital` |
 
 Give the reader `search` and `files`, never `console`: the console shows all mail and does not apply limits. Limits are matched by the reader's sign-in address; while any limit exists, a sign-in without an address gets no results at all. "Words in the email" errs toward hiding (a newsletter that mentions PNS Capital is hidden too), and private mail that names no listed mailbox, person, domain or words is **not** hidden: add a limit for it. After adding limits, check with the reader (or `ci search` signed in as them) that a known PNS email is not found.
+
+**Risks only, without links** (`risks`, role `Communications.Reader.Risks`, migration 0027). Use this for an agent or a person whose AI answers should show project risks but never email links, email text or anything else. A common case is an AMP agent whose answers many people see:
+
+```bash
+bash scripts/azure/people.sh add svc_amp@finishessolutions.com risks
+```
+
+- The account reaches **only published project-risk emails**, from every enrolled mailbox. This is enforced in the one SQL authorization check (`ci_retrieval.search._AUTH`), so no tool or page can widen it.
+- Only the MCP tools `risk_overview` and `list_actionable` (risks part only) answer. Every other tool returns `not_available_for_risk_only_access`. The read-only email page refuses it, even with `files`.
+- Answers never include `view_url`, `download_url`, `web_link`, email ids, mailbox addresses or email text. The per-mailbox counts are left out too.
+- How much of each risk email it shows is chosen per account in the console under **People > Risks Only Details**. Nothing chosen means **counts and charts only** (the default). The choices are date, property, category, AI risk summary, impact & likelihood, sender's company, subject, sender and document names (attachment names and types, no files or text). Presets: Counts only, Summary, Summary + documents, Subject & sender.
+- Everyone who sees that account's AI answers sees the chosen details. For a shared AMP agent, that is every AMP user of it.
+- **Give it instead of `search`, not with it.** Roles add up, so `search`, `console` or Reader.Own on the same account wins and Risks Only does nothing (the People page flags it). For AMP, that means a separate account (for example `svc_amp@`) holding only `risks`, and reconnecting AMP's MCP connection signed in as it. `svc_automation@` keeps its admin roles for setup.
+- Reader limits still apply on top. The first `people.sh add … risks` creates the role on the search API registration; the People page cannot create roles.
 
 ### Action items in two steps, and person profiles
 
