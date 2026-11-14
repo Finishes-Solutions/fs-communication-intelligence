@@ -469,8 +469,11 @@ def build_admin_app(
         }
 
     def runs(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        limit = _int(request, "limit", 50, 1, 500)
+        offset = _int(request, "offset", 0, 0, 100_000)
         with connector("ci_operator") as conn:
-            return {"runs": ops.recent_runs(conn, _int(request, "limit", 100, 1, 500))}
+            found = ops.recent_runs(conn, limit + 1, offset)
+        return {"runs": found[:limit], "offset": offset, "has_more": len(found) > limit}
 
     def schedule(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
         with connector("ci_operator") as conn:
@@ -551,18 +554,23 @@ def build_admin_app(
 
     def unpublished(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
         state = request.query_params.get("state") or None
+        limit = _int(request, "limit", 100, 1, 1000)
+        offset = _int(request, "offset", 0, 0, 100_000)
         with connector("ci_operator") as conn:
             rows = conn.execute(
                 "SELECT communication_id::text, version_id::text, processing_state,"
                 " hold_reason_code, last_error_code, occurred_at, mailbox, sender"
                 " FROM ops_unpublished WHERE (%(state)s::text IS NULL"
-                "  OR processing_state = %(state)s) ORDER BY occurred_at DESC LIMIT %(n)s",
-                {"state": state, "n": _int(request, "limit", 200, 1, 1000)},
+                "  OR processing_state = %(state)s)"
+                " ORDER BY occurred_at DESC, version_id LIMIT %(n)s OFFSET %(skip)s",
+                {"state": state, "n": limit + 1, "skip": offset},
             ).fetchall()
         return {
             "note": "Metadata only: unpublished mail (held, restricted, bulk or failed) is never"
             " shown, including its subject.",
-            "items": rows,
+            "items": rows[:limit],
+            "offset": offset,
+            "has_more": len(rows) > limit,
         }
 
     def requeue(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
@@ -620,8 +628,9 @@ def build_admin_app(
             if query:
                 limit = _int(request, "limit", 25, 1, 25)
                 return retrieval.search(conn, principal, query, embedder, filters, limit)
-            limit = _int(request, "limit", 100, 1, 100)
-            return retrieval.list_email(conn, principal, filters, limit)
+            limit = _int(request, "limit", 50, 1, 100)
+            offset = _int(request, "offset", 0, 0, retrieval.MAX_LIST_OFFSET)
+            return retrieval.list_email(conn, principal, filters, limit, offset)
 
     def message(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
         with connector("ci_search") as conn:
@@ -1182,7 +1191,7 @@ def build_admin_app(
     def risks(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
         q = request.query_params
         with connector("ci_search") as conn:
-            return report_queries.risk_overview(
+            found = report_queries.risk_overview(
                 conn,
                 principal,
                 days=_int(request, "days", 30, 1, 366),
@@ -1193,6 +1202,13 @@ def build_admin_app(
                 likelihood=q.get("likelihood") or None,
                 tz=_time_zone(),
             )
+        # The feed is the newest risk emails (at most 200); the page shows some and
+        # asks for the rest on "Show More". Counts and charts cover every risk email.
+        items = found["items"]
+        return found | {
+            "items": items[: _int(request, "items", 200, 0, 200)],
+            "items_total": len(items),
+        }
 
     def _report(principal: Principal, body: dict[str, Any], limit: int, action: str) -> Any:
         req = reports.parse(body)

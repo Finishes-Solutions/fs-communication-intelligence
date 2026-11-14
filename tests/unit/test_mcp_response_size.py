@@ -3,6 +3,8 @@ list_actionable result and could not read it); trimmed lists say how to get the 
 
 import json
 
+import pytest
+
 from ci_retrieval.mcp_server import MAX_RESPONSE_CHARS, fit, page
 
 
@@ -42,3 +44,35 @@ def test_paging_skips_what_was_shown() -> None:
     assert second["risks"] == [] and second["offset"] == 10
     later = fit({**page(data | {"actions": emails(200, "a")}, ("actions",), 50, 100)})
     assert later["trimmed"]["actions"]["next_offset"] == 50 + len(later["actions"])
+
+
+def test_a_statement_stopped_for_time_is_answered_not_raised(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The tool tells the agent the request was too large instead of leaving it to
+    wait for its own timeout; the log has the tool's name and time, no arguments."""
+    from psycopg.errors import QueryCanceled
+
+    from ci_retrieval.mcp_server import TOO_SLOW, _guarded
+
+    def email_stats(group_by: str, mailbox: str = "") -> dict[str, object]:
+        if group_by == "slow":
+            raise QueryCanceled("canceling statement due to statement timeout")
+        if group_by == "broken":
+            raise RuntimeError("boom")
+        return {"groups": []}
+
+    tool = _guarded(email_stats)
+    with caplog.at_level("INFO", logger="ci_retrieval.mcp_server"):
+        assert tool("month") == {"groups": []}
+        assert tool("slow", mailbox="private words") == TOO_SLOW
+        with pytest.raises(RuntimeError):
+            tool("broken")
+    lines = [r.getMessage() for r in caplog.records]
+    assert [line.split(" in ")[0] for line in lines] == [
+        "mcp tool email_stats ok",
+        "mcp tool email_stats too_slow",
+        "mcp tool email_stats error",
+    ]
+    assert "private words" not in caplog.text
+    assert tool.__name__ == "email_stats"  # the tool keeps its name and arguments

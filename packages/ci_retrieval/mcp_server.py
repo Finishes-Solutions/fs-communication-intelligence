@@ -19,11 +19,13 @@ per call; tool arguments can only narrow results):
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import math
-from collections.abc import Callable
-from contextlib import AbstractContextManager
+import time as time_module
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from urllib.parse import quote
@@ -32,6 +34,7 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
+from psycopg.errors import QueryCanceled
 from starlette.applications import Starlette
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -81,9 +84,55 @@ PrincipalSource = Callable[[], Principal]
 Connector = Callable[[], AbstractContextManager[Connection]]
 
 
-def _search_connection() -> AbstractContextManager[Connection]:
-    """A pooled connection (ci_core.db.ConnectionPool): reused across tool calls."""
-    return pooled("ci_search")
+# Agent platforms give up on a tool call after about a minute (Claude: 60 s,
+# seen 2026-11-13), while the search role may run one statement for two. A
+# statement that passes this limit is stopped and the tool answers TOO_SLOW, so
+# the agent hears why and can narrow the request instead of waiting for nothing.
+TOOL_STATEMENT_TIMEOUT = "40s"
+TOO_SLOW = {
+    "error": "too_slow",
+    "note": "This request took too long and was stopped. Nothing is wrong with the"
+    " connection: ask for less at once (a shorter period, a mailbox, a label, a"
+    " property) and try again.",
+}
+
+
+@contextmanager
+def _search_connection() -> Iterator[Connection]:
+    """A pooled connection (ci_core.db.ConnectionPool): reused across tool calls,
+    with the tools' statement limit (it stays on the connection: in this app only
+    tools use the pool)."""
+    with pooled("ci_search") as conn:
+        conn.execute("SELECT set_config('statement_timeout', %s, false)", (TOOL_STATEMENT_TIMEOUT,))
+        conn.commit()
+        yield conn
+
+
+def _guarded(fn: Callable[..., dict[str, Any]]) -> Callable[..., dict[str, Any]]:
+    """Logs how long a tool took (name and milliseconds only, never arguments) and
+    turns a stopped statement into TOO_SLOW."""
+
+    @functools.wraps(fn)
+    def run(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        started = time_module.monotonic()
+        outcome = "ok"
+        try:
+            return fn(*args, **kwargs)
+        except QueryCanceled:
+            outcome = "too_slow"
+            return dict(TOO_SLOW)
+        except Exception:
+            outcome = "error"
+            raise
+        finally:
+            log.info(
+                "mcp tool %s %s in %d ms",
+                fn.__name__,
+                outcome,
+                (time_module.monotonic() - started) * 1000,
+            )
+
+    return run
 
 
 def build_server(
@@ -114,6 +163,14 @@ def build_server(
         " the other tools tell it so." + _TRUST,
         **server_options,
     )
+
+    def tool(description: str) -> Callable[[Callable[..., dict[str, Any]]], Any]:
+        """server.tool with the time guard and timing log on every tool."""
+
+        def register(fn: Callable[..., dict[str, Any]]) -> Any:
+            return server.tool(description=description)(_guarded(fn))
+
+        return register
 
     def _since(days: float | None, day: str | None = None) -> datetime | None:
         if day:
@@ -163,7 +220,7 @@ def build_server(
             out["offset"] = offset
         return short(out)
 
-    @server.tool(
+    @tool(
         description="Search authorized, indexed company email by meaning and keywords."
         + _DATES
         + _NAMES
@@ -203,7 +260,7 @@ def build_server(
             )
         return linked(found)
 
-    @server.tool(
+    @tool(
         description="Read one email (bounded excerpt) by communication_id. `attachments` lists"
         " its files with an attachment_id (pass it to get_attachment for the full extracted"
         " text) and, when the original file is stored, a download_url (console admins only,"
@@ -216,7 +273,7 @@ def build_server(
             found = retrieval.get_email(conn, principal_of(), communication_id, max_chars)
         return linked(found) if found else {"found": False, "note": NOT_FOUND}
 
-    @server.tool(
+    @tool(
         description="Read the text extracted from one attachment (PDF, Word, Excel, text),"
         " a page at a time: pass the communication_id and the attachment_id from get_email;"
         " when next_offset is not null, call again with offset=next_offset for the rest."
@@ -234,7 +291,7 @@ def build_server(
             )
         return linked(found) if found else {"found": False, "note": NOT_FOUND}
 
-    @server.tool(
+    @tool(
         description="List recent authorized emails, newest first, optionally by mailbox, "
         "sender or label (e.g. cat_payment_billing)." + _DATES + _NAMES + _PAGING + _LINKS + _TRUST
     )
@@ -252,7 +309,7 @@ def build_server(
     ) -> dict[str, Any]:
         if principal_of().risk_only:
             return dict(risk_access.REFUSAL)
-        limit, offset = max(1, min(limit, 100)), max(0, min(offset, 100))
+        limit, offset = max(1, min(limit, 100)), max(0, min(offset, MAX_OFFSET))
         with connector() as conn:
             found = retrieval.list_email(
                 conn,
@@ -266,11 +323,14 @@ def build_server(
                     property=property,
                     entity=entity,
                 ),
-                min(offset + limit, 100),
+                limit,
+                offset,
             )
-        return linked(page(found, ("results",), offset, limit))
+        if not offset:
+            del found["offset"]
+        return linked(found)
 
-    @server.tool(
+    @tool(
         description="Emails that ask a person to act or approve, plus project risks (schedule "
         "delays, cost overruns, disputes, liens, failed inspections, safety, quality, financing, "
         "parties not performing), from the last N hours. "
@@ -310,7 +370,7 @@ def build_server(
             )
         return linked(page(found, ("actions", "possible", "risks"), offset, limit))
 
-    @server.tool(
+    @tool(
         description="Read the whole conversation an email belongs to, oldest first: every"
         " message in the thread you are authorized to read, with each one's AI summary,"
         " action and risk. Use get_email for one message's full text." + _LINKS + _TRUST
@@ -322,7 +382,7 @@ def build_server(
             found = retrieval.get_thread(conn, principal_of(), communication_id, limit)
         return linked(found) if found else {"found": False, "note": NOT_FOUND}
 
-    @server.tool(
+    @tool(
         description="Count authorized emails, grouped by mailbox, sender, sender_domain,"
         " label, property, entity, day, week or month, with action-item, project-risk and"
         " flagged counts in each group. dataset: messages (all), actions (action items and"
@@ -370,7 +430,7 @@ def build_server(
         top = max(1, min(limit, 200))
         return found | {"groups": groups[:top], "total_groups": len(groups)}
 
-    @server.tool(
+    @tool(
         description="Project-risk overview for the last `days` (max 366): how many risk"
         " emails versus the previous period, a trend by day or week, the top categories,"
         " properties, companies (sender domains) and mailboxes, which other signals came"
@@ -416,7 +476,7 @@ def build_server(
         top = max(0, min(item_limit, 200))
         return linked(found | {"items": items[:top], "items_total": len(items)})
 
-    @server.tool(
+    @tool(
         description="Links for putting emails and their files on a board or document, e.g. a"
         " monday.com item's Files column or a Link column: for up to 25 communication_ids"
         " (from search_email, list_email or list_actionable), each email's view_url and,"
@@ -435,7 +495,7 @@ def build_server(
             found["note"] = "Links are not configured (ADMIN_PUBLIC_URL is not set)."
         return linked(found)
 
-    @server.tool(
+    @tool(
         description="Find what the email has taught the knowledge base: properties/projects,"
         " organizations (companies, legal entities), people (by name or email address),"
         " terms (abbreviations, project codes, with their meaning) and recurring or named"
@@ -459,7 +519,7 @@ def build_server(
                 conn, principal_of(), query, kind=kind, since=_since(since_days), limit=limit
             )
 
-    @server.tool(
+    @tool(
         description="Everything the authorized email says about one property, organization,"
         " person or term: its facts (works_for, role_on a property with a role such as"
         " general_contractor or lender, owns, affiliate_of) in both directions, each with how"

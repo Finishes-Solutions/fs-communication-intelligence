@@ -284,6 +284,22 @@ az functionapp config appsettings set -g fs-communication-intelligence -n func-f
 
 Search is hybrid: meaning (vector similarity on the embeddings) plus keywords (PostgreSQL full text), fused with Reciprocal Rank Fusion. Migration 0015 lets the meaning half use the vector index. Before it, every search compared the question with every indexed chunk, so searches slowed as mail was added. Apply it like the others (`python3 db/migrate.py apply`). Until it is applied, search keeps working the old way.
 
+**Lists, counts and filtered search (migration 0031, 2026-11-13).** After the 2025 backfill, AI tools timed out (`email_stats` on the live endpoint did not answer within Claude's 60 seconds) and console pages took seconds. The cause was how the database was read, not the amount of mail alone: every filter (label, property, sender, mailbox) was checked one email at a time through a view, reports built the label list of every published email first, and a search with any filter fell back to comparing the question with every chunk. Migration 0031 adds functions that read the emails of a period at once and rank only the chunks of the emails the reader may see. On 300,000 synthetic emails on a 4-core machine: `email_stats` went from 5 to 73 seconds down to about 1 second for 30 days (3 to 8 seconds for a year or all time), a filtered `search_email` from 5 to 15 seconds down to 1 to 4, an unfiltered one from 3 seconds to 0.1, and the Messages list from 3.9 seconds to 0.3. The answers are the same (`tests/db/test_fast_reads.py` compares them for every kind of reader). These numbers are from synthetic mail on a faster machine than the `B2ms` server; they have not been measured in Azure. Apply the migration, signed in as `svc_automation@`:
+
+```bash
+cd ~/fs-communication-intelligence && git pull && make azure-migrate AZ_PSQL=psql
+```
+
+It only adds functions (no table changes, a few seconds). The code works before and after: until it is applied, everything keeps using the old, slow way. Still slow after it: counts and lists over all time (several seconds), the Knowledge pages with no period (they read every mention), and anything a reader with reader limits asks without a date, because their limits are checked email by email.
+
+**A tool that takes too long now says so.** Each MCP tool stops a database statement after 40 seconds and answers `too_slow` with advice to ask for a shorter period or add a filter, instead of leaving the AI platform to give up at its own limit with no explanation. Each tool call also logs its name and time (no arguments): `mcp tool email_stats ok in 812 ms`. To see which tools are slow or stopped:
+
+```kusto
+traces | where message startswith "mcp tool" | parse message with "mcp tool " tool " " outcome " in " ms:long " ms" | summarize calls = count(), stopped = countif(outcome == "too_slow"), p50 = percentile(ms, 50), p95 = percentile(ms, 95) by tool | order by p95 desc
+```
+
+**Console lists load a page at a time.** Messages shows 50 emails and **Load More** adds the next 50; Not Published shows 100 rows, Run History 50, the Risk Feed 50 (then the rest, up to 200) and Action Items 50 of each list (**Show More**: up to 200). The counts and charts on those pages still cover everything.
+
 Check speed and accuracy on your own mail. This prints numbers only:
 
 ```bash
@@ -292,7 +308,7 @@ ci search-check --samples 20
 
 `recall_at_10` is the share of the exact 10 nearest chunks the index also found. Near 1.0 is good. Below about 0.9, tell Claude: the index can be tuned. `index_ms` against `exact_ms` shows the speed-up.
 
-Each search logs its timings to App Insights, with no query text: `search timings ms: embed=… query=… metadata=… coverage=… total=… path=index|exact|exact_fallback`. In the portal, open `appi-fs-ci-dev` → Logs and run:
+Each search logs its timings to App Insights, with no query text: `search timings ms: embed=… query=… metadata=… coverage=… total=… path=index|scoped` (`scoped`: a grant or filter left too few of the nearest chunks, so the emails in scope were found first; `exact` and `exact_fallback` appear only before migration 0031). In the portal, open `appi-fs-ci-dev` → Logs and run:
 
 ```kusto
 traces | where message startswith "search timings" | order by timestamp desc | take 50

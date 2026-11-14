@@ -7,11 +7,12 @@ parameters can only narrow results. Hybrid ranking: vector top 50 plus
 full-text top 50, fused with Reciprocal Rank Fusion (k = 60), at most 3 chunks
 per message, copies of one message collapsed after authorization.
 
-The vector half takes the nearest published chunks from the HNSW index
-(``ci.nearest_published_chunks``, migration 0015), then applies the grants and
-filters to them; when they leave fewer than 50, it repeats with the exact
-distance to every authorized chunk, so a narrow grant or filter still gets a
-full page.
+Each half first takes its best 200 published chunks (the HNSW index for
+meaning, the full-text index for keywords; migration 0031), then applies the
+grants and filters to them. When they leave fewer than 50, the emails this
+reader may see that pass the filters are found first and their chunks are
+ranked exactly, so a narrow grant or filter still gets a full page. Before
+migration 0031 the same is done through the views (0015), more slowly.
 
 Returned text is untrusted email content. Summaries, actions and labels are
 AI-generated proposals, not decisions. Every call is audited (ids and counts;
@@ -44,9 +45,10 @@ CANDIDATES = 50
 # Nearest chunks taken from the vector index before grants and filters apply
 # (at most 400, the function's cap).
 NEAREST_K = 200
-# The coverage block counts every captured message; it is informational, so a
-# few minutes old is fine, and recounting on every search made searches slow.
-COVERAGE_SECONDS = 300.0
+# The coverage block counts every captured message; it is informational, so half
+# an hour old is fine: the count takes seconds once a year of mail is stored, and
+# the request that recounts waits for it.
+COVERAGE_SECONDS = 1800.0
 MAX_CHUNKS_PER_MESSAGE = 3
 ACTION_LABELS = ("action_required", "approval_required")
 # Executive "risks" are risks to a project or property (Matthew, 2026-10-28), not
@@ -236,6 +238,163 @@ def _scope(alias: str) -> str:
     return _AUTH.format(a=alias) + _FILTERS.format(a=alias)
 
 
+# ----- set-based reads (migration 0031) ---------------------------------------
+# The filters above ask a view about one email at a time. These read the emails
+# of a period at once (ci.published_window / published_labelled / published_ids)
+# and filter on their columns; _AUTH is applied to those rows unchanged.
+
+
+def fast_reads(conn: Connection) -> bool:
+    """True once migration 0031 is applied; until then the views are used."""
+    row = conn.execute(
+        "SELECT to_regprocedure('ci.published_chunk_rows(uuid[])') IS NOT NULL AS ok"
+    ).fetchone()
+    return bool(row and row["ok"])
+
+
+# _FILTERS on the columns of a published_window / published_labelled row.
+_ROW_FILTERS = """
+    AND (%(mailbox)s::text IS NULL OR {a}.mailbox_address = %(mailbox)s)
+    AND (%(sender)s::text IS NULL OR {a}.sender = %(sender)s)
+    AND (%(since)s::timestamptz IS NULL OR {a}.occurred_at >= %(since)s)
+    AND (%(until)s::timestamptz IS NULL OR {a}.occurred_at < %(until)s)
+    AND (%(label)s::text IS NULL OR %(label)s = ANY({a}.yes_labels))
+    AND (%(property)s::text IS NULL OR EXISTS (
+        SELECT 1 FROM unnest({a}.properties) AS x(name)
+        WHERE x.name ILIKE '%%' || %(property)s || '%%'))
+    AND (%(entity)s::text IS NULL OR EXISTS (
+        SELECT 1 FROM unnest({a}.entities) AS x(name)
+        WHERE x.name ILIKE '%%' || %(entity)s || '%%'))"""
+
+_WINDOW = (
+    "published_window(%(since)s::timestamptz, %(until)s::timestamptz,"
+    " %(src_ids)s::uuid[], %(src_conv)s::text, %(mailbox)s::text, %(sender)s::text,"
+    " %(property)s::text, %(entity)s::text)"
+)
+_LABELLED = (
+    "published_labelled(%(src_labels)s::text[], %(since)s::timestamptz, %(until)s::timestamptz)"
+)
+NO_SOURCE: dict[str, Any] = {"src_ids": None, "src_conv": None, "src_labels": None}
+
+
+# From a start date this recent, reading the period and keeping the labelled
+# emails is cheaper than starting from every email that ever had the label.
+_LABEL_INDEX_AFTER = timedelta(days=60)
+
+
+def rows_source(labels: Sequence[str] | None, since: datetime | None = None) -> str:
+    """The set-based FROM for the emails of the period (``since`` as in the query's
+    parameters): every email, or those with one of ``labels`` as yes, taken from
+    the label index when the period is long or open. Parameters: NO_SOURCE's."""
+    if not labels:
+        return _WINDOW
+    if since is not None and datetime.now(UTC) - since <= _LABEL_INDEX_AFTER:
+        return f"(SELECT w.* FROM {_WINDOW} w WHERE w.yes_labels && %(src_labels)s::text[])"  # noqa: S608
+    return _LABELLED
+
+
+def as_views(source: str) -> str:
+    """``source`` under the aliases the WHERE fragments use: pc (the email), e (its
+    message) and cl (its classification)."""
+    return f"""(SELECT h.*, h.communication_id AS id FROM {source} h) pc
+        CROSS JOIN LATERAL (SELECT pc.mailbox_address, pc.direction) e
+        CROSS JOIN LATERAL (SELECT pc.yes_labels, pc.uncertain_labels, pc.action_for) cl"""  # noqa: S608
+
+
+def _allowed_ids(conn: Connection, auth: Authorization, filters: Filters) -> list[str]:
+    """The emails this reader may see that pass the filters (grants first)."""
+    params = _params(auth, filters) | NO_SOURCE
+    if filters.label:
+        source = _LABELLED
+        params["src_labels"] = [filters.label]
+    elif filters.sender or filters.property or filters.entity:
+        source = _WINDOW
+    else:  # dates and mailbox only: the cheaper function
+        rows = conn.execute(
+            "SELECT h.communication_id::text AS id"  # noqa: S608 - constants; values are bound
+            " FROM published_ids(%(since)s::timestamptz, %(until)s::timestamptz) h"
+            f" WHERE {_AUTH.format(a='h')}"
+            " AND (%(mailbox)s::text IS NULL OR h.mailbox_address = %(mailbox)s)",
+            params,
+        ).fetchall()
+        return [r["id"] for r in rows]
+    rows = conn.execute(
+        f"SELECT h.communication_id::text AS id FROM {source} h"  # noqa: S608
+        f" WHERE {_AUTH.format(a='h')} {_ROW_FILTERS.format(a='h')}",
+        params,
+    ).fetchall()
+    return [r["id"] for r in rows]
+
+
+def _candidates(
+    conn: Connection, function: str, value: str, params: dict[str, Any]
+) -> tuple[list[str], bool]:
+    """Chunk ids from published_nearest / published_lexical that pass the grants
+    and filters, best first, and whether more chunks exist beyond the ones taken."""
+    order = "c.dist" if function == "published_nearest" else "c.rank DESC"
+    cast = "::vector" if function == "published_nearest" else "::text"
+    rows = conn.execute(
+        f"SELECT c.id::text AS id, c.scanned, ({_scope('c')}) AS ok"  # noqa: S608
+        f" FROM {function}(%(value)s{cast}, %(nearest)s::integer, %(docs)s::boolean) c"
+        f" ORDER BY {order}, c.id",
+        params | {"value": value},
+    ).fetchall()
+    more = bool(rows) and rows[0]["scanned"] >= params["nearest"]
+    return [r["id"] for r in rows if r["ok"]][: params["n"]], more
+
+
+def _hybrid_fast(
+    conn: Connection, auth: Authorization, filters: Filters, query: str, vector: str
+) -> tuple[list[dict[str, Any]], str]:
+    """The hybrid search on the set-based functions: same candidates and fusion
+    as ``_hybrid``. Returns the fused chunk rows, best first, and the path taken."""
+    params = _params(auth, filters) | {"n": CANDIDATES, "nearest": NEAREST_K}
+    vec, more_vec = _candidates(conn, "published_nearest", vector, params)
+    lex, more_lex = _candidates(conn, "published_lexical", query, params)
+    path = "index"
+    short_vec = more_vec and len(vec) < CANDIDATES
+    short_lex = more_lex and len(lex) < CANDIDATES
+    if short_vec or short_lex:
+        # Too few left after grants and filters while more chunks exist: rank,
+        # exactly, the chunks of the emails this reader may see that pass the filters.
+        path = "scoped"
+        allowed = _allowed_ids(conn, auth, filters)
+        within = {"ids": allowed, "n": CANDIDATES, "docs": params["docs"]}
+        if short_vec:
+            vec = [
+                r["id"]
+                for r in conn.execute(
+                    "SELECT id::text AS id FROM published_nearest_in(%(qv)s::vector,"
+                    " %(ids)s::uuid[], %(n)s::integer, %(docs)s::boolean) ORDER BY dist, id",
+                    within | {"qv": vector},
+                ).fetchall()
+            ]
+        if short_lex:
+            lex = [
+                r["id"]
+                for r in conn.execute(
+                    "SELECT id::text AS id FROM published_lexical_in(%(q)s::text,"
+                    " %(ids)s::uuid[], %(n)s::integer, %(docs)s::boolean)"
+                    " ORDER BY rank DESC, id",
+                    within | {"q": query},
+                ).fetchall()
+            ]
+    score: dict[str, float] = {}
+    for ranked in (vec, lex):
+        for position, chunk_id in enumerate(ranked, start=1):
+            score[chunk_id] = score.get(chunk_id, 0.0) + 1.0 / (RRF_K + position)
+    if not score:
+        return [], path
+    found = conn.execute(
+        "SELECT id::text AS id, communication_id::text AS communication_id, chunk_kind,"
+        " display_text, source_ref, attachment_name FROM published_chunk_rows(%s::uuid[])",
+        (list(score),),
+    ).fetchall()
+    rows = [dict(r) | {"score": score[r["id"]]} for r in found]
+    rows.sort(key=lambda r: (-r["score"], r["id"]))
+    return rows, path
+
+
 # Search only (Filters.source): chunks of the message text, or of attachment text.
 _KIND = " AND (%(docs)s::boolean IS NULL OR ({a}.chunk_kind = 'attachment_text') = %(docs)s)"
 # The index-first function returns no chunk kind, so it is read by id.
@@ -393,8 +552,11 @@ def search(
             "nearest": NEAREST_K,
         }
         mark = time.monotonic()
-        rows, path = [], "exact"
-        if fast:
+        rows: list[dict[str, Any]] = []
+        path = "exact"
+        if fast_reads(conn):
+            rows, path = _hybrid_fast(conn, auth, filters, query, vector)
+        elif fast:
             rows, path = _hybrid(conn, _VEC_INDEX, params), "index"
             head = rows[0]
             # Too few candidates left after grants and filters while more chunks
@@ -403,7 +565,7 @@ def search(
                 head["scanned"] >= NEAREST_K and head["vec_hits"] < CANDIDATES
             ):
                 path = "exact_fallback"
-        if path != "index":
+        if path in ("exact", "exact_fallback"):
             rows = _hybrid(conn, _VEC_EXACT, params)
         rows = [r for r in rows if r["score"] is not None]
         timings["query"] = time.monotonic() - mark
@@ -691,6 +853,66 @@ def _label_lookup(conn: Connection) -> bool:
     return bool(row and row["ok"])
 
 
+# Without a start date the fast listing looks at growing periods back from the
+# end date and stops at the first that fills the page.
+_LOOK_BACK_DAYS = (3, 30, 365)
+
+
+def _listing_rows(
+    conn: Connection,
+    auth: Authorization,
+    filters: Filters,
+    extra_where: str,
+    extra: dict[str, Any],
+    need: int,
+    ids: list[str] | None,
+    labels: Sequence[str] | None,
+    conversation: str | None,
+) -> list[dict[str, Any]]:
+    """The listing's rows, newest first, from the set-based functions (0031)."""
+    wanted = labels or ([filters.label] if filters.label else None)
+    fetch = max(500, need * 3)
+
+    def sql(since: datetime | None) -> str:
+        return f"""
+        SELECT pc.communication_id::text AS communication_id, pc.title, pc.occurred_at,
+               pc.source_url, pc.mailbox_address, pc.internet_message_id,
+               pc.content_fingerprint, pc.direction, pc.sender, pc.yes_labels,
+               pc.disposition, pc.summary, pc.action_text, pc.action_for, pc.due_text,
+               pc.risk_text, pc.properties, pc.entities
+        FROM {as_views(rows_source(wanted, since))}
+        WHERE {_AUTH.format(a="pc")} {_ROW_FILTERS.format(a="pc")} {extra_where}
+        ORDER BY pc.occurred_at DESC, pc.communication_id
+        LIMIT %(fetch)s"""  # noqa: S608 - fragments are constants; values are bound parameters
+
+    params = _params(auth, filters) | extra
+    params |= {
+        "src_labels": list(labels) if labels else [filters.label],
+        "src_ids": ids,
+        "src_conv": conversation,
+        "only_ids": ids,
+        "fetch": fetch,
+    }
+    spans: list[int | None] = [None]
+    narrow = filters.sender or filters.property or filters.entity
+    if filters.since is None and ids is None and conversation is None and not narrow:
+        spans = [*_LOOK_BACK_DAYS, None]
+    end = filters.until or datetime.now(UTC)
+    rows: list[dict[str, Any]] = []
+    for span in spans:
+        since = filters.since if span is None else end - timedelta(days=span)
+        rows = conn.execute(sql(since), params | {"since": since}).fetchall()
+        # Copies collapse later, so a full page needs at least `need` different emails.
+        if span is None or len({_copy_group(r) for r in rows}) >= need:
+            break
+    return rows
+
+
+def _copy_group(r: dict[str, Any]) -> tuple[str, str]:
+    """Mailbox copies of one message share this key."""
+    return (r["internet_message_id"] or r["communication_id"], r["content_fingerprint"] or "")
+
+
 def _listing(
     conn: Connection,
     principal: Principal,
@@ -700,20 +922,77 @@ def _listing(
     limit: int,
     ids: list[str] | None = None,
     labels: Sequence[str] | None = None,
+    *,
+    offset: int = 0,
+    conversation: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Newest first, copies collapsed. ``extra_where`` may use the aliases pc
-    (email), e (message) and cl (classification).
+    """Newest first, copies collapsed; ``offset`` skips that many emails.
+    ``extra_where`` may use the aliases pc (email), e (message) and cl
+    (classification). ``ids`` limits the listing to those emails, ``conversation``
+    to one Graph conversation. ``labels`` says every row must have one of them as
+    yes (the caller's filter requires it), so the candidates come from the label
+    index (published_labelled, 0021).
 
-    Joined directly, published_classifications builds every email's label lists
-    before any filter or limit, so the classification is read for few emails.
-    ``ids`` limits the listing to those emails. ``labels`` says every row must
-    have one of them as yes (the caller's filter requires it), so the candidates
-    come from the label index (published_labelled, 0021). Without either, the
-    newest 500 are picked first when ``extra_where`` does not use cl, else the
-    emails in scope. The answer is the same either way."""
+    With migration 0031 the rows come from the set-based functions. Without it,
+    from the views (``_listing_rows_views``): the answer is the same, more slowly,
+    and at most the newest 500 rows are read."""
     auth = authorize(conn, principal)
     if auth.empty:
         return []
+    if fast_reads(conn):
+        rows = _listing_rows(
+            conn, auth, filters, extra_where, extra, offset + limit, ids, labels, conversation
+        )
+    else:
+        if conversation is not None:
+            extra_where += " AND e.conversation_id = %(conv)s"
+            extra = extra | {"conv": conversation}
+        rows = _listing_rows_views(conn, auth, filters, extra_where, extra, ids, labels)
+    seen: set[tuple[str, str]] = set()
+    out = []
+    for r in rows:
+        group = _copy_group(r)
+        if group in seen:
+            continue
+        seen.add(group)
+        out.append(
+            {
+                "communication_id": r["communication_id"],
+                "subject": r["title"],
+                "sender": r["sender"],
+                "received_at": r["occurred_at"].isoformat(),
+                "mailbox": r["mailbox_address"],
+                "web_link": r["source_url"],
+                "labels": list(r["yes_labels"] or []),
+                "review_flag": r["disposition"] == "review",
+                "summary_ai": r["summary"],
+                "action_ai": r["action_text"],
+                "action_for_ai": list(r["action_for"] or []),
+                "due_ai": r["due_text"],
+                "risk_ai": r["risk_text"],
+                "properties_ai": list(r["properties"] or []),
+                "entities_ai": list(r["entities"] or []),
+            }
+        )
+    return out[offset : offset + limit]
+
+
+def _listing_rows_views(
+    conn: Connection,
+    auth: Authorization,
+    filters: Filters,
+    extra_where: str,
+    extra: dict[str, Any],
+    ids: list[str] | None,
+    labels: Sequence[str] | None,
+) -> list[dict[str, Any]]:
+    """The listing's rows through the published_* views (before migration 0031).
+
+    Joined directly, published_classifications builds every email's label lists
+    before any filter or limit, so the classification is read for few emails:
+    with ``labels`` the candidates come from the label index (0021); without
+    ``ids`` or ``labels``, the newest 500 are picked first when ``extra_where``
+    does not use cl, else the emails in scope."""
     params = _params(auth, filters) | extra
     lookup = bool(labels or filters.label) and _label_lookup(conn)
     if labels is None and filters.label is not None:
@@ -780,36 +1059,8 @@ def _listing(
         WHERE {_scope("pc")} {extra_where} {only.format(a="pc").replace("WHERE", "AND")}
         ORDER BY pc.occurred_at DESC
         LIMIT 500"""  # noqa: S608 - fragments are constants; values are bound parameters
-    rows = conn.execute(sql, params | {"only_ids": ids}).fetchall()
-    seen: set[tuple[str, str]] = set()
-    out = []
-    for r in rows:
-        group = (r["internet_message_id"] or r["communication_id"], r["content_fingerprint"] or "")
-        if group in seen:
-            continue
-        seen.add(group)
-        out.append(
-            {
-                "communication_id": r["communication_id"],
-                "subject": r["title"],
-                "sender": r["sender"],
-                "received_at": r["occurred_at"].isoformat(),
-                "mailbox": r["mailbox_address"],
-                "web_link": r["source_url"],
-                "labels": list(r["yes_labels"] or []),
-                "review_flag": r["disposition"] == "review",
-                "summary_ai": r["summary"],
-                "action_ai": r["action_text"],
-                "action_for_ai": list(r["action_for"] or []),
-                "due_ai": r["due_text"],
-                "risk_ai": r["risk_text"],
-                "properties_ai": list(r["properties"] or []),
-                "entities_ai": list(r["entities"] or []),
-            }
-        )
-        if len(out) >= limit:
-            break
-    return out
+    listed: list[dict[str, Any]] = conn.execute(sql, params | {"only_ids": ids}).fetchall()
+    return listed
 
 
 def get_thread(
@@ -827,10 +1078,11 @@ def get_thread(
     ).fetchone()
     limit = max(1, min(limit, 100))
     if row and row["conversation_id"]:
-        where, extra = "AND e.conversation_id = %(conv)s", {"conv": row["conversation_id"]}
+        items = _listing(
+            conn, principal, NO_FILTERS, "", {}, limit, conversation=row["conversation_id"]
+        )
     else:  # no conversation id recorded: the email on its own
-        where, extra = "AND pc.id = %(one)s::uuid", {"one": communication_id}
-    items = _listing(conn, principal, NO_FILTERS, where, extra, limit)
+        items = _listing(conn, principal, NO_FILTERS, "", {}, limit, ids=[communication_id])
     items.reverse()
     _audit(conn, principal, "get_thread", {"result_ids": [i["communication_id"] for i in items]})
     conn.commit()
@@ -843,13 +1095,32 @@ def get_thread(
     }
 
 
+# How far a list can be paged (the console's "Load More"; MCP tools stop sooner).
+MAX_LIST_OFFSET = 5000
+
+
 def list_email(
-    conn: Connection, principal: Principal, filters: Filters = NO_FILTERS, limit: int = 25
+    conn: Connection,
+    principal: Principal,
+    filters: Filters = NO_FILTERS,
+    limit: int = 25,
+    offset: int = 0,
 ) -> dict[str, Any]:
-    items = _listing(conn, principal, filters, "", {}, max(1, min(limit, 100)))
+    """The newest emails, ``limit`` at a time; ``has_more`` says whether a call
+    with ``offset`` raised by ``limit`` would return more."""
+    limit, offset = max(1, min(limit, 100)), max(0, min(offset, MAX_LIST_OFFSET))
+    items = _listing(conn, principal, filters, "", {}, limit + 1, offset=offset)
+    more = len(items) > limit
+    items = items[:limit]
     _audit(conn, principal, "list_email", {"result_ids": [i["communication_id"] for i in items]})
     conn.commit()
-    return {"note": UNTRUSTED_NOTE, "results": items, "coverage": coverage(conn)}
+    return {
+        "note": UNTRUSTED_NOTE,
+        "results": items,
+        "offset": offset,
+        "has_more": more,
+        "coverage": coverage(conn),
+    }
 
 
 def _profile(conn: Connection, addresses: list[str]) -> dict[str, Any] | None:
