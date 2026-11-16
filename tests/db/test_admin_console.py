@@ -1195,3 +1195,43 @@ def test_stored_files_are_not_compressed_again(client: TestClient) -> None:
     url = f"/api/messages/{message_id}/files/{stored[0]['file_id']}"
     got = client.get(url, headers={**auth(), "Accept-Encoding": "gzip"})
     assert got.status_code == 200 and "content-encoding" not in got.headers
+
+
+def test_long_lists_load_a_page_at_a_time(client: TestClient, database_ready: str) -> None:
+    """Messages, Not Published, Run History and the risk feed take limit and offset
+    and say whether more remain (the console's "Load More")."""
+    whole = client.get("/api/messages?since_days=0&limit=100", headers=auth()).json()
+    ids = [r["communication_id"] for r in whole["results"]]
+    assert len(ids) > 6 and whole["has_more"] is False
+    first = client.get("/api/messages?since_days=0&limit=5", headers=auth()).json()
+    second = client.get("/api/messages?since_days=0&limit=5&offset=5", headers=auth()).json()
+    assert first["has_more"] is True and first["offset"] == 0 and second["offset"] == 5
+    assert [r["communication_id"] for r in first["results"] + second["results"]] == ids[:10]
+    last = client.get(f"/api/messages?since_days=0&limit=5&offset={len(ids)}", headers=auth())
+    assert last.json()["results"] == [] and last.json()["has_more"] is False
+
+    held = client.get("/api/unpublished?limit=100", headers=auth()).json()
+    assert len(held["items"]) > 2 and held["has_more"] is False
+    one = client.get("/api/unpublished?limit=2", headers=auth()).json()
+    two = client.get("/api/unpublished?limit=2&offset=2", headers=auth()).json()
+    assert one["has_more"] is True
+    assert [i["version_id"] for i in one["items"] + two["items"]] == [
+        i["version_id"] for i in held["items"][:4]
+    ]
+
+    with connect(dbname=database_ready, role="ci_ingest") as conn:
+        for _ in range(3):
+            conn.execute("INSERT INTO ops_runs (kind, trigger) VALUES ('capture', 'manual')")
+        conn.commit()
+    runs = client.get("/api/runs?limit=500", headers=auth()).json()
+    assert len(runs["runs"]) >= 3 and runs["has_more"] is False
+    page = client.get("/api/runs?limit=2", headers=auth()).json()
+    rest = client.get("/api/runs?limit=2&offset=2", headers=auth()).json()
+    assert page["has_more"] is True and len(page["runs"]) == 2
+    assert [r["id"] for r in page["runs"] + rest["runs"]] == [r["id"] for r in runs["runs"][:4]]
+
+    risks = client.get("/api/risks?days=366", headers=auth()).json()
+    short = client.get("/api/risks?days=366&items=1", headers=auth()).json()
+    assert risks["items_total"] == len(risks["items"]) > 1
+    assert short["items"] == risks["items"][:1] and short["items_total"] == risks["items_total"]
+    assert short["total"] == risks["total"]  # counts and charts cover every risk email

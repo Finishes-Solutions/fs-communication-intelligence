@@ -19,9 +19,11 @@ from ci_retrieval.identity import Principal
 from ci_retrieval.search import (
     _AUTH,
     _PUBLISHED,
+    _ROW_FILTERS,
     ACTION_LABELS,
     ACTION_RULE_WHERE,
     NO_FILTERS,
+    NO_SOURCE,
     RISK_LABELS,
     ROUTED_WHERE,
     Filters,
@@ -29,8 +31,11 @@ from ci_retrieval.search import (
     _params,
     _scope,
     action_rule_params,
+    as_views,
     authorize,
+    fast_reads,
     person_profile,
+    rows_source,
 )
 
 Dataset = Literal["messages", "actions", "risks"]
@@ -97,6 +102,55 @@ def _messages(extra_where: str, keep_copies: bool = False, ratings: bool = False
         ORDER BY coalesce(e.internet_message_id, pc.id::text),
                  coalesce(e.content_fingerprint, ''){copy}, pc.occurred_at DESC, pc.id
     """  # noqa: S608 - fragments are constants; values are bound parameters
+
+
+def _messages_fast(extra_where: str, source: str, keep_copies: bool = False) -> str:
+    """``_messages`` on the set-based rows (migration 0031): the same emails and
+    columns, read at once for the period instead of one view lookup per email.
+    ``source`` is ``rows_source(...)``; its parameters are NO_SOURCE's."""
+    copy = ", pc.communication_id" if keep_copies else ""
+    return f"""
+        SELECT DISTINCT ON (coalesce(pc.internet_message_id, pc.communication_id::text),
+                            coalesce(pc.content_fingerprint, ''){copy})
+               pc.communication_id::text AS communication_id, pc.title, pc.occurred_at,
+               pc.source_url, pc.mailbox_address, pc.direction, pc.sender,
+               pc.yes_labels, pc.uncertain_labels, pc.disposition, pc.summary,
+               pc.action_text, coalesce(pc.action_for, '{{}}') AS action_for, pc.due_text,
+               pc.risk_text, pc.properties, pc.entities, pc.attachments,
+               NULL::text AS risk_impact, NULL::text AS risk_likelihood,
+               NULL::text AS risk_reason
+        FROM {as_views(source)}
+        WHERE {_AUTH.format(a="pc")} {_ROW_FILTERS.format(a="pc")} {extra_where}
+        ORDER BY coalesce(pc.internet_message_id, pc.communication_id::text),
+                 coalesce(pc.content_fingerprint, ''){copy}, pc.occurred_at DESC,
+                 pc.communication_id
+    """  # noqa: S608 - fragments are constants; values are bound parameters
+
+
+def _report_messages(
+    conn: Connection,
+    dataset: str,
+    where: str,
+    profiled: bool,
+    filters: Filters,
+    keep_copies: bool = False,
+) -> tuple[str, dict[str, Any]]:
+    """The report's message query and its extra parameters: set-based once
+    migration 0031 is applied (from the label index when the dataset or the
+    filter names labels), else through the views."""
+    if not fast_reads(conn):
+        return _messages(where, keep_copies), {}
+    labels: list[str] | None = None
+    if dataset == "risks":
+        labels = list(RISK_LABELS)
+    elif dataset == "actions" and not profiled:
+        labels = list(ACTION_LABELS)  # the rule requires one of them
+    elif filters.label:
+        labels = [filters.label]
+    return (
+        _messages_fast(where, rows_source(labels, filters.since), keep_copies),
+        NO_SOURCE | {"src_labels": labels},
+    )
 
 
 def _dataset_where(
@@ -176,10 +230,11 @@ def report_rows(
     rows: list[dict[str, Any]] = []
     total = 0
     if not auth.empty:
+        messages, source = _report_messages(conn, dataset, where, "person_key" in extra, filters)
         found = conn.execute(
-            f"SELECT m.*, count(*) OVER () AS total FROM ({_messages(where)}) m"  # noqa: S608
+            f"SELECT m.*, count(*) OVER () AS total FROM ({messages}) m"  # noqa: S608
             " ORDER BY m.occurred_at DESC, m.communication_id LIMIT %(limit)s",
-            _params(auth, filters) | extra | {"limit": limit},
+            _params(auth, filters) | extra | source | {"limit": limit},
         ).fetchall()
         rows = [_row(r) for r in found]
         total = int(found[0]["total"]) if found else 0
@@ -237,6 +292,9 @@ def report_groups(
     auth = authorize(conn, principal)
     groups: list[dict[str, Any]] = []
     if not auth.empty:
+        messages, source = _report_messages(
+            conn, dataset, where, "person_key" in extra, filters, group_by == "mailbox"
+        )
         found = conn.execute(
             f"""
             SELECT {key} AS key, count(*) AS messages,
@@ -244,12 +302,12 @@ def report_groups(
                    count(*) FILTER (WHERE m.yes_labels && %(risk_labels)s::text[]) AS risks,
                    count(*) FILTER (WHERE m.disposition = 'review') AS flagged,
                    min(m.occurred_at) AS first_at, max(m.occurred_at) AS last_at
-            FROM ({_messages(where, keep_copies=group_by == "mailbox")}) m {join}
+            FROM ({messages}) m {join}
             GROUP BY 1
             ORDER BY {"1 DESC" if group_by in ("day", "week", "month") else "2 DESC, 1"}
             LIMIT 1000
             """,  # noqa: S608 - fragments are constants; values are bound parameters
-            _params(auth, filters) | extra | {"tz": tz},
+            _params(auth, filters) | extra | source | {"tz": tz},
         ).fetchall()
         groups = [
             {

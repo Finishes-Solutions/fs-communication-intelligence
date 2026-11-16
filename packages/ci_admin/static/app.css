@@ -100,6 +100,7 @@ h3 { font-size: 14px; font-weight: 600; margin: 0 0 8px; }
 .card-body { padding: 20px; }
 .card-body.flush { padding: 0; }
 .card-foot { padding: 12px 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+.load-more { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-top: 1px solid var(--line); }
 .cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: start; }
 .cols > .card + .card { margin-top: 0; }
 

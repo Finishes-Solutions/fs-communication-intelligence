@@ -220,10 +220,17 @@ def test_vector_search_uses_the_index_and_matches_the_exact_scan(
         fast = search(pipeline, query)
     assert "path=index" in caplog.text
     assert "lien" not in caplog.text  # timings and counts only, never the query
+    # Before migration 0031 the same search goes through the views: from the index
+    # (0015) or, without it, by the exact scan. All three find the same emails.
+    monkeypatch.setattr(retrieval, "fast_reads", lambda conn: False)
+    with caplog.at_level(logging.INFO, logger="ci_retrieval.search"):
+        views = search(pipeline, query)
+    assert caplog.text.count("path=index") == 2
     monkeypatch.setattr(retrieval, "_set_search_options", lambda conn: False)
     exact = search(pipeline, query)
     assert fast["results"]
     ids = {r["communication_id"] for r in fast["results"]}
+    assert ids == {r["communication_id"] for r in views["results"]}
     assert ids == {r["communication_id"] for r in exact["results"]}
 
 
@@ -235,11 +242,20 @@ def test_too_few_candidates_after_grants_fall_back_to_the_exact_scan(
     monkeypatch.setattr(retrieval, "NEAREST_K", 2)  # the index yields 2; the grant keeps fewer
     with caplog.at_level(logging.INFO, logger="ci_retrieval.search"):
         own = search(pipeline, "change order lease renewal", own_only)
-    assert "path=exact_fallback" in caplog.text
+    # The emails this reader may see are found first; their chunks are ranked exactly.
+    assert "path=scoped" in caplog.text
     assert own["results"] and {r["mailbox"] for r in own["results"]} == {PAT}
     assert [r["communication_id"] for r in own["results"]] == [
         r["communication_id"] for r in expected["results"]
     ]
+    # Before migration 0031: the exact scan through the views, same emails.
+    monkeypatch.setattr(retrieval, "fast_reads", lambda conn: False)
+    with caplog.at_level(logging.INFO, logger="ci_retrieval.search"):
+        views = search(pipeline, "change order lease renewal", own_only)
+    assert "path=exact_fallback" in caplog.text
+    assert {r["communication_id"] for r in views["results"]} == {
+        r["communication_id"] for r in expected["results"]
+    }
 
 
 def test_index_check_reports_recall_and_timings(pipeline: dict[str, Any]) -> None:
@@ -308,9 +324,22 @@ def test_exclusions_and_pause_hide_published_mail(pipeline: dict[str, Any]) -> N
         ).fetchall()
         published = conn.execute("SELECT count(*) AS n FROM published_chunks").fetchone()
         cached = retrieval.coverage(conn)
+        # The set-based functions (0031) return the same published chunks and emails.
+        nearest = conn.execute(
+            "SELECT n.id FROM published_nearest(%s::vector, 400) n", (vector,)
+        ).fetchall()
+        lexical = conn.execute(
+            "SELECT l.id, EXISTS (SELECT 1 FROM published_chunks pc WHERE pc.id = l.id) AS ok"
+            " FROM published_lexical('lien OR invoice OR lease', 400) l"
+        ).fetchall()
+        window = conn.execute("SELECT communication_id FROM published_window()").fetchall()
+        emails = conn.execute("SELECT id FROM published_communications").fetchall()
     assert total and published
     assert len(near) == published["n"] < total["n"]  # the excluded mailbox's chunks stay out
     assert all(r["same"] for r in near)
+    assert len(nearest) == published["n"]
+    assert lexical and all(r["ok"] for r in lexical)
+    assert {r["communication_id"] for r in window} == {r["id"] for r in emails}
     assert "Notice of mechanic's lien - Example Ridge Phase 2" not in subjects(
         search(pipeline, "lien attorney notice")
     )
@@ -323,6 +352,15 @@ def test_exclusions_and_pause_hide_published_mail(pipeline: dict[str, Any]) -> N
             "SELECT count(*) AS n FROM nearest_published_chunks(%s::vector, 400)", (vector,)
         ).fetchone()
         assert paused == {"n": 0}
+        for function in (
+            "published_nearest(%s::vector, 400)",
+            "published_window()",
+            "published_ids()",
+            "published_lexical('lien OR invoice OR lease', 400)",
+        ):
+            args = (vector,) if "%s" in function else ()
+            counted = conn.execute(f"SELECT count(*) AS n FROM {function}", args)  # noqa: S608
+            assert counted.fetchone() == {"n": 0}
         # The coverage block is recounted every few minutes, not on every search.
         assert retrieval.coverage(conn) == cached
         assert retrieval.coverage(conn, max_age=0) != cached

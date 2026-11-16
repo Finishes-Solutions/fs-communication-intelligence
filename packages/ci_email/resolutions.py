@@ -112,17 +112,26 @@ def _replies(conn: Connection, row: dict[str, Any]) -> list[Reply]:
     ]
 
 
-def _reuse(conn: Connection, sha: str, model: str) -> Resolution | None:
+def _reuse(conn: Connection, sha: str, model: str, replies: list[Reply]) -> Resolution | None:
     row = conn.execute(
-        "SELECT status, confidence, reason FROM action_resolutions"
-        " WHERE input_sha256 = %s AND model = %s AND resolution_version = %s LIMIT 1",
+        "SELECT status, confidence, reason, resolver_communication_id::text AS resolver_id,"
+        " resolver_at FROM action_resolutions"
+        " WHERE input_sha256 = %s AND model = %s AND resolution_version = %s"
+        " ORDER BY resolver_communication_id IS NULL LIMIT 1",
         (sha, model, RESOLUTION_VERSION),
     ).fetchone()
     if row is None:
         return None
-    # The resolving email differs per mailbox copy; it is re-derived below from this
-    # copy's replies when the answer names one (resolver_index None keeps it unset).
-    return Resolution(row["status"], row["confidence"], row["reason"], None, model)
+    # The same replies were read (same input hash), so the reply the first answer
+    # named is among this copy's: found by id, else by the time it arrived. Without
+    # this, every mailbox copy but the first lost the reply that advanced the item.
+    index = next(
+        (i for i, r in enumerate(replies) if r.communication_id == row["resolver_id"]), None
+    )
+    if index is None and row["resolver_at"] is not None:
+        at = row["resolver_at"].isoformat()
+        index = next((i for i, r in enumerate(replies) if r.received_at == at), None)
+    return Resolution(row["status"], row["confidence"], row["reason"], index, model)
 
 
 def _save(
@@ -177,7 +186,7 @@ def resolve_one(conn: Connection, resolver: ActionResolver, row: dict[str, Any])
         row["title"] or "", row["body"] or "", row["action_text"], tuple(replies)
     )
     sha = item.sha256()
-    answer = _reuse(conn, sha, resolver.model)
+    answer = _reuse(conn, sha, resolver.model, replies)
     outcome = "resolution_reused"
     if answer is None:
         try:

@@ -207,12 +207,43 @@ function emptyState(title, text, iconName) {
     h("div", { class: "empty-title" }, title), text ? h("div", { class: "small" }, text) : null);
 }
 // columns: [heading, cell(row), optional class]
+function tableRow(columns, r, onClick) {
+  return h("tr", onClick ? { class: "click", onclick: () => onClick(r) } : {},
+    columns.map(c => h("td", { class: c[2] || null }, c[1](r))));
+}
 function table(columns, rows, onClick, empty) {
   if (!rows.length) return empty || emptyState("Nothing to Show", null);
   return h("div", { class: "table-wrap" }, h("table", {},
     h("thead", {}, h("tr", {}, columns.map(c => h("th", { class: c[2] || null }, c[0])))),
-    h("tbody", {}, rows.map(r => h("tr", onClick ? { class: "click", onclick: () => onClick(r) } : {},
-      columns.map(c => h("td", { class: c[2] || null }, c[1](r))))))));
+    h("tbody", {}, rows.map(r => tableRow(columns, r, onClick)))));
+}
+// Long lists load a page at a time. Returns the "Load More" footer to put under a list that
+// shows `shown` rows (null when there is nothing more): `load(offset)` resolves to
+// { rows, more } and `add(rows)` appends them to the list. `onCount(n)` hears the new total.
+function loadMore(shown, more, load, add, onCount) {
+  if (!more) return null;
+  const count = h("span", { class: "muted small" }, `${num(shown)} shown`);
+  const btn = h("button", { class: "btn sm", type: "button" }, "Load More");
+  const foot = h("div", { class: "load-more" }, btn, count);
+  btn.addEventListener("click", async () => {
+    btn.disabled = true; btn.textContent = "Loading…";
+    try {
+      const next = await load(shown);
+      add(next.rows); shown += next.rows.length;
+      count.textContent = `${num(shown)} shown`;
+      if (onCount) onCount(shown);
+      if (!next.more || !next.rows.length) { foot.remove(); return; }
+    } catch (e) { if (e.message !== "signing in" && !aborted(e)) toast(e.message); }
+    btn.disabled = false; btn.textContent = "Load More";
+  });
+  return foot;
+}
+// A table that loads more rows: `first` is { rows, more } and `load(offset)` gives the next.
+function pagedTable(columns, first, load, empty, onCount) {
+  const el = table(columns, first.rows, null, empty);
+  const body = el.querySelector("tbody");
+  return [el, body ? loadMore(first.rows.length, first.more, load,
+    rows => body.append(...rows.map(r => tableRow(columns, r))), onCount) : null];
 }
 function card(opts, ...body) {
   const o = opts || {};
@@ -500,8 +531,9 @@ async function overview() {
   );
 }
 
-function runsTable(runs) {
-  return table([
+// `load(offset)` (optional) makes the table load older runs on "Load More".
+function runsTable(runs, more, load, onCount) {
+  return pagedTable([
     ["Started", r => h("span", { class: "nowrap" }, short(r.started_at))],
     ["Kind", r => nice(r.kind)], ["Trigger", r => nice(r.trigger)],
     ["Window", r => r.window_hours ? `${r.window_hours} h` : "—"],
@@ -509,7 +541,8 @@ function runsTable(runs) {
       r.error_code ? h("span", { class: "mono small muted" }, r.error_code) : null)],
     ["Duration", r => r.finished_at ? duration((new Date(r.finished_at) - new Date(r.started_at)) / 1000) : "Running", "num"],
     ["Counts", r => h("div", { class: "badges" }, countBadges(r.counts))],
-  ], runs || [], null, emptyState("No Runs Yet", "Runs appear here once capture or processing starts.", "clock"));
+  ], { rows: runs || [], more: Boolean(more && load) }, load,
+  emptyState("No Runs Yet", "Runs appear here once capture or processing starts.", "clock"), onCount);
 }
 
 function setting(title, desc, ...control) {
@@ -519,7 +552,10 @@ function setting(title, desc, ...control) {
 }
 
 async function schedulePage() {
-  const [sch, runs] = await Promise.all([api("/api/schedule"), api("/api/runs?limit=200")]);
+  const RUNS_PAGE = 50;
+  const moreRuns = async offset => { const d = await api(`/api/runs?limit=${RUNS_PAGE}&offset=${offset}`); return { rows: d.runs, more: d.has_more }; };
+  const [sch, runs] = await Promise.all([api("/api/schedule"), api(`/api/runs?limit=${RUNS_PAGE}`)]);
+  const runsShown = h("span", {}, `${num((runs.runs || []).length)} most recent runs`);
   const s = sch.schedule;
   const f = {
     capture_enabled: h("input", { type: "checkbox", checked: s.capture_enabled }),
@@ -581,10 +617,10 @@ async function schedulePage() {
         setting("Examples per Email", "Corrections come first (where you disagreed with the AI), from the same sender's domain when there are any. Each example adds roughly 150 to 250 input tokens per email; Off stops it. Applies from the next processing run; mail already classified keeps its labels.", f.review_examples))),
     (s.prompt_shield_enabled === false || s.masking_enabled === false)
       ? note("A safety check is off. Mail processed now is recorded; run ci process --rescreen --limit 0 to redo it with the checks on.", "warn") : null,
-    card({ title: "Run History", sub: `${(runs.runs || []).length} most recent runs`, flush: true, class: "spaced",
+    card({ title: "Run History", sub: runsShown, flush: true, class: "spaced",
       // The same export as Reports → Run History: up to 500 latest runs, counts and codes only.
       actions: h("button", { class: "btn sm", onclick: guard(() => exportReport({ dataset: "runs" }, "csv")) }, icon("download"), "Export CSV") },
-    runsTable(runs.runs)),
+    runsTable(runs.runs, runs.has_more, moreRuns, n => { runsShown.textContent = `${num(n)} most recent runs`; })),
   );
 }
 
@@ -757,12 +793,20 @@ async function messagesPage() {
     note("Restricted, held and bulk mail never appears here; see Not Published for counts."));
   const q = new URLSearchParams();
   for (const k of Object.keys(f)) { const v = p.get(k) ?? (k === "since_days" ? "7" : ""); if (v) q.set(k, v); }
-  const d = await api("/api/messages?" + q);
-  results.replaceChildren(
-    h("div", { class: "card-head" }, h("h2", {}, p.get("q") ? "Best Matches" : "Messages"), h("span", { class: "muted small" }, `${num(d.results.length)} shown`)),
-    d.results.length
-      ? h("div", { class: "msg-list" }, d.results.map(r => msgRow(r, x => showMessage(x.communication_id, detail))))
-      : emptyState("No Messages Found", "Try a wider time range or fewer filters.", "search"));
+  // The list loads 50 at a time ("Load More"); a search shows its best matches only.
+  const page = async offset => {
+    const d = await api(`/api/messages?${q}${p.get("q") ? "" : `&limit=50&offset=${offset}`}`);
+    return { rows: d.results, more: Boolean(d.has_more) };
+  };
+  const first = await page(0);
+  const row = r => msgRow(r, x => showMessage(x.communication_id, detail));
+  const list = h("div", { class: "msg-list" }, first.rows.map(row));
+  const shown = h("span", { class: "muted small" }, `${num(first.rows.length)} shown`);
+  results.replaceChildren(...[
+    h("div", { class: "card-head" }, h("h2", {}, p.get("q") ? "Best Matches" : "Messages"), shown),
+    first.rows.length ? list : emptyState("No Messages Found", "Try a wider time range or fewer filters.", "search"),
+    loadMore(first.rows.length, first.more, page, rows => list.append(...rows.map(row)),
+      n => { shown.textContent = `${num(n)} shown`; })].filter(Boolean));
 }
 
 async function showMessage(id, holder) {
@@ -829,7 +873,10 @@ async function actionablePage() {
       h("button", { class: "btn primary", type: "submit" }, "Show")),
     h("div", { class: "muted small", style: "margin-top:8px" }, "A profile key or the person's addresses, comma-separated. Leave empty for everyone. Resolved means a later reply in the thread shows the request was dealt with (an AI reading of the replies).")),
   out);
-  const d = await api("/api/actionable?" + new URLSearchParams({ person: person.value, hours: hours.value, status: status.value }));
+  // 50 of each list at first; "Show More" asks for up to 200 (the most the lists hold).
+  const limit = p.get("limit") === "200" ? 200 : 50;
+  const d = await api("/api/actionable?" + new URLSearchParams({ person: person.value, hours: hours.value, status: status.value, limit }));
+  const full = limit < 200 && [d.actions, d.possible || [], d.risks].some(l => l.length >= limit);
   const detail = h("div", { class: "card reader" }, h("div", { class: "placeholder" },
     h("div", { class: "empty" }, h("div", { class: "i-wrap" }, icon("check")), h("div", { class: "empty-title" }, "Select an Item"),
       h("div", { class: "small" }, "The full message opens here."))));
@@ -860,16 +907,20 @@ async function actionablePage() {
   const how = d.person_check
     ? `The person check is on for ${d.person_check.name}: only emails it judged to be theirs are listed. "Possible" are the ones it was unsure about.`
     : d.person ? "No person profile matches, so a simpler rule decides (named in the AI's \u201caction for\u201d, or sent to them alone). Add a profile on the People page for the person check." : null;
-  out.replaceChildren(
+  // replaceChildren would print a null argument as the word "null" (the list for everyone).
+  out.replaceChildren(...[
     how ? note(how, d.person_check ? null : "warn") : null,
     h("div", { class: "inbox", style: "margin-top:20px" },
       h("div", {},
         card({ title: `Action Items for ${who}`, actions: badge(num(d.actions.length), "good"), flush: true }, list(d.actions, "action")),
         (d.possible || []).length ? card({ title: "Possible", sub: "The person check was unsure.", actions: badge(num(d.possible.length), "warn"), flush: true }, list(d.possible, "possible")) : null,
-        card({ title: "Project Risks", actions: badge(num(d.risks.length), "warn"), flush: true }, list(d.risks, "risk"))),
+        card({ title: "Project Risks", actions: badge(num(d.risks.length), "warn"), flush: true }, list(d.risks, "risk")),
+        full ? h("div", { class: "load-more" },
+          h("button", { class: "btn sm", type: "button", onclick: () => { navigate(`/actionable?${new URLSearchParams({ person: person.value, hours: hours.value, status: status.value, limit: 200 })}`); } }, "Show More"),
+          h("span", { class: "muted small" }, `Showing the newest ${limit} of each list`)) : null),
       detail),
     h("div", { class: "muted small", style: "margin-top:16px" }, "Person check profiles are on the ",
-      h("a", { href: "/people" }, "People"), " page."));
+      h("a", { href: "/people" }, "People"), " page.")].filter(Boolean));
 }
 
 // Step-2 person profiles: who someone is and who they must not be confused with.
@@ -1122,14 +1173,16 @@ async function unpublishedPage() {
   const current = p.get("state") || "";
   const seg = h("div", { class: "seg" }, ["", "held", "rejected", "failed", "fetched"].map(s =>
     h("button", { class: s === current ? "on" : "", onclick: () => { navigate(`/unpublished?state=${s}`); } }, s ? nice(s) : "All")));
-  const d = await api("/api/unpublished?" + new URLSearchParams(current ? { state: current } : {}));
+  const page = offset => api("/api/unpublished?" + new URLSearchParams({ ...(current ? { state: current } : {}), limit: 100, offset }));
+  const d = await page(0);
   show(pageHead("Not Published", "Mail that is stored but not searchable. Metadata only: subjects and bodies are never shown here.",
     h("button", { class: "btn", onclick: guard(async () => { const r = await post("/api/requeue-failed"); toast(`${r.requeued} requeued`); route(); }) },
       icon("requeue"), "Requeue Failed")),
   card({ title: "Messages", sub: d.note, actions: seg, flush: true },
-    table([["Received", r => h("span", { class: "nowrap" }, short(r.occurred_at))], ["Mailbox", r => r.mailbox], ["From", r => r.sender || "—"],
+    pagedTable([["Received", r => h("span", { class: "nowrap" }, short(r.occurred_at))], ["Mailbox", r => r.mailbox], ["From", r => r.sender || "—"],
       ["State", r => stateBadge("state", r.processing_state)], ["Reason", r => r.hold_reason_code ? h("span", { class: "mono" }, r.hold_reason_code) : "—"],
-      ["Error", r => r.last_error_code ? h("span", { class: "mono status-failed" }, r.last_error_code) : "—"]], d.items, null,
+      ["Error", r => r.last_error_code ? h("span", { class: "mono status-failed" }, r.last_error_code) : "—"]],
+    { rows: d.items, more: d.has_more }, async offset => { const n = await page(offset); return { rows: n.items, more: n.has_more }; },
     emptyState("Nothing Here", "Every message in this state has been published.", "ok"))),
   note("Rejected = restricted or bulk mail. Held = waiting on screening. Fetched = not processed yet. Failed messages can be requeued."));
 }
@@ -1646,7 +1699,7 @@ async function risksPage() {
     h("button", { class: v === days ? "on" : "", onclick: () => go({ days: v }) }, t)));
   const mb = h("input", { placeholder: "All mailboxes", value: mailbox, style: "width:220px" });
   const [d, m] = await Promise.all([
-    api("/api/risks?" + new URLSearchParams({ days, mailbox, category, property, impact, likelihood })),
+    api("/api/risks?" + new URLSearchParams({ days, mailbox, category, property, impact, likelihood, items: RISK_FEED_PAGE })),
     api("/api/calibration").catch(() => null),
   ]);
   const quality = m && m.labels.find(x => x.label === "project_risk");
@@ -1667,7 +1720,7 @@ async function risksPage() {
     h("button", { class: "chip-x", type: "button", "aria-label": "Clear filter", onclick: () => go(clear) }, icon("x")));
   const cellName = impact || likelihood
     ? `${impact ? nice(impact) + " impact" : "Any impact"}, ${likelihood ? nice(likelihood) + " likelihood" : "any likelihood"}` : "";
-  const feed = d.items.length ? h("div", { class: "items" }, d.items.map(r => {
+  const riskItem = r => {
     const el = h("button", { class: "item", type: "button" },
       h("span", { class: "item-icon warn" }, icon("alert")),
       h("div", { style: "min-width:0" },
@@ -1683,7 +1736,16 @@ async function risksPage() {
       el.classList.add("on"); showMessage(r.communication_id, detail);
     });
     return el;
-  })) : emptyState("No Project Risks", "Nothing labelled as a project risk matches these filters.", "shield");
+  };
+  // The feed shows the newest risks first and loads the rest (up to 200) on "Load More".
+  const feedList = h("div", { class: "items" }, d.items.map(riskItem));
+  const feedCount = badge(num(d.items.length), "warn");
+  const feed = d.items.length ? [feedList, loadMore(d.items.length, (d.items_total ?? d.items.length) > d.items.length,
+    async shown => {
+      const all = await api("/api/risks?" + new URLSearchParams({ days, mailbox, category, property, impact, likelihood }));
+      return { rows: all.items.slice(shown), more: false };
+    }, rows => feedList.append(...rows.map(riskItem)), n => { feedCount.textContent = num(n); })]
+    : emptyState("No Project Risks", "Nothing labelled as a project risk matches these filters.", "shield");
 
   show(
     pageHead("Risk Analysis", "Emails the classifier marked as a risk to a project or property: schedule, cost, disputes, liens, inspections, safety, quality, financing or non-performance.",
@@ -1727,7 +1789,7 @@ async function risksPage() {
           : h("div", {}, h("p", { class: "muted", style: "margin:0 0 12px" }, "Not measured yet. Until you review some emails, treat these counts as the classifier's guess."),
             h("a", { class: "btn sm", href: "/review?source=risks" }, icon("review"), "Review Project Risks")))),
     h("div", { class: "inbox", style: "margin-top:20px" },
-      card({ title: "Risk Feed", actions: badge(num(d.items.length), "warn"), flush: true }, feed), detail),
+      card({ title: "Risk Feed", actions: feedCount, flush: true }, feed), detail),
     note("Built from the Project Risk label, the AI's one-line description and its impact and likelihood rating. The ratings are the AI's reading of each email on its own: uncalibrated proposals, not assessments. The CSV export ignores the property and matrix filters."));
 }
 
@@ -1735,6 +1797,7 @@ async function risksPage() {
 
 const REPORT_DATASETS = [["messages", "Messages"], ["actions", "Action Items"], ["risks", "Project Risks"],
   ["runs", "Run History"], ["mailboxes", "Mailboxes"], ["review_metrics", "Label Review Results"]];
+const RISK_FEED_PAGE = 50;
 const MAIL_SETS = ["messages", "actions", "risks"];
 const GROUP_OPTIONS = [["", "No Grouping (One Row per Message)"], ["mailbox", "Mailbox"], ["sender", "Sender"],
   ["sender_domain", "Sender Company (Domain)"], ["label", "Label"], ["property", "Property / Project"], ["entity", "Legal Entity"],

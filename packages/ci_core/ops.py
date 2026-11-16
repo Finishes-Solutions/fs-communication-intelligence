@@ -473,11 +473,12 @@ def finish_run(
     )
 
 
-def recent_runs(conn: Connection, limit: int = 50) -> list[dict[str, Any]]:
+def recent_runs(conn: Connection, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+    """The newest runs; ``offset`` skips that many (the console's "Load More")."""
     rows = conn.execute(
         "SELECT id, kind, trigger, window_hours, started_at, finished_at, status, counts,"
-        " error_code FROM ops_runs ORDER BY started_at DESC LIMIT %s",
-        (max(1, min(limit, 500)),),
+        " error_code FROM ops_runs ORDER BY started_at DESC, id DESC LIMIT %s OFFSET %s",
+        (max(1, min(limit, 501)), max(0, offset)),
     ).fetchall()
     return [_jsonable(r) for r in rows]
 
