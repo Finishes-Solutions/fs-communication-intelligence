@@ -507,6 +507,23 @@ cd ~/fs-communication-intelligence && git pull && make azure-migrate AZ_PSQL=psq
 
 Until it is applied the page says so; nothing else is affected. Signature images and logos are left out. Search words are not kept in the audit log.
 
+### File previews
+
+**Preview** on any stored file (in Messages, Files, Action Items, Risks and the read-only email page) shows it inside the console instead of downloading it (Matthew, 2026-11-18). On the Files page, clicking a file opens its preview straight away. How each file is shown is decided from its actual bytes, not its name or the sender's claimed type:
+
+| Files | Preview |
+|---|---|
+| PDF; PNG, JPEG, GIF, WebP, BMP, SVG images; MP3, WAV, OGG, M4A audio; MP4, MOV, WebM video | Shown by the browser itself |
+| Excel (.xlsx, .xlsm), CSV, TSV | Tables, the first 300 rows and 40 columns of up to 10 sheets |
+| Word (.docx) | Headings, paragraphs and tables |
+| PowerPoint (.pptx) | Each slide's text |
+| Text, Markdown, JSON, XML, calendar (.ics), logs, saved emails (.eml) | Text |
+| HTML | Its readable text (tags and scripts removed; never shown as a web page) |
+| Zip | The list of files inside (nothing inside is opened) |
+| Anything else (CAD drawings such as .dwg, Outlook .msg, TIFF and HEIC images, old .doc/.xls) | "No preview", plus the extracted text if there is any, and Download |
+
+Office and zip files are read in a separate, time- and memory-limited process, as text extraction does; nothing in a file is run, and nothing from a file is inserted into the page as HTML. Files up to 30 MB can be previewed. Files are still not scanned for malware.
+
 ### Costs page
 
 **Costs** in the console shows two figures side by side:

@@ -1358,6 +1358,7 @@ VIEWER_CALLS = {
     ("GET", "/api/messages"),
     ("GET", "/api/messages/{id}"),
     ("GET", "/api/messages/{id}/files/{file_id}"),
+    ("GET", "/api/messages/{id}/files/{file_id}/preview"),
     ("GET", "/api/actionable"),
     ("GET", "/api/files"),
     ("GET", "/api/files/folders"),
@@ -1565,3 +1566,26 @@ def test_download_links_follow_later_limits_and_key_rotation(
         conn.commit()
     file_links._key_cache.clear()
     assert client.get(url).status_code == 404
+
+
+def test_file_previews(client: TestClient) -> None:
+    """A stored file's preview is described from its bytes; the browser then reads
+    native files itself. Same access as the file: admins, viewers, the files role."""
+    detail = invoice_detail(client)
+    pdf = next(a for a in detail["attachments"] if a["name"] == "Invoice-4471.pdf")
+    url = f"/api/messages/{detail['communication_id']}/files/{pdf['file_id']}/preview"
+    shown = client.get(url, headers=auth()).json()
+    assert shown == {
+        "name": "Invoice-4471.pdf",
+        "size_bytes": pdf["size_bytes"],
+        "mode": "native",
+        "render": "pdf",
+        "media_type": "application/pdf",
+    }
+    for roles in ([READER_ALL, VIEWER_ROLE], [READER_ALL, FILES_ROLE]):
+        assert client.get(url, headers=auth(roles=roles)).json() == shown
+    assert client.get(url, headers=auth(roles=[READER_ALL])).status_code == 403
+    assert client.get(url, headers=auth(roles=[ADMIN_ROLE])).status_code == 404  # no reading role
+    bad = f"/api/messages/{detail['communication_id']}/files/{'0' * 64}/preview"
+    assert client.get(bad, headers=auth()).status_code == 404
+    assert "media-src blob:" in client.get("/", headers=auth()).headers["content-security-policy"]
