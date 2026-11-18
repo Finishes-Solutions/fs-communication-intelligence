@@ -1249,6 +1249,8 @@ VIEWER_CALLS = {
     ("GET", "/api/messages/{id}"),
     ("GET", "/api/messages/{id}/files/{file_id}"),
     ("GET", "/api/actionable"),
+    ("GET", "/api/files"),
+    ("GET", "/api/files/folders"),
     ("GET", "/api/knowledge"),
     ("GET", "/api/knowledge/graph"),
     ("GET", "/api/knowledge/{id}"),
@@ -1334,3 +1336,26 @@ def test_reader_limits_apply_to_console_viewers(client: TestClient) -> None:
         assert len(narrowed["results"]) == len(after)
     finally:
         client.post("/api/reader-limits", headers=auth(), json=limit | {"action": "remove"})
+
+
+def test_files_page_api(client: TestClient) -> None:
+    newest = client.get("/api/files", headers=auth()).json()
+    assert newest["files"] and newest["offset"] == 0
+    assert {"name", "file_key", "communication_id", "emails"} <= newest["files"][0].keys()
+    folders = client.get("/api/files/folders?group_by=company", headers=auth()).json()
+    first = folders["folders"][0]
+    inside = client.get(
+        "/api/files", params={"group_by": "company", "group": first["key"]}, headers=auth()
+    ).json()
+    assert len(inside["files"]) == first["files"]
+    text = client.get("/api/files?q=plumbing&match=text", headers=auth()).json()
+    assert [f["name"] for f in text["files"]] == ["CO-008-BuildingD.pdf"]
+    for bad in (
+        "/api/files?match=all",
+        "/api/files?group_by=nope&group=x",
+        "/api/files?group_by=company",
+        "/api/files/folders?group_by=nope",
+    ):
+        assert client.get(bad, headers=auth()).status_code == 400, bad
+    viewer = auth(oid="viewer-oid", roles=[READER_ALL, VIEWER_ROLE])
+    assert client.get("/api/files", headers=viewer).json() == newest
