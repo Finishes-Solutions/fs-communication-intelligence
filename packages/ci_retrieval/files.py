@@ -21,7 +21,17 @@ from typing import Any
 
 from ci_core.db import Connection
 from ci_retrieval.identity import Principal
-from ci_retrieval.search import _AUTH, Authorization, Filters, _audit, _like, _params, authorize
+from ci_retrieval.search import (
+    _AUTH,
+    Authorization,
+    Filters,
+    _audit,
+    _like,
+    _params,
+    authorize,
+    matched_names,
+    shown_names,
+)
 
 # Folder views: what a file is grouped by. Each is (key, label) SQL over the rows
 # of published_files (alias f); a key that comes from a list (properties,
@@ -45,35 +55,42 @@ GROUPS: dict[str, tuple[str, str]] = {
         "to_char(f.occurred_at AT TIME ZONE %(tz)s, 'YYYY-MM')",
     ),
 }
-# The list each list-valued grouping reads (as x.v); an email without names is in
-# the folder with the empty key ("not found in the email").
-_LISTS = {
-    "project": "unnest(CASE WHEN cardinality(f.properties) = 0"
-    " THEN ARRAY[''] ELSE f.properties END)",
-    "entity": "unnest(CASE WHEN cardinality(f.entities) = 0 THEN ARRAY[''] ELSE f.entities END)",
-}
+# The name list each list-valued grouping reads (column, knowledge kind). Names
+# follow the knowledge base's merges and renames once migration 0034 is applied, so
+# a file sent about "Stokes Rd" sits in the "Gracious Gardens" folder after Stokes
+# Rd was merged into it.
+_LISTS = {"project": ("f.properties", "property"), "entity": ("f.entities", "organization")}
+
+
+def _names(group_by: str, *, matching: bool = False) -> str:
+    """unnest() over a grouping's names (as x.v); an email without names is in the
+    folder with the empty key ("not found in the email"). ``matching``: the written
+    names too, for a search by name."""
+    column, kind = _LISTS[group_by]
+    names = (matched_names if matching else shown_names)(column, kind)
+    return f"unnest(CASE WHEN cardinality({column}) = 0 THEN ARRAY[''] ELSE {names} END)"
 
 
 def _unnest(group_by: str) -> str:
-    return f" CROSS JOIN LATERAL {_LISTS[group_by]} AS x(v)" if group_by in _LISTS else ""
+    return f" CROSS JOIN LATERAL {_names(group_by)} AS x(v)" if group_by in _LISTS else ""
 
 
 def _in_folder(group_by: str) -> str:
     """WHERE for the rows (alias f) of one folder, its key in %(group)s."""
     key, _ = GROUPS[group_by]
     if group_by in _LISTS:
-        return f"WHERE EXISTS (SELECT 1 FROM {_LISTS[group_by]} AS x(v) WHERE {key} = %(group)s)"  # noqa: S608
+        return f"WHERE EXISTS (SELECT 1 FROM {_names(group_by)} AS x(v) WHERE {key} = %(group)s)"  # noqa: S608
     return f"WHERE {key} = %(group)s"
 
 
 def _contains(group_by: str) -> str:
     """Condition (alias f): the grouping's value contains the text %(c_<group_by>)s
     (case-insensitive, already escaped for LIKE). For agents, who know a name, not
-    a folder's exact key."""
+    a folder's exact key; the name as written or as merged both match."""
     key, _ = GROUPS[group_by]
     match = f"{key} ILIKE '%%' || %(c_{group_by})s || '%%'"
     if group_by in _LISTS:
-        return f"EXISTS (SELECT 1 FROM {_LISTS[group_by]} AS x(v) WHERE {match})"  # noqa: S608
+        return f"EXISTS (SELECT 1 FROM {_names(group_by, matching=True)} AS x(v) WHERE {match})"  # noqa: S608
     return match
 
 

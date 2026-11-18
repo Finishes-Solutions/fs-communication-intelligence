@@ -19,7 +19,6 @@ from ci_retrieval.identity import Principal
 from ci_retrieval.search import (
     _AUTH,
     _PUBLISHED,
-    _ROW_FILTERS,
     ACTION_LABELS,
     ACTION_RULE_WHERE,
     NO_FILTERS,
@@ -29,14 +28,17 @@ from ci_retrieval.search import (
     Filters,
     _audit,
     _params,
+    _row_filters,
     _scope,
     action_rule_params,
     as_views,
     authorize,
     fast_reads,
+    name_merges,
     outlook_links,
     person_profile,
     rows_source,
+    shown_names,
 )
 
 Dataset = Literal["messages", "actions", "risks"]
@@ -121,7 +123,7 @@ def _messages_fast(extra_where: str, source: str, keep_copies: bool = False) -> 
                NULL::text AS risk_impact, NULL::text AS risk_likelihood,
                NULL::text AS risk_reason
         FROM {as_views(source)}
-        WHERE {_AUTH.format(a="pc")} {_ROW_FILTERS.format(a="pc")} {extra_where}
+        WHERE {_AUTH.format(a="pc")} {_row_filters("pc")} {extra_where}
         ORDER BY coalesce(pc.internet_message_id, pc.communication_id::text),
                  coalesce(pc.content_fingerprint, ''){copy}, pc.occurred_at DESC,
                  pc.communication_id
@@ -255,6 +257,33 @@ def report_rows(
     return {"dataset": dataset, "total": total, "rows": rows, "truncated": total > len(rows)}
 
 
+def _shown_property_names(conn: Connection, rows: list[dict[str, Any]]) -> None:
+    """Replace each row's ``properties`` with the names as shown (Knowledge merges and
+    renames followed, migration 0034), keeping the written ones in
+    ``written_properties`` for the property filter. One query for all rows."""
+    for r in rows:
+        r["written_properties"] = list(r["properties"] or [])
+    if not name_merges():  # before migration 0034: as written
+        return
+    written = sorted({n for r in rows for n in r["written_properties"]})
+    if not written:
+        return
+    mapped = {
+        m["written"]: m["shown"]
+        for m in conn.execute(
+            "SELECT w AS written, (canonical_names('property', ARRAY[w]))[1] AS shown"
+            " FROM unnest(%s::text[]) AS w",
+            (written,),
+        ).fetchall()
+    }
+    for r in rows:
+        seen: dict[str, str] = {}
+        for n in r["written_properties"]:
+            name = mapped.get(n) or n
+            seen.setdefault(name.casefold(), name)
+        r["properties"] = list(seen.values())
+
+
 def _group_sql(group_by: str) -> tuple[str, str]:
     """(FROM addition, key expression) for a grouping over alias ``m``."""
     local = "(m.occurred_at AT TIME ZONE %(tz)s)"
@@ -263,8 +292,8 @@ def _group_sql(group_by: str) -> tuple[str, str]:
         "sender": ("", "coalesce(m.sender, '(unknown)')"),
         "sender_domain": ("", "coalesce(nullif(split_part(m.sender, '@', 2), ''), '(unknown)')"),
         "label": (", unnest(m.yes_labels) AS lbl", "lbl"),
-        "property": (", unnest(m.properties) AS prop", "prop"),
-        "entity": (", unnest(m.entities) AS ent", "ent"),
+        "property": (f", unnest({shown_names('m.properties', 'property')}) AS prop", "prop"),
+        "entity": (f", unnest({shown_names('m.entities', 'organization')}) AS ent", "ent"),
         "day": ("", f"date_trunc('day', {local})::date::text"),
         "week": ("", f"date_trunc('week', {local})::date::text"),
         "month": ("", f"date_trunc('month', {local})::date::text"),
@@ -290,8 +319,8 @@ def report_groups(
     if group_by not in GROUPS:
         raise ValueError(f"group_by must be one of {', '.join(GROUPS)}")
     where, extra = _dataset_where(conn, dataset, person)
-    join, key = _group_sql(group_by)
     auth = authorize(conn, principal)
+    join, key = _group_sql(group_by)  # after authorize: it notes migration 0034
     groups: list[dict[str, Any]] = []
     if not auth.empty:
         messages, source = _report_messages(
@@ -439,13 +468,16 @@ def risk_overview(
         }
         fast = ratings and _has_label_lookup(conn)
         sql = _RISK_ROWS if fast else f"SELECT * FROM ({_messages(_RISK_WHERE, ratings=ratings)}) m"  # noqa: S608
-        found = conn.execute(sql, p).fetchall()
+        found = [dict(r) for r in conn.execute(sql, p).fetchall()]
+        _shown_property_names(conn, found)
         prop = property.strip().casefold() if property and property.strip() else None
 
         def keep(r: dict[str, Any]) -> bool:  # category and property, as _FILTERS had them
             if category and category not in r["yes_labels"]:
                 return False
-            return prop is None or any(prop in (n or "").casefold() for n in r["properties"])
+            return prop is None or any(
+                prop in (n or "").casefold() for n in (*r["written_properties"], *r["properties"])
+            )
 
         def rated(r: dict[str, Any]) -> bool:
             return (impact is None or (r["risk_impact"] or UNRATED) == impact) and (

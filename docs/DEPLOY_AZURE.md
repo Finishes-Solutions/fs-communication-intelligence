@@ -662,6 +662,12 @@ Status is an AI reading of the replies, uncalibrated until reviewed. Whether a t
 
 The classifier also returns the **properties/projects** an email is about (up to 5) and the **legal entities** it names (up to 8: LLCs, LPs, trusts, funds, companies), exactly as written in the email or its attachments, never inferred. They appear in Messages, the Label check, the Lab, and agent results (`properties_ai`, `entities_ai`). Filter by them in **Messages** (Property, Entity boxes) or from agents (`search_email` / `list_email` with `property` or `entity`): a partial, case-insensitive match, so `property=willow` finds "Willow Creek Retail".
 
+**Merging names in Knowledge (migration 0034, 2026-11-18).** Merging one Knowledge entry into another (for example "Stokes Rd" into "Gracious Gardens") now also applies to the Files folders, the Property and Entity filters, Reports and `email_stats` groupings and the Risk page's property charts, for earlier and later mail, at once and at no AI cost (`docs/KNOWLEDGE.md`). Apply the migration, signed in as `svc_automation@`; until then those pages keep using the names as written:
+
+```bash
+git checkout main && git pull && make azure-migrate AZ_PSQL=psql
+```
+
 Without a list, names appear as each email writes them ("WC Retail", "Willow Creek"). When you have the official lists, add them once; the classifier then prefers the canonical name, and aliases are mapped to it:
 
 ```bash
