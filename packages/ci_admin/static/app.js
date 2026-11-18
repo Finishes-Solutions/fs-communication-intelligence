@@ -3194,10 +3194,9 @@ function excerptEl(e, terms) {
     h("span", { class: "hit-text" }, highlight(snippet(e.text, terms), terms)));
 }
 
-const recentSearches = {
-  list() { try { return JSON.parse(keep.get("recent_searches") || "[]").filter(x => typeof x === "string").slice(0, 6); } catch { return []; } },
-  add(q) { keep.set("recent_searches", JSON.stringify([q, ...this.list().filter(x => x !== q)].slice(0, 6))); },
-};
+// Searches are not remembered (Matthew, 2026-11-18): the console keeps no list of
+// recent searches. Lists saved by earlier versions are deleted when the page loads.
+keep.del("recent_searches");
 function searchUrl(q, extra) {
   const params = new URLSearchParams({ q });
   for (const [k, v] of Object.entries(extra || {})) if (v) params.set(k, v);
@@ -3244,7 +3243,7 @@ function openPalette() {
     paletteOpen = false; dlg.close(); dlg.remove();
   }
   function go(path) { close(); navigate(path); }
-  function seeAll() { const q = input.value.trim(); if (q) { recentSearches.add(q); go(searchUrl(q, { in: where })); } }
+  function seeAll() { const q = input.value.trim(); if (q) go(searchUrl(q, { in: where })); }
   function pick(i) {
     picked = Math.max(0, Math.min(i, items.length - 1));
     items.forEach((it, n) => { it.el.classList.toggle("on", n === picked); it.el.setAttribute("aria-selected", n === picked ? "true" : "false"); });
@@ -3265,12 +3264,6 @@ function openPalette() {
     const heading = text => rows.push(h("div", { class: "pal-label" }, text));
     const pageRow = n => h("button", { type: "button", class: "pal-item pal-page" }, icon(n[2]), h("span", {}, n[1]), h("span", { class: "pal-hint" }, "Go to page"));
     if (!q) {
-      const recent = recentSearches.list();
-      if (recent.length) {
-        heading("Recent Searches");
-        recent.forEach(r => add(h("button", { type: "button", class: "pal-item pal-page" }, icon("clock"), h("span", {}, r)),
-          () => { input.value = r; refresh(true); input.focus(); }));
-      }
       heading("Go To");
       NAV.filter(Boolean).forEach(n => add(pageRow(n), () => go("/" + n[0])));
     } else {
@@ -3287,7 +3280,7 @@ function openPalette() {
             h("span", { class: "pal-date" }, short(r.received_at))),
           h("div", { class: "pal-meta" }, r.sender || "Unknown sender", " · ", r.mailbox),
           (r.excerpts || []).slice(0, 1).map(e => excerptEl(e, terms))),
-          () => { recentSearches.add(q); go(searchUrl(q, { in: where, open: r.communication_id })); }));
+          () => go(searchUrl(q, { in: where, open: r.communication_id }))));
       }
       add(h("button", { type: "button", class: "pal-item pal-page" }, icon("search"),
         h("span", {}, "See all results for “", q, "”"), h("span", { class: "pal-hint" }, "Filters and full list")), seeAll);
@@ -3317,7 +3310,7 @@ function openPalette() {
   }
   // Every search is a full search on the server, and one the person typed past keeps
   // running there. So a search starts only after a pause in typing, from 3 characters
-  // on; Enter (or a recent search, or the Search In switch) starts it at once.
+  // on; Enter (or the Search In switch) starts it at once.
   function refresh(now) {
     clearTimeout(timer); waiting = false;
     const q = input.value.trim();
@@ -3377,7 +3370,6 @@ async function searchPage() {
     for (const k of ["q", "in", "mailbox", "sender", "property", "entity", "label"]) if (f[k].value.trim()) q.set(k, f[k].value.trim());
     if (f.range.value === "custom") { if (f.from.value) q.set("from", f.from.value); if (f.to.value) q.set("to", f.to.value); }
     else if (f.range.value !== "0") q.set("since_days", f.range.value);
-    if (q.get("q")) recentSearches.add(q.get("q"));
     navigate("/search?" + q);
   }
   const filtered = SEARCH_FILTERS.filter(k => p.get(k));
