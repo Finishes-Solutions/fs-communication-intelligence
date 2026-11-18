@@ -109,6 +109,10 @@ def test_other_tools_refuse_risk_only_callers(risky: dict[str, Any]) -> None:
         ("get_file_links", {"communication_ids": [risk]}),
         ("find_knowledge", {}),
         ("get_profile", {"name": "example"}),
+        ("find_files", {}),
+        ("export_email", {"communication_id": risk}),
+        ("get_download_links", {"communication_ids": [risk]}),
+        ("get_file", {"communication_id": risk, "file_id": "0" * 64}),
     ):
         assert tool(risky, RISKY, name, args) == risk_access.REFUSAL, name
 

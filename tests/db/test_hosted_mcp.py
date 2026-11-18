@@ -244,6 +244,10 @@ def test_tools_use_the_callers_identity(app: Any) -> None:
             "find_knowledge",
             "get_profile",
             "get_file_links",
+            "find_files",
+            "export_email",
+            "get_download_links",
+            "get_file",
         }
         report = call_tool(
             client,
@@ -297,7 +301,7 @@ def test_served_through_the_azure_functions_adapter(app: Any) -> None:
 
     anonymous, signed, tools = asyncio.run(scenario())
     assert (anonymous, signed) == (401, 200)
-    assert len(tools["result"]["tools"]) == 11
+    assert len(tools["result"]["tools"]) == 15
 
 
 def test_threads_stats_risks_and_date_filters(app: Any, database_ready: str) -> None:
@@ -409,3 +413,146 @@ def test_threads_stats_risks_and_date_filters(app: Any, database_ready: str) -> 
         )
         assert october["results"] and before["results"] == []
         assert all(r["received_at"] >= "2026-10-01" for r in october["results"])
+
+
+def raw_tool(client: TestClient, bearer: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """The tool's whole MCP result (content blocks), for answers that carry a file."""
+    headers = MCP_HEADERS | {"Authorization": f"Bearer {bearer}"}
+    assert client.post("/mcp", json=INIT, headers=headers).status_code == 200
+    response = client.post(
+        "/mcp", json=rpc("tools/call", {"name": name, "arguments": args}, 2), headers=headers
+    )
+    assert response.status_code == 200, response.text
+    result: dict[str, Any] = response.json()["result"]
+    return result
+
+
+def agent_app(database: str, max_bytes: int, fetched: list[str]) -> Any:
+    """The MCP app with get_file reading files through a stand-in for the console."""
+
+    def fetch(url: str) -> bytes | None:
+        fetched.append(url)
+        return b"%PDF-1.4 stand-in for the stored file"
+
+    settings = Settings(
+        deployment_environment="development",
+        attachment_unsupported_policy="publish_partial",
+        entra_tenant_id=TENANT,
+        search_public_url=BASE,
+        search_api_client_id=API_ID,
+        search_api_app_id_uri=API_URI,
+        admin_public_url="https://admin.example",
+        mcp_inline_file_max_bytes=max_bytes,
+    )
+    return build_http_app(
+        settings,
+        FakeEmbedder(),
+        verifier=VERIFIER,
+        connector=lambda: connect(dbname=database, role="ci_search"),
+        fetch_file=fetch,
+    )
+
+
+def test_agents_find_files_and_get_emails_as_documents(app: Any) -> None:
+    import base64
+    import io
+    import zipfile
+
+    with TestClient(app, base_url=BASE) as client:
+        found = call_tool(client, token(), "find_files", {"query": "invoice", "since_days": None})
+        (invoice,) = [f for f in found["files"] if f["name"] == "Invoice-4471.pdf"]
+        assert invoice["file_id"] and invoice["view_url"].startswith("https://admin.example/read/")
+        assert invoice["download_url"].endswith(f"?file={invoice['file_id']}")
+        text = call_tool(
+            client,
+            token(),
+            "find_files",
+            {"query": "plumbing", "search_in": "text", "since_days": None},
+        )
+        assert [f["name"] for f in text["files"]] == ["CO-008-BuildingD.pdf"]
+        by_company = call_tool(
+            client, token(), "find_files", {"company": "acme-sitework", "since_days": None}
+        )
+        assert by_company["files"] and all(
+            f["sender"].endswith("acme-sitework.example") for f in by_company["files"]
+        )
+        assert call_tool(client, token(roles=[]), "find_files", {"since_days": None})["files"] == []
+
+        cid = invoice["communication_id"]
+        md = call_tool(client, token(), "export_email", {"communication_id": cid})
+        assert md["markdown"].startswith("# Invoice 4471") and md["file_name"].endswith(".md")
+        assert "## Attachments" in md["markdown"] and md["next_offset"] is None
+        page = call_tool(
+            client, token(), "export_email", {"communication_id": cid, "max_chars": 1000}
+        )
+        assert len(page["markdown"]) <= 1000 and page["total_chars"] == md["total_chars"]
+
+        word = raw_tool(
+            client, token(), "export_email", {"communication_id": cid, "format": "docx"}
+        )
+        info = json.loads(word["content"][0]["text"])
+        assert info["file_name"].endswith(".docx") and "/dl/" in info["fetch_url"]
+        blob = word["content"][1]["resource"]
+        assert (
+            blob["mimeType"]
+            == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+        package = zipfile.ZipFile(io.BytesIO(base64.b64decode(blob["blob"])))
+        assert "Invoice 4471" in package.read("word/document.xml").decode()
+
+        missing = call_tool(client, token(roles=[]), "export_email", {"communication_id": cid})
+        assert missing["found"] is False
+
+
+def test_download_links_and_files_inside_the_answer(database_ready: str) -> None:
+    import base64
+
+    fetched: list[str] = []
+    with TestClient(agent_app(database_ready, 4_000_000, fetched), base_url=BASE) as client:
+        found = call_tool(client, token(), "find_files", {"query": "invoice", "since_days": None})
+        invoice = next(f for f in found["files"] if f["name"] == "Invoice-4471.pdf")
+        cid, file_id = invoice["communication_id"], invoice["file_id"]
+
+        links = call_tool(
+            client,
+            token(),
+            "get_download_links",
+            {"communication_ids": [cid], "email_format": "docx"},
+        )
+        (email,) = links["emails"]
+        assert email["email_file"]["fetch_url"].startswith("https://admin.example/dl/")
+        pdf = next(f for f in email["files"] if f.get("file_id") == file_id)
+        assert pdf["fetch_url"].startswith("https://admin.example/dl/") and pdf["fetch_expires_at"]
+        bad = call_tool(
+            client,
+            token(),
+            "get_download_links",
+            {"communication_ids": [cid], "email_format": "exe"},
+        )
+        assert "error" in bad
+        stranger = call_tool(
+            client,
+            token(roles=[], oid="stranger-oid"),
+            "get_download_links",
+            {"communication_ids": [cid]},
+        )
+        assert stranger.get("emails", []) == []
+
+        result = raw_tool(
+            client, token(), "get_file", {"communication_id": cid, "file_id": file_id}
+        )
+        info = json.loads(result["content"][0]["text"])
+        assert info["inline"] is True and info["file_name"] == "Invoice-4471.pdf"
+        assert fetched and fetched[-1].startswith("https://admin.example/dl/")
+        resource = result["content"][1]["resource"]
+        assert resource["mimeType"] == "application/pdf"
+        assert base64.b64decode(resource["blob"]).startswith(b"%PDF")
+        nothing = call_tool(
+            client, token(roles=[]), "get_file", {"communication_id": cid, "file_id": file_id}
+        )
+        assert nothing["found"] is False
+
+    fetched.clear()
+    with TestClient(agent_app(database_ready, 10, fetched), base_url=BASE) as client:
+        big = call_tool(client, token(), "get_file", {"communication_id": cid, "file_id": file_id})
+        assert big["inline"] is False and "fetch_url" in big and fetched == []

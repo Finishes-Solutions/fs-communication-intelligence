@@ -1359,3 +1359,99 @@ def test_files_page_api(client: TestClient) -> None:
         assert client.get(bad, headers=auth()).status_code == 400, bad
     viewer = auth(oid="viewer-oid", roles=[READER_ALL, VIEWER_ROLE])
     assert client.get("/api/files", headers=viewer).json() == newest
+
+
+def download_link(database: str, who: Any, kind: str, cid: str, item: str, **kw: Any) -> str:
+    from ci_retrieval import file_links
+
+    with connect(dbname=database, role="ci_search") as conn:
+        token, _ = file_links.make(conn, who, kind, cid, item, 15, **kw)  # type: ignore[arg-type]
+    return f"/dl/{token}"
+
+
+def test_download_links_open_without_sign_in_for_their_reader(
+    client: TestClient, database_ready: str
+) -> None:
+    from ci_retrieval import file_links
+    from ci_retrieval.identity import Principal
+
+    file_links._key_cache.clear()
+    detail = invoice_detail(client)
+    cid = detail["communication_id"]
+    pdf = next(a for a in detail["attachments"] if a["name"] == "Invoice-4471.pdf")
+    reader = Principal("agent-oid", "agent@finishessolutions.example", (READER_ALL,))
+
+    got = client.get(download_link(database_ready, reader, "file", cid, pdf["file_id"]))
+    assert got.status_code == 200 and got.content.startswith(b"%PDF")
+    assert "attachment;" in got.headers["content-disposition"]
+    assert (
+        got.headers["cache-control"] == "no-store"
+        and "sandbox" in got.headers["content-security-policy"]
+    )
+    md = client.get(download_link(database_ready, reader, "email", cid, "md"))
+    assert md.status_code == 200 and md.text.startswith(f"# {detail['subject']}")
+    assert md.headers["content-disposition"].endswith(".md")
+    word = client.get(download_link(database_ready, reader, "email", cid, "docx"))
+    assert word.status_code == 200 and word.content.startswith(b"PK")  # a zip package
+    audit = latest_audit(database_ready, "file_link_download")
+    assert audit is not None and audit["actor_id"] == "agent-oid"
+
+    refused = {
+        "expired": download_link(database_ready, reader, "file", cid, pdf["file_id"], now=0),
+        "no role": download_link(
+            database_ready, Principal("x-oid", "x@f.example", ()), "file", cid, pdf["file_id"]
+        ),
+        "risk only": download_link(
+            database_ready,
+            Principal("r-oid", "r@f.example", (READER_RISKS,)),
+            "email",
+            cid,
+            "md",
+        ),
+        "wrong file": download_link(database_ready, reader, "file", cid, "0" * 64),
+    }
+    valid = download_link(database_ready, reader, "file", cid, pdf["file_id"])
+    body, mac = valid.removeprefix("/dl/").split(".")
+    refused["tampered"] = f"/dl/{body}.{mac[:-2]}xx"
+    refused["garbage"] = "/dl/not-a-link"
+    for why, url in refused.items():
+        response = client.get(url)
+        assert response.status_code == 404, why
+        assert response.json() == {
+            "error": "This link has expired or cannot be opened. Ask for a new link."
+        }, why
+
+
+def test_download_links_follow_later_limits_and_key_rotation(
+    client: TestClient, database_ready: str
+) -> None:
+    from ci_retrieval import file_links
+    from ci_retrieval.identity import Principal
+
+    file_links._key_cache.clear()
+    detail = invoice_detail(client)
+    cid = detail["communication_id"]
+    upn = "agent.limited@finishessolutions.example"
+    reader = Principal("agent-oid", upn, (READER_ALL,))
+    url = download_link(database_ready, reader, "email", cid, "md")
+    assert client.get(url).status_code == 200
+    # A reader limit added after the link was made applies to it.
+    limit = {
+        "action": "add",
+        "reader": upn,
+        "kind": "mailbox",
+        "value": detail["mailbox"],
+        "reason": "private_business",
+    }
+    assert client.post("/api/reader-limits", headers=auth(), json=limit).status_code == 200
+    try:
+        assert client.get(url).status_code == 404
+    finally:
+        client.post("/api/reader-limits", headers=auth(), json=limit | {"action": "remove"})
+    assert client.get(url).status_code == 200
+    # Rotating the key ends every link made with the old one.
+    with connect(dbname=database_ready, role="ci_operator") as conn:
+        conn.execute("SELECT ci.rotate_file_link_key()")
+        conn.commit()
+    file_links._key_cache.clear()
+    assert client.get(url).status_code == 404

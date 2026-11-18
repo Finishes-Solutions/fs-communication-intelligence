@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -203,6 +203,12 @@ class Settings(BaseSettings):
     # MCP results link to its read-only email page (/read/<id>), which only console
     # admins can open; without it, results carry no view_url.
     admin_public_url: str | None = None
+    # Download links for agents (ci_retrieval.file_links, migration 0033): how long a
+    # link opens without sign-in. Links are bearer secrets; keep this short.
+    file_link_minutes: float = Field(default=15.0, gt=0, le=60)
+    # Largest file the MCP tool get_file returns inside its answer (embedded, base64);
+    # larger files get a download link instead. Platforms may refuse less.
+    mcp_inline_file_max_bytes: int = Field(default=4_000_000, ge=0, le=20_000_000)
 
     # Local-only principal for the MCP server and CLI (AUTH_MODE=local_test).
     local_test_principal_oid: str = "00000000-0000-0000-0000-00000000c0de"
