@@ -140,7 +140,8 @@ class Settings(BaseSettings):
     # Attachment text extraction without OCR or malware scanning: an exception
     # to L11 approved by Matthew on 2026-10-28 for the first real-mail run.
     attachment_extraction_enabled: bool = False
-    attachment_max_bytes: int = 25 * 1024 * 1024
+    # Attachments larger than this are neither read nor kept (50 MB: Matthew, 2026-11-18).
+    attachment_max_bytes: int = 50 * 1024 * 1024
     sensitive_data_policy: SensitiveDataPolicy = SensitiveDataPolicy.MASK
     # Keep original attachment files in Blob Storage (evidence account, container
     # "attachments"), without malware scanning: approved by Matthew on 2026-10-28

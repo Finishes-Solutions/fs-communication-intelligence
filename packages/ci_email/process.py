@@ -48,6 +48,7 @@ from ci_processing.classification import (
 )
 from ci_processing.embedding import Embedder
 from ci_processing.extraction import (
+    EXTRACTOR_VERSION,
     Extraction,
     ExtractionStatus,
     clean_text,
@@ -79,7 +80,7 @@ class Backends:
     embedder: Embedder
     graph: GraphClient | None = None
     extraction_enabled: bool = False
-    attachment_max_bytes: int = 25 * 1024 * 1024
+    attachment_max_bytes: int = 50 * 1024 * 1024
     originals: OriginalStore | None = None  # keep original files (CLAUDE.md section 3a)
     router: PersonRouter | None = None  # step 2 of action items (ci_processing.routing)
     # Set: mask sensitive numbers and credentials (SENSITIVE_DATA_POLICY=mask).
@@ -148,13 +149,15 @@ def _extract_attachments(conn: Connection, job: dict[str, Any], backends: Backen
             else:
                 digest = hashlib.sha256(data).hexdigest()
                 stored = _store_original(conn, backends, digest, data, a["content_type"])
+                # The same file read before. "Unsupported" counts only from the current
+                # extractor: an older one may not have read the type (ZIPs before v2).
                 reused = conn.execute(
                     "SELECT a.extraction_status, t.content FROM email_attachments a"
                     " LEFT JOIN version_texts t ON t.version_id = a.version_id"
                     "  AND t.text_kind = 'attachment' AND t.ref = a.native_attachment_id"
-                    " WHERE a.sha256 = %s AND a.extraction_status IN"
-                    "  ('extracted', 'no_text', 'unsupported') LIMIT 1",
-                    (digest,),
+                    " WHERE a.sha256 = %s AND (a.extraction_status IN ('extracted', 'no_text')"
+                    "  OR (a.extraction_status = 'unsupported' AND a.extractor = %s)) LIMIT 1",
+                    (digest, EXTRACTOR_VERSION),
                 ).fetchone()
                 if reused:
                     result = Extraction(
@@ -171,7 +174,7 @@ def _extract_attachments(conn: Connection, job: dict[str, Any], backends: Backen
             (
                 result.status.value,
                 digest,
-                "extract-v1-no-ocr",
+                EXTRACTOR_VERSION,
                 len(result.text) or None,
                 stored,
                 job["version_id"],
@@ -941,6 +944,39 @@ def requeue_failed_attachments(conn: Connection) -> int:
         " extracted_chars = NULL WHERE version_id = ANY(%s)"
         " AND extraction_status IN ('failed', 'timeout')",
         (versions,),
+    )
+    return _requeue(conn, versions)
+
+
+def requeue_zips_and_large_attachments(conn: Connection, max_bytes: int) -> int:
+    """Reprocess messages with a ZIP archive that an older extractor could not read, or an
+    attachment that was over the size limit then and fits ``max_bytes`` now (Matthew,
+    2026-11-18: ZIPs read, limit 50 MB). Those attachments are downloaded and read again;
+    each message is classified again, since its input changes. Returns the number of
+    messages requeued."""
+    match = (
+        "((a.extraction_status = 'unsupported' AND a.extractor IS DISTINCT FROM %(extractor)s"
+        "   AND (lower(a.name) LIKE '%%.zip'"
+        "    OR lower(coalesce(a.content_type, '')) LIKE '%%zip%%'))"
+        " OR (a.extraction_status = 'too_large' AND a.size_bytes <= %(max_bytes)s))"
+    )
+    params = {"extractor": EXTRACTOR_VERSION, "max_bytes": max_bytes}
+    versions = [
+        r["version_id"]
+        for r in conn.execute(
+            "SELECT DISTINCT a.version_id FROM email_attachments a"  # noqa: S608 - constant
+            " JOIN communication_versions v ON v.id = a.version_id"
+            f" WHERE {match}"
+            " AND v.processing_state IN ('published', 'held', 'rejected')",
+            params,
+        ).fetchall()
+    ]
+    if not versions:
+        return 0
+    conn.execute(
+        "UPDATE email_attachments a SET extraction_status = 'not_attempted', extractor = NULL,"  # noqa: S608
+        f" extracted_chars = NULL WHERE a.version_id = ANY(%(versions)s) AND {match}",
+        {**params, "versions": versions},
     )
     return _requeue(conn, versions)
 

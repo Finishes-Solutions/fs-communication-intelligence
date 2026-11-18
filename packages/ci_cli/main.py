@@ -27,6 +27,7 @@ The database comes from the standard ``PG*`` environment variables; locally,
     ci capture --hours 24                     store mail received in the last N hours
     ci process [--limit N] [--retry-failed]   extract, screen, classify, embed, publish
     ci process --retry-attachments --limit 0  re-read failed attachments (the app reprocesses)
+    ci process --retry-zips-and-large --limit 0  read ZIPs and files now under the size limit
     ci process --remask --limit 0             reprocess everything under the masking rules
     ci process --retry-skipped [--domain D] --limit 0
                                               process skipped bulk/automated mail in full
@@ -190,6 +191,12 @@ def _parser() -> argparse.ArgumentParser:
         "--retry-attachments",
         action="store_true",
         help="re-read attachments that failed and reprocess their messages",
+    )
+    process.add_argument(
+        "--retry-zips-and-large",
+        action="store_true",
+        help="read ZIP archives an older version could not, and attachments that were over"
+        " the size limit then and fit it now; their messages are reprocessed",
     )
     process.add_argument(
         "--extract-pending",

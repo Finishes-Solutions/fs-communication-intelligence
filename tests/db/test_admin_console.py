@@ -26,11 +26,13 @@ from ci_email.process import (
     Backends,
     process_all,
     requeue_failed_attachments,
+    requeue_zips_and_large_attachments,
     store_missing_originals,
 )
 from ci_email.risk_ratings import rate_pending_risks
 from ci_processing.classification import FakeClassifier
 from ci_processing.embedding import FakeEmbedder
+from ci_processing.extraction import EXTRACTOR_VERSION
 from ci_processing.originals import DirectoryStore
 from ci_processing.risk_rating import FakeRiskRater
 from ci_processing.routing import FakePersonRouter
@@ -676,6 +678,78 @@ def test_failed_attachments_are_reread_and_messages_republished(
         ).fetchall()
     assert rows and all(
         r["extraction_status"] == "extracted"
+        and r["processing_state"] == "published"
+        and r["attachment_chunks"] > 0
+        for r in rows
+    )
+
+
+def test_zips_and_newly_allowed_sizes_are_reread(
+    database_ready: str, files: DirectoryStore
+) -> None:
+    """``ci process --retry-zips-and-large``: a ZIP an older extractor called unsupported,
+    and a file that was over the old size limit, are read again; a ZIP the current
+    extractor already called unsupported, and a file still too large, are left alone."""
+
+    def ingest() -> Connection:
+        return connect(dbname=database_ready, role="ci_ingest")
+
+    mb = 1024 * 1024
+    with connect(dbname=database_ready) as conn:
+        targets = conn.execute(
+            "SELECT version_id, native_attachment_id FROM email_attachments"
+            " WHERE name IN ('Invoice-4471.pdf', 'CO-007-BuildingC.pdf') ORDER BY name"
+        ).fetchall()
+        assert len(targets) == 2
+        (zip_v, zip_a), (big_v, big_a) = (
+            (t["version_id"], t["native_attachment_id"]) for t in targets
+        )
+        # An old "unsupported" ZIP (the fixture serves PDF bytes; type comes from the bytes).
+        conn.execute(
+            "UPDATE email_attachments SET name = 'Package.zip', extraction_status = 'unsupported',"
+            " extractor = 'extract-v1-no-ocr' WHERE version_id = %s AND native_attachment_id = %s",
+            (zip_v, zip_a),
+        )
+        # Over the old 25 MB limit, under the new 50 MB one.
+        conn.execute(
+            "UPDATE email_attachments SET extraction_status = 'too_large', size_bytes = %s"
+            " WHERE version_id = %s AND native_attachment_id = %s",
+            (40 * mb, big_v, big_a),
+        )
+        conn.commit()
+    with ingest() as conn:
+        assert requeue_zips_and_large_attachments(conn, 25 * mb) == 1  # only the ZIP
+        conn.rollback()
+        requeued = requeue_zips_and_large_attachments(conn, 50 * mb)
+        conn.commit()
+    assert requeued == 2
+    with ingest() as conn:  # nothing left to requeue
+        assert requeue_zips_and_large_attachments(conn, 50 * mb) == 0
+    counts = process_all(
+        ingest,
+        Backends(
+            FakeScreener(),
+            FakeClassifier(),
+            FakeEmbedder(),
+            graph=FixtureGraphClient.from_directory(),
+            extraction_enabled=True,
+            originals=files,
+        ),
+        workers=1,
+    )
+    assert counts.get("failed", 0) == 0
+    with connect(dbname=database_ready) as conn:
+        rows = conn.execute(
+            "SELECT a.extraction_status, a.extractor, v.processing_state,"
+            " (SELECT count(*) FROM chunks c WHERE c.version_id = v.id"
+            "   AND c.chunk_kind = 'attachment_text') AS attachment_chunks"
+            " FROM email_attachments a JOIN communication_versions v ON v.id = a.version_id"
+            " WHERE (a.version_id, a.native_attachment_id) IN ((%s, %s), (%s, %s))",
+            (zip_v, zip_a, big_v, big_a),
+        ).fetchall()
+    assert len(rows) == 2 and all(
+        r["extraction_status"] == "extracted"
+        and r["extractor"] == EXTRACTOR_VERSION
         and r["processing_state"] == "published"
         and r["attachment_chunks"] > 0
         for r in rows

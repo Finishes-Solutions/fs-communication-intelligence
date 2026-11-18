@@ -88,7 +88,8 @@ Track edits, revocations, deletions and retention changes across source links, s
 | Mixed text/scanned PDF | Page-aware extraction/OCR and coverage verification |
 | JPG/PNG/TIFF, including inline image attachments | Unsupported; no OCR or content indexing |
 | DOC/DOCX, XLS/XLSX, PPT/PPTX, TXT/CSV | Unsupported; no conversion or extraction |
-| ZIP/other archives, attached email items, linked/cloud attachments | Unsupported; no unpacking, recursion or external fetching |
+| ZIP archives | **Dev, since 2026-11-18 (CLAUDE.md §3a):** opened in memory, files inside read like attachments, nested ZIPs to 10 levels, with decompressed-size, file-count, memory and time limits. No malware scanning yet |
+| 7z/RAR and other archives, attached email items, linked/cloud attachments | Unsupported; no unpacking, recursion or external fetching |
 | Encrypted/corrupt/over-limit PDF or uncertain file type | Held with a reason; no successful publication |
 | PDF with embedded payloads/unsupported active features | Held; no recursion or execution |
 

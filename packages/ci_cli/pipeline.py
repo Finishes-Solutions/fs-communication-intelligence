@@ -29,6 +29,7 @@ from ci_email.process import (
     requeue_skipped,
     requeue_unextracted_attachments,
     requeue_unscreened,
+    requeue_zips_and_large_attachments,
     retry_failed,
 )
 from ci_email.resolutions import resolve_pending_actions
@@ -198,6 +199,11 @@ def process(args: argparse.Namespace) -> None:
             count = requeue_failed_attachments(conn)
             conn.commit()
         print(f"requeued {count} message(s) whose attachments failed to read")
+    if args.retry_zips_and_large:
+        with connect(role="ci_ingest") as conn:
+            count = requeue_zips_and_large_attachments(conn, settings.attachment_max_bytes)
+            conn.commit()
+        print(f"requeued {count} message(s) with a ZIP or an attachment now under the size limit")
     if args.extract_pending:
         with connect(role="ci_ingest") as conn:
             count = requeue_unextracted_attachments(conn, args.limit or None)
