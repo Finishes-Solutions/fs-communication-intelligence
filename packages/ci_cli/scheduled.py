@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 import psycopg
 
 from ci_cli import backends
-from ci_cli.pipeline import capture_profile, connection_and_corpus
+from ci_cli.pipeline import capture_profile, connection_and_corpus, refresh_counts
 from ci_core import ops
 from ci_core.db import AppRole, Connection, connect
 from ci_core.runtime import EmptyScopeError, RuntimeConfigError
@@ -135,6 +135,8 @@ def scheduler_tick(settings: Settings, now: datetime | None = None) -> ops.Decis
         log.exception("capture failed")
     with connect(role="ci_ingest") as conn:
         ops.finish_run(conn, run_id, status, counts, error)
+    if status in ("succeeded", "partial"):
+        refresh_counts()  # the dashboard's stored counts (migration 0036)
     return decision
 
 
@@ -181,6 +183,8 @@ def run_backfill(
         with connect(role="ci_ingest") as conn:
             ops.finish_backfill_window(conn, window, status, counts, error)
             conn.commit()
+        if status in ("succeeded", "partial"):
+            refresh_counts()  # at most once per 5 minutes, however short the windows
         if status == "refused":
             log.warning("backfill stopped: capture refused (%s); windows stay pending", error)
             break
@@ -262,5 +266,7 @@ def run_processing(settings: Settings) -> dict[str, int] | None:
             ops.finish_run(conn, run_id, status, counts, error)
         else:  # nothing was queued: keep the history to runs that did work
             conn.execute("DELETE FROM ops_runs WHERE id = %s", (run_id,))
+    if counts:
+        refresh_counts()  # the dashboard's stored counts (migration 0036)
     log.info("processing counts=%s", counts)
     return counts

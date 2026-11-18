@@ -166,6 +166,17 @@ def capture_profile(settings: Settings) -> dict[str, Any]:
     }
 
 
+def refresh_counts() -> None:
+    """Recount the stored dashboard and coverage counts (migration 0036) after a
+    capture or processing run that did work, on a connection of its own. It never
+    fails the run: the database skips it when the counts are under 5 minutes old."""
+    try:
+        with connect(role="ci_ingest") as conn:
+            ops.refresh_counts(conn)
+    except Exception as exc:  # e.g. the connection: the run's result stands
+        log.warning("counts not refreshed: %s", type(exc).__name__)
+
+
 def capture(args: argparse.Namespace) -> None:
     settings = load_settings()
     results = capture_window(
@@ -176,6 +187,7 @@ def capture(args: argparse.Namespace) -> None:
         profile=capture_profile(settings),
         workers=args.workers,
     )
+    refresh_counts()
     total: Counter[str] = Counter()
     for r in results:
         total.update(r.counts)
@@ -257,6 +269,7 @@ def process(args: argparse.Namespace) -> None:
             with connect(role="ci_ingest") as conn:
                 record_usage(conn, configured.meter.drain(), source="cli")
                 conn.commit()
+    refresh_counts()
     print(f"processed: {dict(sorted(counts.items()))}")
 
 

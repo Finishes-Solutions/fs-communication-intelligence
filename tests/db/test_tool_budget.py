@@ -118,6 +118,24 @@ def test_the_budget_holds_in_separate_transactions_and_inside_a_long_one(
     assert timeout(search) == "40s"
 
 
+def test_a_spent_budget_is_not_mistaken_for_a_missing_migration(search: Connection) -> None:
+    """Action items read their resolutions and carry on without them on a database
+    that lacks migration 0026. Only that case is caught: with the budget spent the
+    call must end, not answer as if nothing were resolved."""
+    from ci_retrieval import search as retrieval
+
+    items: list[dict[str, Any]] = [{"communication_id": "00000000-0000-0000-0000-000000000000"}]
+    nobody: Any = None  # the reader is not looked at before the first statement
+    with a_budget(0.0), budget.budgeted(search), pytest.raises(budget.ToolBudgetSpent):
+        retrieval._attach_resolutions(search, nobody, items)
+    search.rollback()
+    # As before migration 0026: the view is not found, and the rollback it does
+    # then also ends this setting.
+    search.execute("SET LOCAL search_path = pg_catalog")
+    retrieval._attach_resolutions(search, nobody, items)
+    assert items[0]["status"] == "open" and items[0]["resolution_ai"] is None
+
+
 def test_a_tool_whose_statements_use_up_the_budget_answers_too_slow(
     database: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

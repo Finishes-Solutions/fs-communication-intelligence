@@ -13,6 +13,13 @@ nothing behind on a pooled connection. It is set again at the start of each
 transaction, whenever the last one is older than ``REFRESH_SECONDS``, and before
 every statement in the budget's last ``REFRESH_SECONDS``. Inside one transaction
 a statement may therefore run up to ``REFRESH_SECONDS`` past the budget.
+
+Two limits, neither reachable from the retrieval code today. Rolling back to a
+savepoint (``conn.transaction()`` inside a transaction) also undoes a local
+setting made after the savepoint, so until the next refresh, at most
+``REFRESH_SECONDS``, a statement there runs under the limit set before it. On an
+autocommit connection a transaction-local setting ends with its own statement, so
+the budget would stop nothing: only the "nothing left" check would apply.
 """
 
 from __future__ import annotations

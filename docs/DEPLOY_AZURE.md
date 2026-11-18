@@ -329,6 +329,32 @@ Each search logs its timings to App Insights, with no query text: `search timing
 traces | where message startswith "search timings" | order by timestamp desc | take 50
 ```
 
+**Stored counts for the Overview and the coverage block (migration 0036, 2026-11-18).** The console Overview counted three whole tables on every load, and every search result's coverage block counted every email (cached 30 minutes per app instance, so the first search on a new instance paid for it). Migration 0036 adds a small table, `ops_counts`, that keeps those counts. The ingestion app recounts it after each capture or processing run that did work, at most once every 5 minutes. Nothing is written per email.
+
+- **On the Overview:** Published Messages, the failed count, Message States, Labels, Attachments and Failures come from the stored counts, and a line under the heading says when they were taken. Mode, Waiting to Process, the email dates, mailboxes and Recent Runs are still live. A change made without a run (Requeue Failed, a mail rule) shows after the next run.
+- **In search results:** the coverage block is read from the stored counts and read again after a minute. After a mode change the stored coverage is not used until the next recount.
+- **Before the first recount, or without the migration,** everything is counted live as before, and the Overview shows no line. The code can be deployed before or after the migration.
+
+Apply it signed in as `svc_automation@` (seconds; it only creates the table):
+
+```bash
+cd ~/fs-communication-intelligence && git pull && make azure-migrate AZ_PSQL=psql
+```
+
+The counts appear after the next run that did work. To fill them at once, in `psql` on the database as the migrating login:
+
+```sql
+SELECT ci.refresh_ops_counts('0');
+SELECT name, refreshed_at FROM ci.ops_counts;
+```
+
+The first line answers `t` and the second lists six rows. A recount that fails never fails the run: the ingestion log has `counts not refreshed: <error type>` and the old counts stay.
+
+Tested locally on the synthetic fixtures only. Not verified in Azure:
+
+- **How long a recount takes on the real data.** It runs the same six counts the pages ran, once per run instead of once per load; the planning estimate is 8 to 10 seconds added to a run that did work, which is a guess until measured.
+- **That the migrating login can read the six counting views.** The recount runs as the login that applied the migration. Locally a login with no superuser and read access to the schema is enough. If the `SELECT ci.refresh_ops_counts('0');` above fails with permission denied, the views belong to another login: ask before changing any grant.
+
 **Console page loading.** The console sends its page, script, stylesheet and API replies compressed (about 280 KB of script and styles becomes about 80 KB), and stored files as they are. The page names its script and stylesheet with a version taken from their contents, so the browser keeps them for a year and downloads them again only after a deploy changes them; the page itself is never cached. The label names are kept in the browser from the last visit and refreshed in the background, so a page's data is no longer requested only after the label list arrives. The first visit after a quiet period still waits for the console app to start.
 
 **Reused database connections.** The search app and the console keep up to `DB_POOL_SIZE` (default 4) open database connections per role and lend them to requests one at a time (`ci_core.db.ConnectionPool`), so a request no longer pays for a new connection: a TLS handshake, an Entra token and four setup statements. A connection is replaced after 30 minutes, checked with `SELECT 1` when it sat unused for over a minute, and closed instead of reused when it is broken or left in a transaction. To turn reuse off without a deploy, set the app setting to 0 on the app in question:
@@ -519,7 +545,7 @@ It needs database migration 0033 (the link signing key, made inside the database
 
 A web page at `https://func-fs-ci-adm-dev-1026.azurewebsites.net/` for console admins (you, for now):
 
-- **Overview:** mode, schedule, backlog, message states and reasons, labels, attachment extraction, failures, and recent runs. Also **Requeue Failed**.
+- **Overview:** mode, schedule, backlog, message states and reasons, labels, attachment extraction, failures, and recent runs. Also **Requeue Failed**. Once migration 0036 is applied, the published and failed counts and the charts are as of the last capture or processing run, and a line under the heading gives the time (see Search speed, "Stored counts").
 - **Schedule & Runs:** how often capture runs, its look-back, active hours, weekdays only, processing on/off, and **Run Capture Now** (look back up to 93 days). Below that, every run with its counts.
 - **Connections** (under Lab): how to connect Claude, ChatGPT and Copilot Studio, with the MCP URL, sign-in URLs, scope and each platform's client ID ready to copy (§10). Needs `scripts/azure/7-connections-page.sh` once.
 - **Mailboxes:** filter, approve or unapprove, exclude or un-exclude (with a reason), approve all enrolled, change mode, and exclude a person or domain in every mailbox.

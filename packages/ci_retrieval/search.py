@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from psycopg.errors import UndefinedFunction, UndefinedTable
+
 from ci_core.db import Connection
 from ci_processing.embedding import Embedder
 from ci_retrieval.identity import READER_ALL, Principal
@@ -50,6 +52,8 @@ NEAREST_K = 200
 # an hour old is fine: the count takes seconds once a year of mail is stored, and
 # the request that recounts waits for it.
 COVERAGE_SECONDS = 1800.0
+# An answer read from the stored counts (migration 0036) is kept this long.
+COVERAGE_STORED_SECONDS = 60.0
 MAX_CHUNKS_PER_MESSAGE = 3
 ACTION_LABELS = ("action_required", "approval_required")
 # Executive "risks" are risks to a project or property (Matthew, 2026-10-28), not
@@ -527,17 +531,45 @@ def _audit(conn: Connection, principal: Principal, action: str, details: dict[st
     )
 
 
-_coverage_cache: dict[str, tuple[float, dict[str, int]]] = {}
+# database -> (when read, the answer, whether it came from the stored counts)
+_coverage_cache: dict[str, tuple[float, dict[str, int], bool]] = {}
 _coverage_lock = threading.Lock()
 
 
+def _stored_coverage(conn: Connection) -> list[dict[str, Any]] | None:
+    """The coverage counts kept by ``ci.refresh_ops_counts`` (migration 0036), or
+    None to count live: without the migration, before its first refresh, or after
+    a mode change (the view then has no row). The check asks instead of trying, so
+    no error is raised or caught and a statement stopped by the tool's time budget
+    is never mistaken for a missing migration."""
+    readable = conn.execute(
+        "SELECT coalesce(has_table_privilege(to_regclass('ci.coverage_snapshot')::oid,"
+        " 'SELECT'), false) AS readable"
+    ).fetchone()
+    if not readable or not readable["readable"]:
+        return None
+    stored = conn.execute("SELECT rows FROM coverage_snapshot").fetchone()
+    return None if stored is None else list(stored["rows"])
+
+
 def coverage(conn: Connection, *, max_age: float = COVERAGE_SECONDS) -> dict[str, int]:
-    """Messages per processing state, recounted at most every ``max_age`` seconds."""
+    """Messages per processing state. Read from the stored counts when there are
+    any (cheap, so read again after ``COVERAGE_STORED_SECONDS``), otherwise counted
+    live at most every ``max_age`` seconds."""
     with _coverage_lock:
         cached = _coverage_cache.get(conn.info.dbname)
-        if cached and time.monotonic() - cached[0] < max_age:
-            return dict(cached[1])
-    rows = conn.execute("SELECT processing_state, reason, messages FROM coverage_counts").fetchall()
+        if cached:
+            keep = min(max_age, COVERAGE_STORED_SECONDS) if cached[2] else max_age
+            if time.monotonic() - cached[0] < keep:
+                return dict(cached[1])
+    stored = _stored_coverage(conn)
+    rows = (
+        stored
+        if stored is not None
+        else conn.execute(
+            "SELECT processing_state, reason, messages FROM coverage_counts"
+        ).fetchall()
+    )
     out: dict[str, int] = {}
     for r in rows:
         key = (
@@ -547,7 +579,7 @@ def coverage(conn: Connection, *, max_age: float = COVERAGE_SECONDS) -> dict[str
         )
         out[key] = out.get(key, 0) + int(r["messages"])
     with _coverage_lock:
-        _coverage_cache[conn.info.dbname] = (time.monotonic(), out)
+        _coverage_cache[conn.info.dbname] = (time.monotonic(), out, stored is not None)
     return dict(out)
 
 
@@ -1468,7 +1500,9 @@ def _attach_resolutions(
             " FROM published_action_resolutions WHERE communication_id = ANY(%s::uuid[])",
             ([i["communication_id"] for i in items],),
         ).fetchall()
-    except Exception:  # a database without migration 0026: every item stays open
+    except UndefinedTable, UndefinedFunction:
+        # A database without migration 0026: every item stays open. Nothing else is
+        # caught: a statement stopped by the tool's time budget must end the call.
         conn.rollback()
         return
     if not rows:
