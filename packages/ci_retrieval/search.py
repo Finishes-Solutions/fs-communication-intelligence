@@ -984,6 +984,13 @@ def _label_lookup(conn: Connection) -> bool:
 # end date and stops at the first that fills the page.
 _LOOK_BACK_DAYS = (3, 30, 365)
 
+# The columns a listing reads from a published_window row (alias pc).
+_LIST_COLUMNS = """pc.communication_id::text AS communication_id, pc.title, pc.occurred_at,
+               pc.source_url, pc.mailbox_address, pc.internet_message_id,
+               pc.content_fingerprint, pc.direction, pc.sender, pc.yes_labels,
+               pc.disposition, pc.summary, pc.action_text, pc.action_for, pc.due_text,
+               pc.risk_text, pc.properties, pc.entities"""
+
 
 def _listing_rows(
     conn: Connection,
@@ -1002,11 +1009,7 @@ def _listing_rows(
 
     def sql(since: datetime | None) -> str:
         return f"""
-        SELECT pc.communication_id::text AS communication_id, pc.title, pc.occurred_at,
-               pc.source_url, pc.mailbox_address, pc.internet_message_id,
-               pc.content_fingerprint, pc.direction, pc.sender, pc.yes_labels,
-               pc.disposition, pc.summary, pc.action_text, pc.action_for, pc.due_text,
-               pc.risk_text, pc.properties, pc.entities
+        SELECT {_LIST_COLUMNS}
         FROM {as_views(rows_source(wanted, since))}
         WHERE {_AUTH.format(a="pc")} {_row_filters("pc")} {extra_where}
         ORDER BY pc.occurred_at DESC, pc.communication_id
@@ -1035,6 +1038,87 @@ def _listing_rows(
     return rows
 
 
+# ----- a list page costs a page (migration 0037) ------------------------------
+# published_page returns the newest row_limit published emails of the period;
+# the listing applies _AUTH and the filters to those in the same statement. A
+# page that the newest rows fill costs about those rows instead of the whole
+# period. When they do not fill it (a rare label, property or entity, an
+# own-mailbox or risk-only reader, one person's action items), more rows are
+# asked for once, then the 0031 read is used as before (Cody, 2026-11-18).
+PAGE_ROWS_MIN = 200
+PAGE_ROWS_MAX = 20_000
+
+
+def paged_reads(conn: Connection) -> bool:
+    """True once migration 0037 is applied; until then lists use the 0031 read."""
+    row = conn.execute(
+        "SELECT to_regprocedure('ci.published_page(timestamptz, timestamptz, text, text,"
+        " integer)') IS NOT NULL AS ok"
+    ).fetchone()
+    return bool(row and row["ok"])
+
+
+def _listing_rows_paged(
+    conn: Connection,
+    auth: Authorization,
+    filters: Filters,
+    extra_where: str,
+    extra: dict[str, Any],
+    need: int,
+    labels: Sequence[str] | None,
+) -> list[dict[str, Any]] | None:
+    """The listing's rows, newest first, from the newest emails only (0037); None
+    when they do not give ``need`` emails, for the caller to read as before.
+
+    The rows authorized and filtered among the newest N emails are the first rows
+    of the whole answer, so once they hold ``need`` different emails (copies
+    collapse later) the page is the same as _listing_rows gives. When fewer than N
+    came back, the period was read whole: that is _listing_rows' answer too."""
+    wanted = list(labels) if labels else ([filters.label] if filters.label else None)
+    labelled = "AND pc.yes_labels && %(src_labels)s::text[]" if wanted else ""
+    sql = f"""
+    WITH page AS MATERIALIZED (SELECT * FROM published_page(
+            %(since)s::timestamptz, %(until)s::timestamptz, %(mailbox)s::text,
+            %(sender)s::text, %(row_limit)s::integer))
+    SELECT m.scanned, x.*
+    FROM (SELECT count(*) AS scanned FROM page) m
+    LEFT JOIN LATERAL (
+        SELECT {_LIST_COLUMNS}
+        FROM {as_views("page")}
+        WHERE {_AUTH.format(a="pc")} {_row_filters("pc")} {labelled} {extra_where}) x ON true
+    ORDER BY x.occurred_at DESC NULLS LAST, x.communication_id::uuid"""  # noqa: S608 - fragments are constants; values are bound parameters
+
+    params = _params(auth, filters) | extra | {"src_labels": wanted, "only_ids": None}
+    # The newest rows cost the same whatever the period, so the whole period is
+    # asked for at once: the first rows of a shorter period are the same rows.
+    # Only a mailbox makes published_page read that mailbox's whole period first,
+    # so there the growing periods of _listing_rows are kept.
+    narrow = filters.sender or filters.property or filters.entity
+    spans: list[int | None] = [None]
+    if filters.since is None and filters.mailbox and not narrow:
+        spans = [*_LOOK_BACK_DAYS, None]
+    end = filters.until or datetime.now(UTC)
+    first = min(max(PAGE_ROWS_MIN, 3 * need), PAGE_ROWS_MAX)
+    row_limits = sorted({first, min(first * 10, PAGE_ROWS_MAX)})
+    for span in spans:
+        since = filters.since if span is None else end - timedelta(days=span)
+        rows: list[dict[str, Any]] = []
+        for row_limit in row_limits:
+            found = conn.execute(sql, params | {"since": since, "row_limit": row_limit}).fetchall()
+            scanned = found[0]["scanned"] if found else 0
+            rows = [r for r in found if r["communication_id"] is not None]
+            if len({_copy_group(r) for r in rows}) >= need:
+                return rows
+            if scanned < row_limit:
+                break  # every email of the period was read
+        else:
+            return None  # the newest rows were cut and still do not fill the page
+        if span is None:
+            # _listing_rows keeps at most this many rows of the whole period.
+            return rows[: max(500, need * 3)]
+    return None
+
+
 def _copy_group(r: dict[str, Any]) -> tuple[str, str]:
     """Mailbox copies of one message share this key."""
     return (r["internet_message_id"] or r["communication_id"], r["content_fingerprint"] or "")
@@ -1060,15 +1144,26 @@ def _listing(
     yes (the caller's filter requires it), so the candidates come from the label
     index (published_labelled, 0021).
 
-    With migration 0031 the rows come from the set-based functions. Without it,
+    With migration 0037 a list without ``ids`` or ``conversation`` first reads
+    only the newest emails (``_listing_rows_paged``). With migration 0031 the rows
+    come from the set-based functions. Without it,
     from the views (``_listing_rows_views``): the answer is the same, more slowly,
     and at most the newest 500 rows are read."""
     auth = authorize(conn, principal)
     if auth.empty:
         return []
     if fast_reads(conn):
-        rows = _listing_rows(
-            conn, auth, filters, extra_where, extra, offset + limit, ids, labels, conversation
+        paged = None
+        if ids is None and conversation is None and paged_reads(conn):
+            paged = _listing_rows_paged(
+                conn, auth, filters, extra_where, extra, offset + limit, labels
+            )
+        rows = (
+            paged
+            if paged is not None
+            else _listing_rows(
+                conn, auth, filters, extra_where, extra, offset + limit, ids, labels, conversation
+            )
         )
     else:
         if conversation is not None:

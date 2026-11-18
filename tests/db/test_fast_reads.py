@@ -1,16 +1,18 @@
 """The set-based reads of migration 0031 (ci.published_window and the chunk
 functions) against the published_* views they replace: every list, report and
 search gives the same answer either way, for every kind of reader, and the lists
-page. Synthetic fixtures only; how fast each is on a large database is measured
-separately (docs/DATABASE.md).
+page. Lists also read the newest emails first (ci.published_page, migration
+0037): those answers are compared with both. Synthetic fixtures only; how fast
+each is on a large database is measured separately (docs/DATABASE.md).
 """
 
 import json
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+import psycopg
 import pytest
 
 from ci_cli.seed import seed
@@ -91,6 +93,77 @@ def both_ways(
 
 
 Call = Callable[[Connection], Any]
+MODES = ("paged", "set", "views")
+
+
+def ways(
+    stack: Callable[[AppRole | None], Connection],
+    monkeypatch: pytest.MonkeyPatch,
+    call: Call,
+) -> dict[str, Any]:
+    """``call`` reading the newest emails first (0037), set-based (0031, as before
+    0037) and through the views (as before 0031)."""
+    answers = {}
+    for mode in MODES:
+        with monkeypatch.context() as patch:
+            if mode != "paged":
+                patch.setattr(retrieval, "paged_reads", lambda conn: False)
+            if mode == "views":
+                patch.setattr(retrieval, "fast_reads", lambda conn: False)
+                patch.setattr(reports, "fast_reads", lambda conn: False)
+            with stack("ci_search") as conn:
+                answers[mode] = call(conn)
+                conn.rollback()
+    return answers
+
+
+class _Rows:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self.rows = rows
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return self.rows
+
+
+def spy_outcomes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Records how each paged listing ended: ``filled`` (the newest rows held the
+    page), ``read whole`` (fewer rows than asked for: the period was read whole)
+    or ``fallback`` (None: the caller reads as before 0037)."""
+    seen: list[str] = []
+    real = retrieval._listing_rows_paged
+
+    def spy(conn: Connection, *args: Any) -> list[dict[str, Any]] | None:
+        groups: list[int] = []
+
+        class Recording:
+            def execute(self, sql: str, params: dict[str, Any]) -> _Rows:
+                rows = conn.execute(sql, params).fetchall()
+                if "published_page(" in sql:
+                    kept = [r for r in rows if r["communication_id"] is not None]
+                    groups.append(len({retrieval._copy_group(r) for r in kept}))
+                return _Rows(rows)
+
+        result = real(cast(Connection, Recording()), *args)
+        need = args[4]
+        if result is None:
+            seen.append("fallback")
+        else:
+            seen.append("filled" if groups[-1] >= need else "read whole")
+        return result
+
+    monkeypatch.setattr(retrieval, "_listing_rows_paged", spy)
+    return seen
+
+
+def in_order(found: dict[str, Any], part: str = "results") -> list[str]:
+    """The emails as listed: the paged and set-based reads sort the same way."""
+    return [r["communication_id"] for r in found[part]]
+
+
+def as_emails(found: dict[str, Any], part: str = "results") -> list[str]:
+    # Copies of one message arrive at the same moment; which copy stands for the
+    # group is not defined through the views, so emails are compared without order.
+    return sorted(f"{r['subject']}|{r['received_at']}|{r['sender']}" for r in found[part])
 
 
 def thread_of(who: Principal, communication_id: str) -> Call:
@@ -145,16 +218,17 @@ def test_lists_match_the_views(
     reader: str,
     case: str,
 ) -> None:
-    fast, views = both_ways(
+    outcomes = spy_outcomes(monkeypatch)
+    got = ways(
         stack, monkeypatch, lambda c: retrieval.list_email(c, READERS[reader], LISTS[case], 100)
     )
-
-    # Copies of one message arrive at the same moment; which copy stands for the
-    # group is not defined, so the emails are compared without their order.
-    def ids(found: dict[str, Any]) -> list[str]:
-        return sorted(f"{r['subject']}|{r['received_at']}|{r['sender']}" for r in found["results"])
-
-    assert ids(fast) == ids(views)
+    fast = got["paged"]
+    assert in_order(fast) == in_order(got["set"])
+    assert as_emails(fast) == as_emails(got["set"]) == as_emails(got["views"])
+    assert fast["has_more"] == got["set"]["has_more"] == got["views"]["has_more"]
+    # 13 emails: the newest 303 asked for are the whole period, so the paged answer
+    # is the one compared (no fallback); nobody is refused before any read.
+    assert outcomes == ([] if reader == "nobody" else ["read whole"])
     if reader == "nobody":
         assert fast["results"] == []
     if reader == "limited" and case == "everything":
@@ -184,13 +258,48 @@ def test_a_list_has_results_for_the_filters_used_above(
             assert bool(found) == (case != "nothing"), case
 
 
+@pytest.mark.parametrize("bounds", [(2, 4), (2, 40)])
+def test_lists_match_when_the_newest_rows_are_few(
+    stack: Callable[[AppRole | None], Connection],
+    monkeypatch: pytest.MonkeyPatch,
+    bounds: tuple[int, int],
+) -> None:
+    """With pages of 2 to 4 emails every outcome happens on 13 emails (with 2 to 40,
+    a cut page is asked again for more), and the answer is still the one without
+    0037 and the views'."""
+    monkeypatch.setattr(retrieval, "PAGE_ROWS_MIN", bounds[0])
+    monkeypatch.setattr(retrieval, "PAGE_ROWS_MAX", bounds[1])
+    outcomes = spy_outcomes(monkeypatch)
+    for reader, who in READERS.items():
+        for case, filters in LISTS.items():
+            for limit in (1, 3, 100):
+
+                def call(c: Connection, w: Principal = who, f: F = filters, n: int = limit) -> Any:
+                    return retrieval.list_email(c, w, f, n)
+
+                got = ways(stack, monkeypatch, call)
+                where = (reader, case, limit)
+                assert in_order(got["paged"]) == in_order(got["set"]), where
+                assert as_emails(got["paged"]) == as_emails(got["views"]), where
+                assert got["paged"]["has_more"] == got["set"]["has_more"], where
+    # Up to 40 rows always reach all 13 emails, so only pages of 4 fall back.
+    expected = {"filled", "read whole"} | ({"fallback"} if bounds[1] < 13 else set())
+    assert set(outcomes) == expected, outcomes
+
+
 def test_lists_page_with_an_offset(
     stack: Callable[[AppRole | None], Connection], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for fast in (True, False):
+    orders = []
+    for mode in (*MODES, "paged in pages of 2 to 4"):
         with monkeypatch.context() as patch:
-            if not fast:
+            if mode in ("set", "views"):
+                patch.setattr(retrieval, "paged_reads", lambda conn: False)
+            if mode == "views":
                 patch.setattr(retrieval, "fast_reads", lambda conn: False)
+            if mode.startswith("paged in"):
+                patch.setattr(retrieval, "PAGE_ROWS_MIN", 2)
+                patch.setattr(retrieval, "PAGE_ROWS_MAX", 4)
             with stack("ci_search") as conn:
                 whole = retrieval.list_email(conn, READERS["all"], F(), 100)
                 pages = [
@@ -202,6 +311,9 @@ def test_lists_page_with_an_offset(
         assert [r["communication_id"] for p in pages for r in p["results"]] == every
         assert [p["has_more"] for p in pages] == [True, True, True, False]
         assert [p["offset"] for p in pages] == [0, 4, 8, 12]
+        if mode != "views":
+            orders.append(every)
+    assert orders[0] == orders[1] == orders[2]  # paged (both sizes) and set-based
 
 
 def test_threads_and_action_items_match_the_views(
@@ -211,25 +323,28 @@ def test_threads_and_action_items_match_the_views(
         emails = retrieval.list_email(conn, READERS["all"], F(), 100)["results"]
     for reader in ("all", "limited", "own"):
         for email in emails:
-            fast, views = both_ways(
-                stack, monkeypatch, thread_of(READERS[reader], email["communication_id"])
-            )
+            got = ways(stack, monkeypatch, thread_of(READERS[reader], email["communication_id"]))
+            fast, views = got["paged"], got["views"]
             # Mailbox copies of one message arrive at the same moment, and before 0031
             # either copy could stand for the group: compare the emails, not the copy.
-            assert (fast is None) == (views is None)
+            assert (fast is None) == (views is None) == (got["set"] is None)
             if fast is not None and views is not None:
                 assert fast["count"] == views["count"] and fast["truncated"] == views["truncated"]
-                assert sorted(
-                    f"{m['subject']}|{m['received_at']}|{m['sender']}" for m in fast["messages"]
-                ) == sorted(
-                    f"{m['subject']}|{m['received_at']}|{m['sender']}" for m in views["messages"]
-                )
-        for person in (None, PAT, f"{PAT},{MORGAN}"):
-            fast, views = both_ways(stack, monkeypatch, actionable_of(READERS[reader], person))
-            for part in ("actions", "possible", "risks"):
-                assert sorted(i["subject"] for i in fast[part]) == sorted(
-                    i["subject"] for i in views[part]
-                )
+                assert in_order(fast, "messages") == in_order(got["set"], "messages")
+                assert as_emails(fast, "messages") == as_emails(views, "messages")
+        # Action items read the newest emails first (0037); also with pages of 2 to 4.
+        for small in (False, True):
+            with monkeypatch.context() as patch:
+                if small:
+                    patch.setattr(retrieval, "PAGE_ROWS_MIN", 2)
+                    patch.setattr(retrieval, "PAGE_ROWS_MAX", 4)
+                for person in (None, PAT, f"{PAT},{MORGAN}"):
+                    got = ways(stack, monkeypatch, actionable_of(READERS[reader], person))
+                    for part in ("actions", "possible", "risks"):
+                        assert in_order(got["paged"], part) == in_order(got["set"], part)
+                        assert sorted(i["subject"] for i in got["paged"][part]) == sorted(
+                            i["subject"] for i in got["views"][part]
+                        ), (reader, person, part, small)
 
 
 @pytest.mark.parametrize("reader", ["all", "limited", "own", "risk_only"])
@@ -363,3 +478,93 @@ def test_the_migration_applies_without_superuser(
         conn.rollback()
     assert near is not None and near["n"] > 0
     assert window is not None and window["n"] > 0
+
+
+def test_published_page_returns_only_the_newest_published_emails(
+    stack: Callable[[AppRole | None], Connection],
+) -> None:
+    """As ci_search, whatever the limit: published emails only, newest first, with
+    published_window's columns."""
+    page = "SELECT communication_id::text AS id FROM published_page(NULL, NULL, %s, NULL, %s)"
+    with stack(None) as conn:
+        gone = conn.execute(
+            "UPDATE communications SET lifecycle_state = 'withdrawn' WHERE id ="
+            " (SELECT id FROM published_communications ORDER BY occurred_at DESC LIMIT 1)"
+            " RETURNING id::text"
+        ).fetchone()
+        assert gone is not None
+        conn.execute("SET ROLE ci_search")
+        newest = [
+            r["id"]
+            for r in conn.execute(
+                "SELECT id::text FROM published_communications ORDER BY occurred_at DESC, id"
+            ).fetchall()
+        ]
+        every = [r["id"] for r in conn.execute(page, (None, 1000)).fetchall()]
+        three = [r["id"] for r in conn.execute(page, (None, 3)).fetchall()]
+        mine = {r["id"] for r in conn.execute(page, (PAT, 1000)).fetchall()}
+        in_pat = {
+            r["id"]
+            for r in conn.execute(
+                "SELECT communication_id::text AS id FROM published_email_messages"
+                " WHERE mailbox_address = %s",
+                (PAT,),
+            ).fetchall()
+        }
+        window = conn.execute(
+            "SELECT * FROM published_window(NULL, NULL, %s::uuid[]) ORDER BY communication_id",
+            (newest,),
+        ).fetchall()
+        paged = conn.execute(
+            "SELECT * FROM published_page(NULL, NULL, NULL, NULL, 1000) ORDER BY communication_id"
+        ).fetchall()
+        conn.rollback()
+    assert gone["id"] not in newest and gone["id"] not in every
+    assert sorted(every) == sorted(newest) and len(every) == len(newest) > 3
+    assert sorted(three) == sorted(newest[:3])
+    assert mine == in_pat and mine
+    assert paged == window  # the same columns and values as published_window
+
+
+def test_a_list_page_reads_one_page_of_emails(
+    stack: Callable[[AppRole | None], Connection], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """list_email(limit=25) for an all-mailbox reader: one published_page statement
+    for the newest 200 emails, and no read of the whole period."""
+    sent: list[tuple[str, Any]] = []
+    real = psycopg.Connection.execute
+
+    def spy(self: Any, query: Any, params: Any = None, **kwargs: Any) -> Any:
+        sent.append((str(query), params))
+        return real(self, query, params, **kwargs)
+
+    monkeypatch.setattr(psycopg.Connection, "execute", spy)
+    with stack("ci_search") as conn:
+        found = retrieval.list_email(conn, READERS["all"], F(), 25)
+        conn.rollback()
+    assert len(found["results"]) == 13
+    pages = [params for sql, params in sent if "FROM published_page(" in sql]
+    assert len(pages) == 1 and pages[0]["row_limit"] == 200
+    whole = ("published_window(", "published_labelled(")
+    assert not [sql for sql, _ in sent if any(f in sql for f in whole)]
+
+
+def test_the_page_migration_applies_without_superuser(
+    stack: Callable[[AppRole | None], Connection],
+) -> None:
+    """Azure gives the migrating login no superuser (as for 0031)."""
+    path = Path(__file__).resolve().parents[2] / "db/migrations/0037_published_page.sql"
+    with stack(None) as conn:
+        conn.execute("DROP FUNCTION published_page(timestamptz, timestamptz, text, text, integer)")
+        conn.execute("CREATE ROLE pytest_migrator_37 NOSUPERUSER")
+        conn.execute("GRANT USAGE, CREATE ON SCHEMA ci TO pytest_migrator_37")
+        conn.execute("GRANT SELECT ON ALL TABLES IN SCHEMA ci TO pytest_migrator_37")
+        conn.execute("GRANT ci_search TO pytest_migrator_37 WITH ADMIN OPTION")
+        conn.execute("SET ROLE pytest_migrator_37")
+        conn.execute(path.read_text())
+        conn.execute("SET ROLE ci_search")
+        page = conn.execute(
+            "SELECT count(*) AS n FROM published_page(NULL, NULL, NULL, NULL, 5)"
+        ).fetchone()
+        conn.rollback()
+    assert page is not None and page["n"] == 5

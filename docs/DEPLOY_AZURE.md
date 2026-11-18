@@ -355,6 +355,24 @@ Tested locally on the synthetic fixtures only. Not verified in Azure:
 - **How long a recount takes on the real data.** It runs the same six counts the pages ran, once per run instead of once per load; the planning estimate is 8 to 10 seconds added to a run that did work, which is a guess until measured.
 - **That the migrating login can read the six counting views.** The recount runs as the login that applied the migration. Locally a login with no superuser and read access to the schema is enough. If the `SELECT ci.refresh_ops_counts('0');` above fails with permission denied, the views belong to another login: ask before changing any grant.
 
+**A list page reads about a page of emails (migration 0037, 2026-11-18).** Since 0031 a list (`list_email`, the console's Messages, the action items and risks of `list_actionable`) read every published email of its period and then kept the newest the reader may see. With no period, that was every email, for page one as for page ten. Migration 0037 adds `ci.published_page`: it hands back only the newest emails, 200 for a normal page (three times the page, at least 200, at most 20,000). Who may read what is still checked in the same database statement, before anything leaves the database, exactly as before. Page N costs the emails up to that page, not the whole period.
+
+When the newest emails do not fill the reader's page, the list asks once for ten times as many, and then reads the old way. That happens for narrow lists: a rare label, property or entity filter, readers who see only their own mailbox or only risks, and one person's action items. They cost what they cost today (Cody, 2026-11-18: ship this, measure which narrow lists people use before doing more).
+
+Apply it signed in as `svc_automation@` (seconds; it only adds a function):
+
+```bash
+cd ~/fs-communication-intelligence && git pull && make azure-migrate AZ_PSQL=psql
+```
+
+The code works before and after: until it is applied, lists read as since 0031. To see what a page costs on the real data, run this read-only check in `psql` on the database after the deploy:
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM ci.published_page(NULL, NULL, NULL, NULL, 200);
+```
+
+Verified locally on the synthetic fixtures (13 emails): every list gives the same emails, in the same order, with and without the migration and through the old views, for every kind of reader, including with pages shrunk to 2 to 4 emails so that every path runs; a 25-email list asks the database for 200 emails in one statement. Not verified: every timing. The fixtures are too small to time anything, and the date index the function relies on has not been checked on the real data.
+
 **Console page loading.** The console sends its page, script, stylesheet and API replies compressed (about 280 KB of script and styles becomes about 80 KB), and stored files as they are. The page names its script and stylesheet with a version taken from their contents, so the browser keeps them for a year and downloads them again only after a deploy changes them; the page itself is never cached. The label names are kept in the browser from the last visit and refreshed in the background, so a page's data is no longer requested only after the label list arrives. The first visit after a quiet period still waits for the console app to start.
 
 **Reused database connections.** The search app and the console keep up to `DB_POOL_SIZE` (default 4) open database connections per role and lend them to requests one at a time (`ci_core.db.ConnectionPool`), so a request no longer pays for a new connection: a TLS handshake, an Entra token and four setup statements. A connection is replaced after 30 minutes, checked with `SELECT 1` when it sat unused for over a minute, and closed instead of reused when it is broken or left in a transaction. To turn reuse off without a deploy, set the app setting to 0 on the app in question:
