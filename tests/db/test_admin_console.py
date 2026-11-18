@@ -639,6 +639,78 @@ def test_missing_originals_are_backfilled(database_ready: str, files: DirectoryS
     assert all(files.get(r["sha256"]) is not None for r in cleared if r["sha256"])
 
 
+def test_original_downloads_that_fail_are_not_retried_forever(
+    database_ready: str, files: DirectoryStore
+) -> None:
+    """A deleted message's file is tried once; a throttled one backs off (migration 0036).
+    Before, both were tried again on every 5-minute run."""
+    from ci_email.graph import Throttled
+
+    graph = FixtureGraphClient.from_directory()
+
+    class Flaky:  # throttles one attachment, serves the rest from the fixtures
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(graph, name)
+
+        def get_attachment_bytes(self, mailbox: str, message: str, attachment: str) -> bytes:
+            self.calls.append(attachment)
+            if attachment == "att-0201":
+                raise Throttled(30)
+            return graph.get_attachment_bytes(mailbox, message, attachment)
+
+    with connect(dbname=database_ready) as conn:
+        conn.execute(
+            "UPDATE email_attachments SET original_stored_at = NULL, original_attempts = 0,"
+            " original_failed_at = NULL, original_fail_reason = NULL,"
+            " native_attachment_id = CASE name WHEN 'Invoice-4471.pdf' THEN 'att-gone'"
+            "  ELSE native_attachment_id END"
+            " WHERE name IN ('Invoice-4471.pdf', 'CO-007-BuildingC.pdf')"
+        )
+        conn.execute(
+            "UPDATE email_attachments SET original_stored_at = coalesce(original_stored_at,"
+            " now()) WHERE name NOT IN ('Invoice-4471.pdf', 'CO-007-BuildingC.pdf')"
+        )
+        conn.commit()
+
+    flaky = Flaky()
+    backends = Backends(
+        FakeScreener(), FakeClassifier(), FakeEmbedder(), graph=flaky,
+        extraction_enabled=True, originals=files,
+    )  # fmt: skip
+
+    def run() -> Any:
+        return store_missing_originals(
+            lambda: connect(dbname=database_ready, role="ci_ingest"), backends, limit=500
+        )
+
+    first = run()
+    assert first["original_download_failed:ItemNotFound"] == 1  # the message is gone
+    assert first["original_download_failed:Throttled"] == 1
+    assert run()["original_download_failed"] == 0  # neither is tried again at once
+    with connect(dbname=database_ready) as conn:
+        rows = {
+            r["name"]: r
+            for r in conn.execute(
+                "SELECT name, original_attempts, original_fail_reason FROM email_attachments"
+                " WHERE name IN ('Invoice-4471.pdf', 'CO-007-BuildingC.pdf')"
+            ).fetchall()
+        }
+        assert rows["Invoice-4471.pdf"]["original_fail_reason"] == "ItemNotFound"
+        assert rows["CO-007-BuildingC.pdf"]["original_attempts"] == 1
+        # Three hours later the throttled file is due again; the missing one never is.
+        conn.execute(
+            "UPDATE email_attachments SET original_failed_at = now() - interval '3 hours'"
+            " WHERE name IN ('Invoice-4471.pdf', 'CO-007-BuildingC.pdf')"
+        )
+        conn.commit()
+    flaky.calls.clear()
+    again = run()
+    assert flaky.calls == ["att-0201"] and again["original_download_failed:Throttled"] == 1
+
+
 def test_files_over_the_limit_when_processed_are_not_backfilled_later(
     database_ready: str, files: DirectoryStore
 ) -> None:
