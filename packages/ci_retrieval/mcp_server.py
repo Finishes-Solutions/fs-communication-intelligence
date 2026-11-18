@@ -323,7 +323,17 @@ def build_server(
         " every email of a long period, keep the same `since` and, while `has_more` is true,"
         " call again with until=`next_until`; the first emails of the next page may repeat"
         " the last of the previous one (skip ids already seen). `offset` also pages, up to"
-        f" {MAX_OFFSET}." + _DATES + _NAMES + _PAGING + _LINKS + _TRUST
+        f" {MAX_OFFSET}. Each email has received_at and processed_at (when it became"
+        " searchable, often minutes or hours after it arrived). For polling ('what is new"
+        " since my last check'), pass processed_since (a date or date and time) instead:"
+        " emails come oldest processed first, and `next_cursor` is where to continue; keep it"
+        " and pass cursor=next_cursor on the next call or the next check, even when"
+        " has_more is false. A reprocessed email comes again with a newer processed_at."
+        " The other filters still apply; their dates are received dates."
+        + _DATES
+        + _NAMES
+        + _LINKS
+        + _TRUST
     )
     def list_email(
         mailbox: str | None = None,
@@ -338,10 +348,43 @@ def build_server(
         entity: str | None = None,
         limit: int = 25,
         offset: int = 0,
+        processed_since: str | None = None,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
         if principal_of().risk_only:
             return dict(risk_access.REFUSAL)
         limit, offset = max(1, min(limit, 100)), max(0, min(offset, MAX_OFFSET))
+        if processed_since or cursor:
+            if cursor:
+                try:
+                    retrieval.decode_cursor(cursor)
+                except ValueError as exc:
+                    raise ArgumentError(str(exc)) from exc
+            start = _moment(processed_since, "processed_since") if processed_since else None
+            received = (
+                _window(None, since_date, until_date, since, until)
+                if since or until or since_date or until_date
+                else Window(since=None, until=None)
+            )
+            with connector() as conn:
+                if not retrieval.processed_polling(conn):
+                    return {"error": "processed_since needs database migration 0035"}
+                polled = retrieval.list_processed(
+                    conn,
+                    principal_of(),
+                    retrieval.Filters(
+                        mailbox=mailbox,
+                        sender=sender,
+                        **received,
+                        label=label,
+                        property=property,
+                        entity=entity,
+                    ),
+                    processed_since=start,
+                    cursor=cursor,
+                    limit=limit,
+                )
+            return linked(polled)
         with connector() as conn:
             found = retrieval.list_email(
                 conn,
