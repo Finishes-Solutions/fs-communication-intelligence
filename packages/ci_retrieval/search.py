@@ -1274,11 +1274,12 @@ def _routed(
     person_key: str,
     decision: str,
     limit: int,
+    until: datetime | None = None,
 ) -> list[dict[str, Any]]:
     items = _listing(
         conn,
         principal,
-        Filters(since=since),
+        Filters(since=since, until=until),
         ROUTED_WHERE,
         {"person_key": person_key, "decision": decision},
         limit,
@@ -1392,8 +1393,11 @@ def list_actionable(
     include_risks: bool = True,
     limit: int = 50,
     status: str = "open",
+    since: datetime | None = None,
+    until: datetime | None = None,
 ) -> dict[str, Any]:
-    """Messages asking ``person`` to act, plus risk items.
+    """Messages asking ``person`` to act, plus risk items, from the last ``hours``, or
+    from ``since`` (to ``until``, exclusive, when given).
 
     ``status`` keeps action items that are ``open`` (open or in progress, the
     default), ``resolved``, or ``all``. Resolution is judged from later replies
@@ -1422,20 +1426,20 @@ def list_actionable(
         raise ValueError("status must be open, resolved or all")
     addresses = sorted({a.strip().lower() for a in (person or "").split(",") if a.strip()})
     people = addresses or None
-    since = utcnow() - timedelta(hours=hours)
+    since = since or utcnow() - timedelta(hours=hours)
     profile = _profile(conn, addresses)
     possible: list[dict[str, Any]] = []
     # Resolved items are filtered after the query, so read more than a page when
     # only some statuses are wanted.
     fetch = limit if status == "all" else min(limit * 3, 300)
     if profile is not None:
-        actions = _routed(conn, principal, since, profile["key"], "yes", fetch)
-        possible = _routed(conn, principal, since, profile["key"], "review", fetch)
+        actions = _routed(conn, principal, since, profile["key"], "yes", fetch, until)
+        possible = _routed(conn, principal, since, profile["key"], "review", fetch, until)
     else:
         actions = _listing(
             conn,
             principal,
-            Filters(since=since),
+            Filters(since=since, until=until),
             ACTION_RULE_WHERE,
             action_rule_params(people),
             fetch,
@@ -1448,7 +1452,7 @@ def list_actionable(
         _listing(
             conn,
             principal,
-            Filters(since=since),
+            Filters(since=since, until=until),
             "AND cl.yes_labels && %(risk_labels)s::text[]",
             {"risk_labels": list(RISK_LABELS)},
             limit,
@@ -1466,6 +1470,8 @@ def list_actionable(
             "possible_ids": [a["communication_id"] for a in possible],
             "risk_ids": [r["communication_id"] for r in risks],
             "hours": hours,
+            "since": since.isoformat(),
+            "until": until.isoformat() if until else None,
             "person_filter": len(addresses),
             "person_check": profile["key"] if profile else None,
             "status": status,

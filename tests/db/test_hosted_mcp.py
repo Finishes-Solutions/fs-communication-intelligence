@@ -12,6 +12,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import azure.functions as func
 import jwt
@@ -451,6 +452,64 @@ def agent_app(database: str, max_bytes: int, fetched: list[str]) -> Any:
         connector=lambda: connect(dbname=database, role="ci_search"),
         fetch_file=fetch,
     )
+
+
+def test_dates_times_ranges_and_paging_by_time(app: Any) -> None:
+    """since/until take dates or dates and times (Central unless offset), on every tool
+    that lists or counts; list_email pages a long period with next_until."""
+    with TestClient(app, base_url=BASE) as client:
+
+        def tool(name: str, **args: Any) -> dict[str, Any]:
+            return call_tool(client, token(), name, args)
+
+        everything = tool("list_email", since="2026-09-01", until="2026-10-31", limit=100)
+        stamps = sorted(r["received_at"] for r in everything["results"])
+        assert len(stamps) >= 6
+        # A window ending at a time keeps only what came before that moment.
+        middle = datetime.fromisoformat(stamps[len(stamps) // 2])
+        earlier = tool("list_email", since="2026-09-01", until=middle.isoformat(), limit=100)
+        assert earlier["results"]
+        assert all(datetime.fromisoformat(r["received_at"]) < middle for r in earlier["results"])
+        later = tool("list_email", since=middle.isoformat(), until="2026-10-31", limit=100)
+        assert all(datetime.fromisoformat(r["received_at"]) >= middle for r in later["results"])
+        assert len(earlier["results"]) + len(later["results"]) == len(stamps)
+
+        # One day by date: from midnight to midnight Central.
+        first = datetime.fromisoformat(stamps[0]).astimezone(ZoneInfo("America/Chicago"))
+        day = first.date().isoformat()
+        one_day = tool("list_email", since=day, until=day, limit=100)
+        local = {
+            datetime.fromisoformat(r["received_at"]).astimezone(ZoneInfo("America/Chicago")).date()
+            for r in one_day["results"]
+        }
+        assert one_day["results"] and local == {first.date()}
+
+        # Paging a long period by time reaches every email, two at a time.
+        seen: set[str] = set()
+        args: dict[str, Any] = {"since": "2026-09-01", "until": "2026-10-31", "limit": 2}
+        for _ in range(100):
+            page = tool("list_email", **args)
+            seen |= {r["communication_id"] for r in page["results"]}
+            if not page["has_more"]:
+                break
+            args["until"] = page["next_until"]
+        assert seen == {r["communication_id"] for r in everything["results"]}
+
+        # The same window on the other tools.
+        actions = tool("list_actionable", since="2026-09-01", until="2026-10-31", status="all")
+        none = tool("list_actionable", since="2000-01-01", until="2000-01-31", status="all")
+        assert actions["actions"] or actions["risks"]
+        assert not (none["actions"] or none["risks"] or none["possible"])
+        risks = tool("risk_overview", since="2026-09-01", until="2026-10-31")
+        assert risks["since"].startswith("2026-09-01T05:00") and risks["until"].startswith(
+            "2026-11-01T05:00"
+        )
+        stats = tool("email_stats", group_by="month", since="2026-09-01", until="2026-10-31")
+        assert sum(g["messages"] for g in stats["groups"]) >= 1
+        found = tool("search_email", query="invoice", since="2026-09-01T00:00Z")
+        assert found["results"]
+        bad = raw_tool(client, token(), "list_email", {"since": "last tuesday"})
+        assert "since must be a date like 2026-10-01" in json.dumps(bad)
 
 
 def test_agents_find_files_and_get_emails_as_documents(app: Any) -> None:
