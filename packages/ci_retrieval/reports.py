@@ -10,6 +10,7 @@ and risk text. Email bodies and attachment text are never part of a report.
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
@@ -422,8 +423,11 @@ def risk_overview(
     likelihood: str | None = None,
     tz: str = "America/Chicago",
     now: datetime | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
 ) -> dict[str, Any]:
-    """Project-risk emails in a window, with counts by period, category, property,
+    """Project-risk emails in a window (the last ``days``, or ``since`` to ``until``,
+    at most 366 days), with counts by period, category, property,
     company and mailbox, and the impact x likelihood matrix.
 
     Built from stored labels, the AI's one-line risk text, the property names it
@@ -437,15 +441,24 @@ def risk_overview(
     label index, migration 0021); every count and the newest 200 for the feed are
     made from those rows.
     """
-    days = max(1, min(days, 366))
     impact, likelihood = _level(impact, "impact"), _level(likelihood, "likelihood")
-    end = now or datetime.now(UTC)
-    start, prev_start = end - timedelta(days=days), end - timedelta(days=2 * days)
+    end = (until or now or datetime.now(UTC)).astimezone(UTC)
+    since = since.astimezone(UTC) if since is not None else None
+    if since is not None:  # an exact period; the previous one is as long, just before it
+        start = max(since, end - timedelta(days=366))
+        if start >= end:
+            raise ValueError("since must be before until")
+        days = max(1, math.ceil((end - start).total_seconds() / 86400))
+        prev_start = start - (end - start)
+    else:
+        days = max(1, min(days, 366))
+        start, prev_start = end - timedelta(days=days), end - timedelta(days=2 * days)
     zone = ZoneInfo(tz)
     unit = "day" if days <= 14 else "week"
     out: dict[str, Any] = {
         "days": days,
         "since": start.isoformat(),
+        "until": end.isoformat(),
         "total": 0,
         "previous_total": 0,
         "series": [],

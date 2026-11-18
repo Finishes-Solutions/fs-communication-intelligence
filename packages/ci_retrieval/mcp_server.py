@@ -23,13 +23,13 @@ import base64
 import functools
 import json
 import logging
-import math
 import time as time_module
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Any
+from typing import Any, TypedDict
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 import httpx
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -67,8 +67,13 @@ _NAMES = (
 )
 
 _DATES = (
-    " since_date and until_date (YYYY-MM-DD, both inclusive) pick an exact period and"
-    " take precedence over since_days."
+    " Dates and times: `since` and `until` take a date (2026-10-01: that whole day) or a"
+    " date and time (2026-10-01T14:30), in US Central time unless the value ends in Z or an"
+    " offset such as -05:00. `until` is the end: a date includes that whole day, a time stops"
+    " just before it. Examples: one day: since=2026-11-18, until=2026-11-18; since 2 PM"
+    " today: since=2026-11-18T14:00; a morning: since=2026-11-18T08:00,"
+    " until=2026-11-18T12:00. They take precedence over since_date/until_date (older,"
+    " date-only forms) and since_days (counted back from now; 0.25 = 6 hours)."
 )
 
 _LINKS = (
@@ -127,6 +132,9 @@ def _guarded(fn: Callable[..., Any]) -> Callable[..., Any]:
         except QueryCanceled:
             outcome = "too_slow"
             return dict(TOO_SLOW)
+        except ArgumentError as exc:
+            outcome = "bad_argument"
+            return {"error": str(exc)}
         except Exception:
             outcome = "error"
             raise
@@ -189,15 +197,6 @@ def build_server(
 
         return register
 
-    def _since(days: float | None, day: str | None = None) -> datetime | None:
-        if day:
-            return _day(day, "since_date")
-        return datetime.now(UTC) - timedelta(days=days) if days else None
-
-    def _until(day: str | None) -> datetime | None:
-        """until_date is inclusive: emails up to the end of that day (UTC)."""
-        return _day(day, "until_date") + timedelta(days=1) if day else None
-
     def linked(data: dict[str, Any]) -> dict[str, Any]:
         result: dict[str, Any] = fit(with_links(data, view_base))
         return result
@@ -207,14 +206,22 @@ def build_server(
         result: dict[str, Any] = fit(data)
         return result
 
-    def risks_only(caller: Principal, hours: float, limit: int, offset: int) -> dict[str, Any]:
+    def risks_only(
+        caller: Principal,
+        hours: float,
+        limit: int,
+        offset: int,
+        start: datetime | None = None,
+        stop: datetime | None = None,
+    ) -> dict[str, Any]:
         """list_actionable for a risk-only caller: the risk emails of the last
-        ``hours`` with that caller's fields, no action items, no links."""
+        ``hours`` (or from ``start`` to ``stop``) with that caller's fields, no action
+        items, no links."""
         hours = max(1.0, min(float(hours), 366 * 24))
-        since = datetime.now(UTC) - timedelta(hours=hours)
+        since = start or datetime.now(UTC) - timedelta(hours=hours)
         with connector() as conn:
             fields = risk_access.fields_for(conn, caller)
-            found = reports.risk_overview(conn, caller, days=max(1, math.ceil(hours / 24)))
+            found = reports.risk_overview(conn, caller, since=since, until=stop)
             recent = [
                 r for r in found["items"] if datetime.fromisoformat(r["received_at"]) >= since
             ]
@@ -251,6 +258,8 @@ def build_server(
         since_days: float | None = None,
         since_date: str | None = None,
         until_date: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
         label: str | None = None,
         property: str | None = None,
         entity: str | None = None,
@@ -267,8 +276,7 @@ def build_server(
                 retrieval.Filters(
                     mailbox=mailbox,
                     sender=sender,
-                    since=_since(since_days, since_date),
-                    until=_until(until_date),
+                    **_window(since_days, since_date, until_date, since, until),
                     label=label,
                     property=property,
                     entity=entity,
@@ -309,8 +317,13 @@ def build_server(
         return linked(found) if found else {"found": False, "note": NOT_FOUND}
 
     @tool(
-        description="List recent authorized emails, newest first, optionally by mailbox, "
-        "sender or label (e.g. cat_payment_billing)." + _DATES + _NAMES + _PAGING + _LINKS + _TRUST
+        description="List authorized emails, newest first, optionally by mailbox, sender or"
+        " label (e.g. cat_payment_billing), for any period: everything since a date or time,"
+        " one day, or a range. Without dates it lists the last day (since_days=1). To read"
+        " every email of a long period, keep the same `since` and, while `has_more` is true,"
+        " call again with until=`next_until`; the first emails of the next page may repeat"
+        " the last of the previous one (skip ids already seen). `offset` also pages, up to"
+        f" {MAX_OFFSET}." + _DATES + _NAMES + _PAGING + _LINKS + _TRUST
     )
     def list_email(
         mailbox: str | None = None,
@@ -318,6 +331,8 @@ def build_server(
         since_days: float | None = 1,
         since_date: str | None = None,
         until_date: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
         label: str | None = None,
         property: str | None = None,
         entity: str | None = None,
@@ -334,8 +349,7 @@ def build_server(
                 retrieval.Filters(
                     mailbox=mailbox,
                     sender=sender,
-                    since=_since(since_days, since_date),
-                    until=_until(until_date),
+                    **_window(since_days, since_date, until_date, since, until),
                     label=label,
                     property=property,
                     entity=entity,
@@ -345,12 +359,20 @@ def build_server(
             )
         if not offset:
             del found["offset"]
+        if found["has_more"] and found["results"]:
+            # Paging by time for long periods (offset stops at MAX_OFFSET). One second
+            # later than the last email, so an email sharing its second is not skipped.
+            last = datetime.fromisoformat(found["results"][-1]["received_at"])
+            found["next_until"] = (last + timedelta(seconds=1)).isoformat()
         return linked(found)
 
     @tool(
         description="Emails that ask a person to act or approve, plus project risks (schedule "
         "delays, cost overruns, disputes, liens, failed inspections, safety, quality, financing, "
-        "parties not performing), from the last N hours. "
+        "parties not performing), from the last `hours` (default 24), or for a period with"
+        " `since` and `until` (a date such as 2026-11-18 for that whole day, or a date and time"
+        " such as 2026-11-18T14:00, US Central time unless it carries an offset; `until` is the"
+        " end and is optional). "
         "`person` is one email address, several comma-separated addresses for someone with "
         "more than one mailbox, or a profile key. When the person has a profile, a separate "
         "per-person check decides which emails are really theirs (it tells apart people with "
@@ -368,19 +390,24 @@ def build_server(
         limit: int = 25,
         offset: int = 0,
         status: str = "open",
+        since: str | None = None,
+        until: str | None = None,
     ) -> dict[str, Any]:
         limit, offset = max(1, min(limit, 100)), max(0, min(offset, MAX_OFFSET))
         if status not in retrieval.ACTION_STATUSES:
             return {"error": "status must be open, resolved or all"}
+        window = _window(None, since=since, until=until)
         caller = principal_of()
         if caller.risk_only:
-            return risks_only(caller, hours, limit, offset)
+            return risks_only(caller, hours, limit, offset, window["since"], window["until"])
         with connector() as conn:
             found = retrieval.list_actionable(
                 conn,
                 principal_of(),
                 person=person,
                 hours=hours,
+                since=window["since"],
+                until=window["until"],
                 include_risks=include_risks,
                 limit=offset + limit,
                 status=status,
@@ -415,6 +442,8 @@ def build_server(
         since_days: float | None = 30,
         since_date: str | None = None,
         until_date: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
         mailbox: str | None = None,
         sender: str | None = None,
         label: str | None = None,
@@ -434,8 +463,7 @@ def build_server(
                 retrieval.Filters(
                     mailbox=mailbox,
                     sender=sender,
-                    since=_since(since_days, since_date),
-                    until=_until(until_date),
+                    **_window(since_days, since_date, until_date, since, until),
                     label=label,
                     property=property,
                     entity=entity,
@@ -448,7 +476,10 @@ def build_server(
         return found | {"groups": groups[:top], "total_groups": len(groups)}
 
     @tool(
-        description="Project-risk overview for the last `days` (max 366): how many risk"
+        description="Project-risk overview for the last `days` (max 366), or for a period"
+        " with `since` and `until` (a date such as 2026-11-01 for that whole day, or a date and"
+        " time such as 2026-11-01T08:00, US Central time unless it carries an offset; `until`"
+        " is optional; at most 366 days): how many risk"
         " emails versus the previous period, a trend by day or week, the top categories,"
         " properties, companies (sender domains) and mailboxes, which other signals came"
         " with them (urgent, approval needed, invoice), and the newest risk emails with the"
@@ -470,13 +501,18 @@ def build_server(
         impact: str | None = None,
         likelihood: str | None = None,
         item_limit: int = 25,
+        since: str | None = None,
+        until: str | None = None,
     ) -> dict[str, Any]:
         caller = principal_of()
+        window = _window(None, since=since, until=until)
         with connector() as conn:
             found = reports.risk_overview(
                 conn,
                 caller,
                 days=days,
+                since=window["since"],
+                until=window["until"],
                 mailbox=mailbox,
                 category=category,
                 property=property,
@@ -550,6 +586,8 @@ def build_server(
         since_days: float | None = 365,
         since_date: str | None = None,
         until_date: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
         limit: int = 25,
         offset: int = 0,
     ) -> dict[str, Any]:
@@ -566,8 +604,7 @@ def build_server(
                 found = files.list_files(
                     conn,
                     principal_of(),
-                    since=_since(since_days, since_date),
-                    until=_until(until_date),
+                    **_window(since_days, since_date, until_date, since, until),
                     q=query,
                     search_in=search_in,
                     limit=max(1, min(limit, 50)),
@@ -727,7 +764,12 @@ def build_server(
             return dict(risk_access.REFUSAL)
         with connector() as conn:
             return knowledge.find_knowledge(
-                conn, principal_of(), query, kind=kind, since=_since(since_days), limit=limit
+                conn,
+                principal_of(),
+                query,
+                kind=kind,
+                since=_window(since_days)["since"],
+                limit=limit,
             )
 
     @tool(
@@ -803,11 +845,76 @@ def https_fetcher(max_bytes: int) -> FileFetcher:
     return fetch
 
 
-def _day(value: str, name: str) -> datetime:
+class ArgumentError(ValueError):
+    """A tool argument the caller can correct (e.g. a malformed date); its message is
+    returned to the agent as {"error": ...} instead of a generic tool failure."""
+
+
+# Dates and times without an offset are US Central time, the company's clock: "since
+# 2026-11-18" means from midnight in Waller, not midnight UTC (6 PM the day before).
+LOCAL_TZ = ZoneInfo("America/Chicago")
+_MOMENT_HELP = "a date like 2026-10-01 or a date and time like 2026-10-01T14:30"
+
+
+def _moment(value: str, name: str, *, end: bool = False) -> datetime:
+    """A date or date-and-time from a tool argument. A date alone is that whole day,
+    Central time: its start, or with ``end`` the start of the next day (an inclusive
+    end date). A date and time (``2026-10-01T14:30``, ``2026-10-01 14:30``, seconds and
+    an offset or ``Z`` optional) is that moment, Central time unless it carries an
+    offset."""
+    text = value.strip()
     try:
-        return datetime.combine(date.fromisoformat(value.strip()), time.min, UTC)
+        if len(text) == 10:
+            day = date.fromisoformat(text)
+            return datetime.combine(day + timedelta(days=1) if end else day, time.min, LOCAL_TZ)
+        moment = datetime.fromisoformat(text.replace(" ", "T", 1).replace("z", "Z"))
     except ValueError as exc:
-        raise ValueError(f"{name} must be a date like 2026-10-01") from exc
+        raise ArgumentError(f"{name} must be {_MOMENT_HELP}") from exc
+    return moment if moment.tzinfo else moment.replace(tzinfo=LOCAL_TZ)
+
+
+def _day(value: str, name: str) -> datetime:
+    """The start of a day, Central time (the older since_date/until_date arguments)."""
+    if len(value.strip()) != 10:
+        raise ArgumentError(f"{name} must be a date like 2026-10-01")
+    return _moment(value, name)
+
+
+class Window(TypedDict):
+    since: datetime | None
+    until: datetime | None
+
+
+def _window(
+    since_days: float | None,
+    since_date: str | None = None,
+    until_date: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+) -> Window:
+    """The period a tool reads, as Filters(since=, until=) keywords. ``since`` and
+    ``until`` (date or date and time) come first, then the date-only since_date and
+    until_date, then since_days counted back from now. The end is exclusive: an end
+    date includes that whole day, an end time stops just before it."""
+    start: datetime | None
+    if since:
+        start = _moment(since, "since")
+    elif since_date:
+        start = _day(since_date, "since_date")
+    else:
+        start = datetime.now(UTC) - timedelta(days=since_days) if since_days else None
+    stop: datetime | None
+    if until:
+        stop = _moment(until, "until", end=True)
+    elif until_date:
+        if len(until_date.strip()) != 10:
+            raise ArgumentError("until_date must be a date like 2026-10-01")
+        stop = _moment(until_date, "until_date", end=True)
+    else:
+        stop = None
+    if start and stop and start >= stop:
+        raise ArgumentError("since must be before until")
+    return {"since": start, "until": stop}
 
 
 NOT_FOUND = "Not found in authorized, indexed mail."
