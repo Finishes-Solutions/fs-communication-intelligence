@@ -886,7 +886,7 @@ async function filesPage() {
 
   const detail = h("div", { class: "card reader" }, h("div", { class: "placeholder" },
     h("div", { class: "empty" }, h("div", { class: "i-wrap" }, icon("folder")), h("div", { class: "empty-title" }, "Select a File"),
-      h("div", { class: "small" }, "The email it came with opens here, with a preview and download."))));
+      h("div", { class: "small" }, "Its preview opens here, with the email it came with."))));
   const extra = group !== null ? { group_by: view, group } : {};
   const page = async offset => {
     const d = await api("/api/files?" + query({ ...extra, limit: 50, offset }));
@@ -904,7 +904,7 @@ async function filesPage() {
       nameChips(r, 2));
     open.addEventListener("click", () => {
       list.querySelectorAll(".msg.on").forEach(x => x.classList.remove("on"));
-      open.classList.add("on"); showMessage(r.communication_id, detail);
+      open.classList.add("on"); showMessage(r.communication_id, detail, { openFile: r.file_id });
     });
     return h("div", { class: "frow" }, open, r.file_id
       ? h("button", { type: "button", class: "btn sm ghost frow-dl", title: `Download ${r.name || "file"}`, "aria-label": `Download ${r.name || "file"}`,
@@ -927,11 +927,12 @@ async function filesPage() {
     detail));
 }
 
-async function showMessage(id, holder) {
+// `opts.openFile`: a file_id whose preview opens at once (the Files page).
+async function showMessage(id, holder, opts = {}) {
   holder.replaceChildren(h("div", { class: "placeholder" }, h("div", {}, h("div", { class: "spinner" }), "Loading…")));
   try {
     const m = await api(`/api/messages/${encodeURIComponent(id)}`);
-    holder.replaceChildren(messageView(id, m));
+    holder.replaceChildren(messageView(id, m, { openFile: opts.openFile }));
   } catch (e) {
     if (e.message !== "signing in") holder.replaceChildren(h("div", { class: "placeholder status-failed" }, e.message));
   }
@@ -959,7 +960,7 @@ function messageView(id, m, opts = {}) {
     h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "People"),
       h("div", { class: "people" }, (m.participants || []).map(p => h("span", { class: "person" },
         h("span", { class: "role" }, nice(p.role)), h("span", {}, p.email_normalized))))),
-    h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "Files"), filesBlock(id, m)),
+    h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "Files"), filesBlock(id, m, opts.openFile)),
     h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "Message"),
       h("pre", { class: "text" }, body ? body.text : "(no body text)")),
     h("div", { class: "reader-section" },
@@ -1311,8 +1312,6 @@ async function unpublishedPage() {
 
 // ---------- files ------------------------------------------------------------
 
-const PREVIEW = { "application/pdf": "pdf", "image/png": "image", "image/jpeg": "image", "image/gif": "image",
-  "image/webp": "image", "text/plain": "text", "text/csv": "text" };
 function kb(bytes) { return bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round((bytes || 0) / 1024))} KB`; }
 
 async function fetchFile(id, fileId) {
@@ -1332,7 +1331,56 @@ async function saveFile(id, a) {
   setTimeout(() => URL.revokeObjectURL(link), 10000);
 }
 
-function filesBlock(id, m) {
+// Previews (Matthew, 2026-11-18: "preview them in the console, not download them every
+// time ... for every file type"). The server reads the file's bytes and says how to show
+// it (ci_processing.preview); nothing from a file is ever inserted as HTML here, and
+// native previews get the media type the server detected, never the sender's claim.
+function previewTable(rows) {
+  if (!rows.length) return h("p", { class: "muted small" }, "Empty.");
+  const width = Math.max(...rows.map(r => r.length));
+  return h("div", { class: "preview-scroll" }, h("table", { class: "preview-table" },
+    h("tbody", {}, rows.map(r => h("tr", {}, Array.from({ length: width }, (_, i) => h("td", {}, r[i] ?? "")))))));
+}
+function cutNote(cut, what) {
+  return cut ? h("p", { class: "muted small" }, `Preview shortened${what ? `: ${what}` : ""}. Download the file for all of it.`) : null;
+}
+async function renderPreview(id, a, p, setUrl) {
+  if (p.mode === "native") {
+    const bytes = await fetchFile(id, a.file_id);
+    const url = URL.createObjectURL(new Blob([bytes], { type: p.media_type }));
+    setUrl(url);
+    const label = a.name || "attachment";
+    if (p.render === "image") return h("img", { src: url, alt: label, class: "preview-img" });
+    if (p.render === "audio") return h("audio", { src: url, controls: true, class: "preview-media" });
+    if (p.render === "video") return h("video", { src: url, controls: true, class: "preview-media" });
+    return h("iframe", { src: url, title: label, class: "preview-pdf" });
+  }
+  if (p.mode === "text") return h("div", {}, h("pre", { class: "text boxed" }, p.text || "(empty file)"), cutNote(p.truncated));
+  if (p.mode === "table") {
+    return h("div", { class: "preview-sheets" }, (p.sheets || []).map(sh => h("div", { class: "preview-sheet" },
+      sh.name ? h("div", { class: "section-title" }, sh.name) : null, previewTable(sh.rows || []),
+      cutNote(sh.truncated, "the first 300 rows and 40 columns"))),
+      p.more_sheets ? h("p", { class: "muted small" }, `${p.more_sheets} more sheet${p.more_sheets === 1 ? "" : "s"} not shown.`) : null);
+  }
+  if (p.mode === "document") {
+    return h("div", { class: "preview-doc boxed" }, (p.blocks || []).map(b =>
+      b.type === "heading" ? h("h3", {}, b.text) : b.type === "table" ? previewTable(b.rows || []) : h("p", {}, b.text)),
+      cutNote(p.truncated));
+  }
+  if (p.mode === "slides") {
+    return h("div", { class: "preview-slides" }, (p.slides || []).map(sl => h("div", { class: "preview-slide" },
+      h("div", { class: "section-title" }, `Slide ${sl.number}`),
+      sl.lines.length ? sl.lines.map(t => h("p", {}, t)) : h("p", { class: "muted small" }, "No text on this slide."))),
+      cutNote(p.truncated));
+  }
+  if (p.mode === "archive") {
+    return h("div", {}, h("p", { class: "muted small" }, "Files inside the archive (listed only; nothing inside is opened):"),
+      table([["File", e => e.name], ["Size", e => kb(e.size), "num"]], p.entries || []), cutNote(p.truncated, "the first 500 entries"));
+  }
+  return null;
+}
+
+function filesBlock(id, m, open) {
   const texts = m.text || [];
   const all = m.attachments || [];
   const list = all.filter(a => a.extraction_status !== "skipped");
@@ -1341,26 +1389,19 @@ function filesBlock(id, m) {
   if (!list.length) return h("div", {}, h("div", { class: "muted" }, "No attachments."), hiddenNote);
   return h("div", { class: "files" }, list.map(a => {
     const t = texts.find(x => x.source === "attachment" && x.attachment_name === a.name);
-    const kind = PREVIEW[(a.content_type || "").split(";")[0].trim().toLowerCase()];
     const viewer = h("div", { class: "viewer", hidden: true });
     let url = null;
+    const setUrl = u => { if (url) URL.revokeObjectURL(url); url = u; };
     async function preview() {
       if (!viewer.hidden && viewer.dataset.mode === "file") { viewer.hidden = true; return; }
-      viewer.dataset.mode = "file"; viewer.hidden = false; viewer.replaceChildren(h("p", { class: "muted" }, "Loading file…"));
+      viewer.dataset.mode = "file"; viewer.hidden = false; viewer.replaceChildren(h("p", { class: "muted" }, "Loading preview…"));
       try {
-        const bytes = await fetchFile(id, a.file_id);
-        if (kind === "text") {
-          viewer.replaceChildren(h("pre", { class: "text boxed" }, new TextDecoder().decode(bytes.slice(0, 400000))));
-          return;
-        }
-        // The blob gets a type from the allow-list, never the sender's claim, so an
-        // HTML file can't run as a page here.
-        if (url) URL.revokeObjectURL(url);
-        url = URL.createObjectURL(new Blob([bytes], { type: a.content_type.split(";")[0].trim().toLowerCase() }));
-        viewer.replaceChildren(kind === "image"
-          ? h("img", { src: url, alt: a.name || "attachment", class: "preview-img" })
-          : h("iframe", { src: url, title: a.name || "attachment", class: "preview-pdf" }));
-      } catch (e) { viewer.replaceChildren(h("p", { class: "status-failed" }, e.message)); }
+        const p = await api(`/api/messages/${encodeURIComponent(id)}/files/${a.file_id}/preview`);
+        const shown = await renderPreview(id, a, p, setUrl);
+        viewer.replaceChildren(shown || h("div", {},
+          h("p", { class: "muted" }, `${p.reason || "No preview for this file."}${t ? " Its extracted text is below." : " Download it to open it."}`),
+          t ? h("pre", { class: "text boxed" }, t.text) : null));
+      } catch (e) { if (e.message !== "signing in") viewer.replaceChildren(h("p", { class: "status-failed" }, e.message)); }
     }
     async function download() {
       try { await saveFile(id, a); } catch (e) { toast(e.message); }
@@ -1370,19 +1411,22 @@ function filesBlock(id, m) {
       viewer.dataset.mode = "text"; viewer.hidden = false;
       viewer.replaceChildren(h("pre", { class: "text boxed" }, t.text));
     }
-    return h("div", { class: "file" },
+    const box = h("div", { class: "file" },
       h("div", { class: "file-head" },
         h("div", { class: "file-icon" }, (a.name || "?").split(".").pop().slice(0, 4).toUpperCase()),
         h("div", { class: "file-meta" },
           h("div", { class: "file-name" }, a.name || "(unnamed)"),
           h("div", { class: "muted small" }, `${a.content_type || "unknown type"} · ${kb(a.size_bytes)}${a.is_inline ? " · inline" : ""}`)),
         h("div", { class: "file-actions" },
-          a.file_id && kind ? h("button", { class: "btn sm", onclick: preview }, "Preview") : null,
+          a.file_id ? h("button", { class: "btn sm", onclick: preview }, "Preview") : null,
           a.file_id ? h("button", { class: "btn sm", onclick: download }, icon("download"), "Download") : null,
           t ? h("button", { class: "btn sm", onclick: showText }, icon("text"), "Extracted Text") : null)),
       h("div", { class: "badges" }, badge(`Text ${nice(a.extraction_status).toLowerCase()}`, a.extraction_status === "extracted" ? "good" : ""),
         a.file_id ? badge("Original stored", "good") : badge("Original not stored")),
       viewer);
+    // Opened from the Files page: show this file's preview straight away.
+    if (open && a.file_id === open) { setTimeout(() => { preview(); box.scrollIntoView({ block: "start" }); }, 0); }
+    return box;
   }), hiddenNote, note("Files are not malware-scanned yet. Previews open inside this page; downloads open on your computer, so treat unexpected files with care.", "warn"));
 }
 

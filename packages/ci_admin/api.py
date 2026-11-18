@@ -86,6 +86,7 @@ from ci_core.operator import (
 from ci_core.runtime import RuntimeConfigError, active_config, eligible_mailboxes
 from ci_core.settings import Settings
 from ci_email.process import known_names, record_usage
+from ci_processing import preview
 from ci_processing.classification import (
     LABELS,
     LABELS_BY_NAME,
@@ -184,7 +185,7 @@ _CSP = (
     # graph.microsoft.com: the People page changes app role assignments in the
     # browser with the signed-in admin's own delegated Graph token (never the server's).
     "connect-src 'self' https://login.microsoftonline.com https://graph.microsoft.com; "
-    "frame-src blob:; "
+    "frame-src blob:; media-src blob:; "
     "object-src blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
 )
 _HEADERS = [
@@ -754,6 +755,27 @@ def build_admin_app(
     async def download_link(request: Request) -> Response:
         response: Response = await run_in_threadpool(_download, request.path_params["token"])
         return response
+
+    def attachment_preview(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        """How the console shows a stored file without downloading it (ci_processing.preview):
+        native (PDF, image, audio, video; the browser then reads the file itself), text,
+        table, document, slides, archive listing, or none with the reason."""
+        file_id = request.path_params["file_id"].lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", file_id):
+            raise HTTPException(404, "no such file")
+        with connector("ci_search") as conn:
+            meta = retrieval.attachment_file(conn, principal, request.path_params["id"], file_id)
+        if meta is None:
+            raise HTTPException(404, "not found in mail you are authorized to see")
+        if originals is None:
+            raise HTTPException(404, "original files are not configured")
+        data = originals.get(file_id)
+        if data is None:
+            raise HTTPException(404, "the original file is not stored")
+        info = {"name": meta["name"], "size_bytes": meta["size_bytes"]}
+        if len(data) > MAX_FILE_BYTES:
+            return info | {"mode": "none", "reason": "The file is too large to preview."}
+        return info | preview.build(meta["name"], meta["content_type"], data)
 
     def _files_query(request: Request) -> dict[str, Any]:
         q = request.query_params
@@ -1459,6 +1481,10 @@ def build_admin_app(
         Route("/api/messages", endpoint(messages, CONSOLE)),
         Route("/api/messages/{id}", endpoint(message, READER_PAGE)),
         Route("/api/messages/{id}/files/{file_id}", endpoint(attachment, READER_PAGE)),
+        Route(
+            "/api/messages/{id}/files/{file_id}/preview",
+            endpoint(attachment_preview, READER_PAGE),
+        ),
         Route("/api/actionable", endpoint(actionable, CONSOLE)),
         Route("/api/files", endpoint(files, CONSOLE)),
         Route("/api/files/folders", endpoint(file_folders, CONSOLE)),
