@@ -1,5 +1,5 @@
 """The stored counts for the console Overview and the coverage block (migration
-0036): ``ci.ops_counts`` holds the answers of the six counting views, recounted by
+0038): ``ci.ops_counts`` holds the answers of the six counting views, recounted by
 ``ci.refresh_ops_counts`` after a run. Without them the live views answer."""
 
 from collections.abc import Callable, Iterator
@@ -24,7 +24,7 @@ from ci_processing.redaction import FakeRedactor
 from ci_processing.screening import FakeScreener
 from ci_retrieval import search as retrieval
 
-MIGRATION = Path(__file__).resolve().parents[2] / "db/migrations/0036_ops_counts.sql"
+MIGRATION = Path(__file__).resolve().parents[2] / "db/migrations/0038_ops_counts.sql"
 SECTIONS = ("versions", "failures", "labels", "uncertain_labels", "extraction", "originals")
 LIVE_VIEWS = (
     "ops_version_states",
@@ -129,7 +129,7 @@ def test_without_stored_counts_the_live_views_answer(stack: Stack) -> None:
         conn.rollback()
     assert live["published"] > 0
 
-    with stack(None) as conn:  # without migration 0036, undone by the rollback
+    with stack(None) as conn:  # without migration 0038, undone by the rollback
         conn.execute("DROP VIEW coverage_snapshot")
         conn.execute("DROP FUNCTION refresh_ops_counts(interval)")
         conn.execute("DROP TABLE ops_counts")
@@ -284,10 +284,10 @@ def test_the_migration_applies_without_superuser(stack: Stack) -> None:
         conn.execute("DROP VIEW coverage_snapshot")
         conn.execute("DROP FUNCTION refresh_ops_counts(interval)")
         conn.execute("DROP TABLE ops_counts")
-        conn.execute("CREATE ROLE pytest_migrator_36 NOSUPERUSER")
-        conn.execute("GRANT USAGE, CREATE ON SCHEMA ci TO pytest_migrator_36")
-        conn.execute("GRANT SELECT ON ALL TABLES IN SCHEMA ci TO pytest_migrator_36")
-        conn.execute("SET ROLE pytest_migrator_36")
+        conn.execute("CREATE ROLE pytest_migrator_37 NOSUPERUSER")
+        conn.execute("GRANT USAGE, CREATE ON SCHEMA ci TO pytest_migrator_37")
+        conn.execute("GRANT SELECT ON ALL TABLES IN SCHEMA ci TO pytest_migrator_37")
+        conn.execute("SET ROLE pytest_migrator_37")
         conn.execute(MIGRATION.read_text())
         conn.execute("SET ROLE ci_ingest")
         assert refresh(conn) is True

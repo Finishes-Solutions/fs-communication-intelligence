@@ -2,7 +2,7 @@
 functions) against the published_* views they replace: every list, report and
 search gives the same answer either way, for every kind of reader, and the lists
 page. Lists also read the newest emails first (ci.published_page, migration
-0037): those answers are compared with both. Synthetic fixtures only; how fast
+0039): those answers are compared with both. Synthetic fixtures only; how fast
 each is on a large database is measured separately (docs/DATABASE.md).
 """
 
@@ -101,8 +101,8 @@ def ways(
     monkeypatch: pytest.MonkeyPatch,
     call: Call,
 ) -> dict[str, Any]:
-    """``call`` reading the newest emails first (0037), set-based (0031, as before
-    0037) and through the views (as before 0031)."""
+    """``call`` reading the newest emails first (0039), set-based (0031, as before
+    0039) and through the views (as before 0031)."""
     answers = {}
     for mode in MODES:
         with monkeypatch.context() as patch:
@@ -128,7 +128,7 @@ class _Rows:
 def spy_outcomes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Records how each paged listing ended: ``filled`` (the newest rows held the
     page), ``read whole`` (fewer rows than asked for: the period was read whole)
-    or ``fallback`` (None: the caller reads as before 0037)."""
+    or ``fallback`` (None: the caller reads as before 0039)."""
     seen: list[str] = []
     real = retrieval._listing_rows_paged
 
@@ -266,7 +266,7 @@ def test_lists_match_when_the_newest_rows_are_few(
 ) -> None:
     """With pages of 2 to 4 emails every outcome happens on 13 emails (with 2 to 40,
     a cut page is asked again for more), and the answer is still the one without
-    0037 and the views'."""
+    0039 and the views'."""
     monkeypatch.setattr(retrieval, "PAGE_ROWS_MIN", bounds[0])
     monkeypatch.setattr(retrieval, "PAGE_ROWS_MAX", bounds[1])
     outcomes = spy_outcomes(monkeypatch)
@@ -332,7 +332,7 @@ def test_threads_and_action_items_match_the_views(
                 assert fast["count"] == views["count"] and fast["truncated"] == views["truncated"]
                 assert in_order(fast, "messages") == in_order(got["set"], "messages")
                 assert as_emails(fast, "messages") == as_emails(views, "messages")
-        # Action items read the newest emails first (0037); also with pages of 2 to 4.
+        # Action items read the newest emails first (0039); also with pages of 2 to 4.
         for small in (False, True):
             with monkeypatch.context() as patch:
                 if small:
@@ -553,14 +553,14 @@ def test_the_page_migration_applies_without_superuser(
     stack: Callable[[AppRole | None], Connection],
 ) -> None:
     """Azure gives the migrating login no superuser (as for 0031)."""
-    path = Path(__file__).resolve().parents[2] / "db/migrations/0037_published_page.sql"
+    path = Path(__file__).resolve().parents[2] / "db/migrations/0039_published_page.sql"
     with stack(None) as conn:
         conn.execute("DROP FUNCTION published_page(timestamptz, timestamptz, text, text, integer)")
-        conn.execute("CREATE ROLE pytest_migrator_37 NOSUPERUSER")
-        conn.execute("GRANT USAGE, CREATE ON SCHEMA ci TO pytest_migrator_37")
-        conn.execute("GRANT SELECT ON ALL TABLES IN SCHEMA ci TO pytest_migrator_37")
-        conn.execute("GRANT ci_search TO pytest_migrator_37 WITH ADMIN OPTION")
-        conn.execute("SET ROLE pytest_migrator_37")
+        conn.execute("CREATE ROLE pytest_migrator_38 NOSUPERUSER")
+        conn.execute("GRANT USAGE, CREATE ON SCHEMA ci TO pytest_migrator_38")
+        conn.execute("GRANT SELECT ON ALL TABLES IN SCHEMA ci TO pytest_migrator_38")
+        conn.execute("GRANT ci_search TO pytest_migrator_38 WITH ADMIN OPTION")
+        conn.execute("SET ROLE pytest_migrator_38")
         conn.execute(path.read_text())
         conn.execute("SET ROLE ci_search")
         page = conn.execute(

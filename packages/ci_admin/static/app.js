@@ -498,7 +498,7 @@ async function overview() {
     pageHead("Overview", "Capture, processing and publication at a glance.",
       isAdmin() ? h("button", { class: "btn", onclick: requeue }, icon("requeue"), "Requeue Failed") : null,
       h("button", { class: "btn", onclick: route }, icon("refresh"), "Refresh")),
-    // Stored counts (migration 0036): say which numbers they are and how old.
+    // Stored counts (migration 0038): say which numbers they are and how old.
     d.counts_as_of ? h("p", { class: "muted small", style: "margin:-14px 0 16px" },
       `Published messages, the failed count and the charts below are as of ${short(d.counts_as_of)}. They update after each capture or processing run; everything else on this page is live.`) : null,
     h("div", { class: "grid" },

@@ -112,7 +112,7 @@ def test_links_from_ai_clients_reuse_an_existing_sign_in() -> None:
 
 
 def test_the_overview_says_when_its_stored_counts_were_taken() -> None:
-    """With stored counts (migration 0036) some Overview numbers are as of the last
+    """With stored counts (migration 0038) some Overview numbers are as of the last
     run: the page says which and when, only then, and Requeue Failed says the failed
     count will not move yet."""
     from ci_admin.api import STATIC

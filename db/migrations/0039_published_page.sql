@@ -1,4 +1,4 @@
--- 0037_published_page.sql
+-- 0039_published_page.sql
 -- A list page costs about a page (performance round, 2026-11-18). Since 0031 a
 -- list read every published email of its period through published_window, then
 -- kept the newest 500 the reader may see: "everything" read every email, for page

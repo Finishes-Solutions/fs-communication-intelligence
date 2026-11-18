@@ -229,7 +229,7 @@ def test_overview_counts(client: TestClient) -> None:
 def test_overview_says_when_stored_counts_were_taken(
     client: TestClient, database_ready: str
 ) -> None:
-    """AC-3.9: after a refresh (migration 0036) the same numbers come from the
+    """AC-3.9: after a refresh (migration 0038) the same numbers come from the
     stored counts, and the answer says when they were taken."""
     live = client.get("/api/overview", headers=auth()).json()
     try:

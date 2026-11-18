@@ -1,4 +1,4 @@
--- 0036_ops_counts.sql
+-- 0038_ops_counts.sql
 -- The console Overview and the coverage block of search results counted whole
 -- tables on every load: five ops_* views over communication_versions,
 -- classification_labels and email_attachments, and coverage_counts over every

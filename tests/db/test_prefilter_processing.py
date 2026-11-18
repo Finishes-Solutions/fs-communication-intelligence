@@ -145,7 +145,7 @@ def test_retry_skipped_processes_it_in_full(db: tuple[str, Spy]) -> None:
 
 
 def test_the_per_version_lookup_reads_an_index(db: tuple[str, Spy]) -> None:
-    """Migration 0035: processing asks policy_decisions about one version for
+    """Migration 0037: processing asks policy_decisions about one version for
     every email. Without an index on version_id each lookup read the whole table
     (2.2 million rows on the dev server, 2026-11-18)."""
     import migrate
@@ -194,7 +194,7 @@ def test_the_per_version_lookup_reads_an_index(db: tuple[str, Spy]) -> None:
 
     # AC-2.3: applying again does nothing, by the ledger and by the file itself.
     assert migrate.apply(database) == []
-    (migration,) = [m for m in migrate.discover() if m.version == "0035"]
+    (migration,) = [m for m in migrate.discover() if m.version == "0037"]
     migrate.psql(database, "--single-transaction", "-f", "-", stdin=migration.path.read_text())
     with connect(dbname=database) as conn:
         assert index_columns(conn) == [["version_id", "check_name"]]
@@ -203,19 +203,19 @@ def test_the_per_version_lookup_reads_an_index(db: tuple[str, Spy]) -> None:
 def test_the_migration_refuses_a_wrong_or_invalid_index_of_that_name(
     db: tuple[str, Spy],
 ) -> None:
-    """Migration 0035 is written to be a no-op over an index built by hand. An
+    """Migration 0037 is written to be a no-op over an index built by hand. An
     interrupted CREATE INDEX CONCURRENTLY leaves an invalid index under the same
     name, and IF NOT EXISTS would accept it: the migration must fail instead and
     must not be recorded as applied."""
     import migrate
 
     database, _ = db
-    (migration,) = [m for m in migrate.discover() if m.version == "0035"]
+    (migration,) = [m for m in migrate.discover() if m.version == "0037"]
     text = migration.path.read_text()
 
     def ledger(conn: Connection) -> int:
         row = conn.execute(
-            "SELECT count(*) AS n FROM schema_migrations WHERE version = '0035'"
+            "SELECT count(*) AS n FROM schema_migrations WHERE version = '0037'"
         ).fetchone()
         assert row is not None
         return int(row["n"])
@@ -236,7 +236,7 @@ def test_the_migration_refuses_a_wrong_or_invalid_index_of_that_name(
         with connect(dbname=database) as conn:
             conn.execute("DROP INDEX policy_decisions_version")
             conn.execute("CREATE INDEX policy_decisions_version ON policy_decisions (check_name)")
-            conn.execute("DELETE FROM schema_migrations WHERE version = '0035'")
+            conn.execute("DELETE FROM schema_migrations WHERE version = '0037'")
             conn.commit()
         with pytest.raises(migrate.MigrationError, match="invalid or is not on"):
             migrate.apply(database)
@@ -247,9 +247,9 @@ def test_the_migration_refuses_a_wrong_or_invalid_index_of_that_name(
         # Put the database back as the other tests expect it.
         with connect(dbname=database) as conn:
             conn.execute("DROP INDEX IF EXISTS policy_decisions_version")
-            conn.execute("DELETE FROM schema_migrations WHERE version = '0035'")
+            conn.execute("DELETE FROM schema_migrations WHERE version = '0037'")
             conn.commit()
-        assert [m.version for m in migrate.apply(database)] == ["0035"]
+        assert [m.version for m in migrate.apply(database)] == ["0037"]
     with connect(dbname=database) as conn:
         assert ledger(conn) == 1
         row = conn.execute(

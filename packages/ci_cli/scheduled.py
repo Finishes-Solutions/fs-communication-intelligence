@@ -136,7 +136,7 @@ def scheduler_tick(settings: Settings, now: datetime | None = None) -> ops.Decis
     with connect(role="ci_ingest") as conn:
         ops.finish_run(conn, run_id, status, counts, error)
     if status in ("succeeded", "partial"):
-        refresh_counts()  # the dashboard's stored counts (migration 0036)
+        refresh_counts()  # the dashboard's stored counts (migration 0038)
     return decision
 
 
@@ -267,6 +267,6 @@ def run_processing(settings: Settings) -> dict[str, int] | None:
         else:  # nothing was queued: keep the history to runs that did work
             conn.execute("DELETE FROM ops_runs WHERE id = %s", (run_id,))
     if counts:
-        refresh_counts()  # the dashboard's stored counts (migration 0036)
+        refresh_counts()  # the dashboard's stored counts (migration 0038)
     log.info("processing counts=%s", counts)
     return counts

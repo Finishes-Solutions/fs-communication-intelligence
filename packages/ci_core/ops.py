@@ -488,14 +488,14 @@ def recent_runs(conn: Connection, limit: int = 50, offset: int = 0) -> list[dict
     return [_jsonable(r) for r in rows]
 
 
-# The rows of ci.ops_counts (migration 0036): one per counting view.
+# The rows of ci.ops_counts (migration 0038): one per counting view.
 COUNT_NAMES = frozenset({"versions", "failures", "labels", "extraction", "originals", "coverage"})
 
 
 def refresh_counts(conn: Connection) -> bool:
     """Recount the stored dashboard and coverage counts (``ci.refresh_ops_counts``,
     ingestion role). True when it recounted; False when the counts are fresh enough,
-    another session is recounting, the database has no migration 0036, or it failed.
+    another session is recounting, the database has no migration 0038, or it failed.
     It never fails the run that calls it: a failure is logged by type and undone."""
     try:
         with conn.transaction():
@@ -513,7 +513,7 @@ def refresh_counts(conn: Connection) -> bool:
 
 def _stored_counts(conn: Connection) -> tuple[dict[str, list[dict[str, Any]]], str] | None:
     """The stored counts and when they were taken, or None to count live: without
-    migration 0036, without the right to read the table, or before its first
+    migration 0038, without the right to read the table, or before its first
     refresh. The check asks instead of trying, so no error is raised or caught."""
     readable = conn.execute(
         "SELECT coalesce(has_table_privilege(to_regclass('ci.ops_counts')::oid, 'SELECT'),"

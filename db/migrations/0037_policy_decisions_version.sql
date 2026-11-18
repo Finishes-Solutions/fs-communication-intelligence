@@ -1,4 +1,4 @@
--- 0035_policy_decisions_version.sql
+-- 0037_policy_decisions_version.sql
 -- policy_decisions had no index on version_id. Processing asks it about one
 -- version for every email: the pre-filter's "did an operator ask for this one in
 -- full?" (ci_email.process._prefilter), the requeue of skipped and re-screened

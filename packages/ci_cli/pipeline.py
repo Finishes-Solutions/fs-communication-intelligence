@@ -167,7 +167,7 @@ def capture_profile(settings: Settings) -> dict[str, Any]:
 
 
 def refresh_counts() -> None:
-    """Recount the stored dashboard and coverage counts (migration 0036) after a
+    """Recount the stored dashboard and coverage counts (migration 0038) after a
     capture or processing run that did work, on a connection of its own. It never
     fails the run: the database skips it when the counts are under 5 minutes old."""
     try:

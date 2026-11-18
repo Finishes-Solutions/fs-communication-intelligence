@@ -18,7 +18,7 @@ NOW = datetime(2026, 10, 28, 15, 0, tzinfo=UTC)
 
 
 def stored_counts() -> int:
-    """How many of the six stored counts (migration 0036) exist."""
+    """How many of the six stored counts (migration 0038) exist."""
     with connect() as conn:
         row = conn.execute("SELECT count(*) AS n FROM ops_counts").fetchone()
         conn.rollback()
@@ -107,13 +107,13 @@ def test_scheduler_tick_follows_the_schedule_and_records_runs(
 def test_runs_complete_on_a_database_without_the_stored_counts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """AC-3.7: the code is deployed before migration 0036 is applied. A capture and
+    """AC-3.7: the code is deployed before migration 0038 is applied. A capture and
     a processing run that did work must end as before."""
     monkeypatch.setenv("CAPTURE_ENABLED", "true")
     monkeypatch.setenv("PROCESSING_ENABLED", "true")
     # Nothing is queued by now; a pass that reports work reaches the recount.
     monkeypatch.setattr(scheduled, "process_all", lambda *args, **kwargs: {"index": 1})
-    migration = Path(__file__).resolve().parents[2] / "db/migrations/0036_ops_counts.sql"
+    migration = Path(__file__).resolve().parents[2] / "db/migrations/0038_ops_counts.sql"
     with connect() as conn:
         conn.execute("DROP VIEW ci.coverage_snapshot")
         conn.execute("DROP FUNCTION ci.refresh_ops_counts(interval)")

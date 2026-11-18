@@ -52,7 +52,7 @@ NEAREST_K = 200
 # an hour old is fine: the count takes seconds once a year of mail is stored, and
 # the request that recounts waits for it.
 COVERAGE_SECONDS = 1800.0
-# An answer read from the stored counts (migration 0036) is kept this long.
+# An answer read from the stored counts (migration 0038) is kept this long.
 COVERAGE_STORED_SECONDS = 60.0
 MAX_CHUNKS_PER_MESSAGE = 3
 ACTION_LABELS = ("action_required", "approval_required")
@@ -537,7 +537,7 @@ _coverage_lock = threading.Lock()
 
 
 def _stored_coverage(conn: Connection) -> list[dict[str, Any]] | None:
-    """The coverage counts kept by ``ci.refresh_ops_counts`` (migration 0036), or
+    """The coverage counts kept by ``ci.refresh_ops_counts`` (migration 0038), or
     None to count live: without the migration, before its first refresh, or after
     a mode change (the view then has no row). The check asks instead of trying, so
     no error is raised or caught and a statement stopped by the tool's time budget
@@ -1038,7 +1038,7 @@ def _listing_rows(
     return rows
 
 
-# ----- a list page costs a page (migration 0037) ------------------------------
+# ----- a list page costs a page (migration 0039) ------------------------------
 # published_page returns the newest row_limit published emails of the period;
 # the listing applies _AUTH and the filters to those in the same statement. A
 # page that the newest rows fill costs about those rows instead of the whole
@@ -1050,7 +1050,7 @@ PAGE_ROWS_MAX = 20_000
 
 
 def paged_reads(conn: Connection) -> bool:
-    """True once migration 0037 is applied; until then lists use the 0031 read."""
+    """True once migration 0039 is applied; until then lists use the 0031 read."""
     row = conn.execute(
         "SELECT to_regprocedure('ci.published_page(timestamptz, timestamptz, text, text,"
         " integer)') IS NOT NULL AS ok"
@@ -1067,7 +1067,7 @@ def _listing_rows_paged(
     need: int,
     labels: Sequence[str] | None,
 ) -> list[dict[str, Any]] | None:
-    """The listing's rows, newest first, from the newest emails only (0037); None
+    """The listing's rows, newest first, from the newest emails only (0039); None
     when they do not give ``need`` emails, for the caller to read as before.
 
     The rows authorized and filtered among the newest N emails are the first rows
@@ -1144,7 +1144,7 @@ def _listing(
     yes (the caller's filter requires it), so the candidates come from the label
     index (published_labelled, 0021).
 
-    With migration 0037 a list without ``ids`` or ``conversation`` first reads
+    With migration 0039 a list without ``ids`` or ``conversation`` first reads
     only the newest emails (``_listing_rows_paged``). With migration 0031 the rows
     come from the set-based functions. Without it,
     from the views (``_listing_rows_views``): the answer is the same, more slowly,
