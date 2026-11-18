@@ -26,9 +26,11 @@ READER_OWN = "Communications.Reader.Own"
 # mailbox, through the risk tools only, showing only the fields chosen for the
 # reader (ci_retrieval.risk_access), never email links or email text.
 READER_RISKS = "Communications.Reader.Risks"
-# The admin console's role (ci_admin.api.ADMIN_ROLE); named here so a console
-# admin who also holds READER_RISKS is not narrowed to risks.
+# The admin console's roles (ci_admin.api.ADMIN_ROLE and VIEWER_ROLE: admin, and
+# view-only); named here so a console user who also holds READER_RISKS is not
+# narrowed to risks.
 CONSOLE_ADMIN = "Communications.Admin"
+CONSOLE_VIEWER = "Communications.Viewer"
 _ARM_SCOPE = "https://management.azure.com/.default"
 
 
@@ -51,7 +53,7 @@ class Principal:
         """True when READER_RISKS is this caller's only reading role. Roles add up,
         so a broader role (all mailboxes, own mailbox, console) takes precedence."""
         return READER_RISKS in self.roles and not (
-            {READER_ALL, READER_OWN, CONSOLE_ADMIN} & set(self.roles)
+            {READER_ALL, READER_OWN, CONSOLE_ADMIN, CONSOLE_VIEWER} & set(self.roles)
         )
 
 

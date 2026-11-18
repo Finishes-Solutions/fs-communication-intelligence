@@ -15,7 +15,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from starlette.testclient import TestClient
 
-from ci_admin.api import ADMIN_ROLE, ADMIN_SCOPE, FILES_ROLE, build_admin_app
+from ci_admin.api import ADMIN_ROLE, ADMIN_SCOPE, FILES_ROLE, VIEWER_ROLE, build_admin_app
 from ci_admin.lab import LabBackends
 from ci_cli.seed import seed
 from ci_core.db import AppRole, Connection, connect
@@ -158,7 +158,8 @@ def latest_audit(database: str, action: str) -> dict[str, Any] | None:
         ({"Authorization": "Bearer not-a-token"}, 401),
         (auth(scp="Communications.Search"), 401),  # an MCP client token is not an admin token
         (auth(aud="some-other-api"), 401),
-        (auth(roles=[READER_ALL]), 403),  # signed in, but not an admin
+        (auth(roles=[READER_ALL]), 403),  # signed in, but no console role
+        (auth(roles=[READER_ALL, VIEWER_ROLE]), 200),  # console viewer
         (auth(), 200),
     ],
 )
@@ -1235,3 +1236,101 @@ def test_long_lists_load_a_page_at_a_time(client: TestClient, database_ready: st
     assert risks["items_total"] == len(risks["items"]) > 1
     assert short["items"] == risks["items"][:1] and short["items_total"] == risks["items_total"]
     assert short["total"] == risks["total"]  # counts and charts cover every risk email
+
+
+# The console API calls a viewer may make (Matthew, 2026-11-18: view-only console
+# access to mail, action items, risks and reports; run timing, scope, people,
+# costs, label answers and the Lab stay with console admins).
+VIEWER_CALLS = {
+    ("GET", "/api/overview"),
+    ("GET", "/api/labels"),
+    ("GET", "/api/connections"),
+    ("GET", "/api/messages"),
+    ("GET", "/api/messages/{id}"),
+    ("GET", "/api/messages/{id}/files/{file_id}"),
+    ("GET", "/api/actionable"),
+    ("GET", "/api/knowledge"),
+    ("GET", "/api/knowledge/graph"),
+    ("GET", "/api/knowledge/{id}"),
+    ("GET", "/api/risks"),
+    ("POST", "/api/reports/preview"),
+    ("POST", "/api/reports/export"),
+}
+
+
+def test_console_viewers_read_and_change_nothing(client: TestClient) -> None:
+    """Every console API route, called as a viewer: only VIEWER_CALLS answer; every
+    other call is refused before it does anything. A new route is admin-only until
+    it is added here on purpose."""
+    from starlette.routing import Route
+
+    viewer = auth(oid="viewer-oid", roles=[READER_ALL, VIEWER_ROLE])
+    sample = {
+        "{id}": "00000000-0000-0000-0000-000000000000",
+        "{file_id}": "0" * 64,
+        "{action}": "rename",
+        "{deployment}": "gpt-test",
+    }
+    opened: set[tuple[str, str]] = set()
+    refused: set[tuple[str, str]] = set()
+    for route in client.app.routes:  # type: ignore[attr-defined]
+        if not isinstance(route, Route) or not route.path.startswith("/api/"):
+            continue
+        path = route.path
+        for key, value in sample.items():
+            path = path.replace(key, value)
+        for method in sorted((route.methods or set()) - {"HEAD"}):
+            response = client.request(method, path, headers=viewer, json={})
+            (refused if response.status_code == 403 else opened).add((method, route.path))
+            if response.status_code == 403:
+                assert response.json()["error"] == "this needs console admin access"
+    assert opened == VIEWER_CALLS
+    assert ("PUT", "/api/schedule") in refused and ("POST", "/api/runs/capture") in refused
+    assert ("PUT", "/api/feedback/{id}") in refused and ("GET", "/api/review/next") in refused
+
+
+def test_console_viewers_see_the_same_mail_as_admins(client: TestClient) -> None:
+    viewer = auth(oid="viewer-oid", roles=[READER_ALL, VIEWER_ROLE])
+    for path in ("/api/messages?since_days=0", "/api/actionable?hours=744&status=all"):
+        assert client.get(path, headers=viewer).json() == client.get(path, headers=auth()).json()
+    risks = client.get("/api/risks?days=366", headers=viewer).json()
+    assert (
+        risks["items"]
+        and risks["items"] == client.get("/api/risks?days=366", headers=auth()).json()["items"]
+    )
+    detail = invoice_detail(client)
+    email = client.get(f"/api/messages/{detail['communication_id']}", headers=viewer)
+    assert email.status_code == 200 and email.json()["subject"] == detail["subject"]
+    # Hidden knowledge entries are listed for the admins who unhide them, not viewers.
+    assert "hidden" in client.get("/api/knowledge", headers=auth()).json()
+    assert "hidden" not in client.get("/api/knowledge", headers=viewer).json()
+    # As for an admin, which mail shows follows the reading role: none without one.
+    blind = auth(oid="viewer-oid", roles=[VIEWER_ROLE])
+    assert client.get("/api/messages?since_days=0", headers=blind).json()["results"] == []
+
+
+def test_reader_limits_apply_to_console_viewers(client: TestClient) -> None:
+    viewer_upn = "viewer.limited@finishessolutions.example"
+    viewer = auth(oid="viewer-oid", preferred_username=viewer_upn, roles=[READER_ALL, VIEWER_ROLE])
+    before = client.get("/api/messages?since_days=0&limit=100", headers=viewer).json()["results"]
+    limit = {
+        "action": "add",
+        "reader": viewer_upn,
+        "kind": "domain",
+        "value": "@example-gc.example",
+        "reason": "private_business",
+    }
+    assert client.post("/api/reader-limits", headers=auth(), json=limit).status_code == 200
+    try:
+        after = client.get("/api/messages?since_days=0&limit=100", headers=viewer).json()["results"]
+        assert 0 < len(after) < len(before)
+        assert not any((r["sender"] or "").endswith("@example-gc.example") for r in after)
+        # A viewer cannot remove their own limit.
+        undo = client.post("/api/reader-limits", headers=viewer, json=limit | {"action": "remove"})
+        assert undo.status_code == 403
+        # The same check runs for a console admin, who could remove the limit, though.
+        admin = auth(oid="viewer-oid", preferred_username=viewer_upn)
+        narrowed = client.get("/api/messages?since_days=0&limit=100", headers=admin).json()
+        assert len(narrowed["results"]) == len(after)
+    finally:
+        client.post("/api/reader-limits", headers=auth(), json=limit | {"action": "remove"})

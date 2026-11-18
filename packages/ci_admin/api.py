@@ -101,24 +101,34 @@ from ci_retrieval import knowledge as kb
 from ci_retrieval import reports as report_queries
 from ci_retrieval import search as retrieval
 from ci_retrieval.entra import EntraTokenVerifier
-from ci_retrieval.identity import READER_RISKS, Principal
+from ci_retrieval.identity import CONSOLE_VIEWER, READER_RISKS, Principal
 
 log = logging.getLogger("ci.admin")
 
 ADMIN_SCOPE = "Communications.Console"  # Entra refuses a scope and a role with one name
+# Console admin: every page, and the only role that changes anything (schedule,
+# mode, scope, mail rules, people, prices, models, knowledge corrections, label
+# answers) or uses the paid Lab.
 ADMIN_ROLE = "Communications.Admin"
+# Console viewer (Matthew, 2026-11-18): reads mail, action items, risks, knowledge,
+# reports and the overview, and changes nothing. Which mail it sees still follows
+# the person's reading role (AI Search), as for an admin.
+VIEWER_ROLE = CONSOLE_VIEWER
 # Opens emails and files from links (the read-only page) without the console.
 FILES_ROLE = "Communications.Files"
 # The app roles the People page grants, by their short names (scripts/azure/people.sh).
 ACCESS_ROLES = {
     "console": ADMIN_ROLE,
+    "viewer": VIEWER_ROLE,
     "search": "Communications.Reader.All",
     "files": FILES_ROLE,
     # Project risks only, through the risk tools, without links (ci_retrieval.risk_access).
     "risks": READER_RISKS,
 }
-# What the read-only page calls: one email, its files and the label names.
-READER_PAGE = (ADMIN_ROLE, FILES_ROLE)
+# The console's read-only pages: both console roles.
+CONSOLE = (ADMIN_ROLE, VIEWER_ROLE)
+# What the read-only email page calls: one email, its files and the label names.
+READER_PAGE = (ADMIN_ROLE, VIEWER_ROLE, FILES_ROLE)
 STATIC = Path(__file__).parent / "static"
 # Console pages are plain paths (/reports, /messages?q=...); each returns the same
 # single-page app, which reads the path. "check" is the old name of "review".
@@ -410,7 +420,9 @@ def build_admin_app(
         principal = verified.principal()
         if not set(allowed) & set(principal.roles):
             log.info("admin refused: none of the roles %s", ", ".join(allowed))
-            return JSONResponse({"error": "you are not an admin of this console"}, 403)
+            if VIEWER_ROLE in principal.roles:
+                return JSONResponse({"error": "this needs console admin access"}, 403)
+            return JSONResponse({"error": "you do not have access to this console"}, 403)
         if principal.risk_only:
             # Risk-only access never opens emails or files, even with the files role.
             log.info("admin refused: risk-only access")
@@ -696,8 +708,9 @@ def build_admin_app(
                 kind=q.get("kind") or None,
                 limit=_int(request, "limit", 50, 1, 100),
             )
-        with connector("ci_operator") as conn:
-            found["hidden"] = hidden_knowledge(conn)
+        if ADMIN_ROLE in principal.roles:  # hidden entries are for the admin who unhides them
+            with connector("ci_operator") as conn:
+                found["hidden"] = hidden_knowledge(conn)
         return found
 
     def knowledge_graph(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
@@ -1309,9 +1322,9 @@ def build_admin_app(
         Route("/app.css", asset("app.css", "text/css")),
         Route("/config.json", config),
         Route("/healthz", health),
-        Route("/api/overview", endpoint(overview)),
+        Route("/api/overview", endpoint(overview, CONSOLE)),
         Route("/api/labels", endpoint(labels, READER_PAGE)),
-        Route("/api/connections", endpoint(connections_page)),
+        Route("/api/connections", endpoint(connections_page, CONSOLE)),
         Route("/api/runs", endpoint(runs)),
         Route("/api/runs/capture", endpoint(run_now), methods=["POST"]),
         Route("/api/schedule", endpoint(schedule), methods=["GET", "PUT"]),
@@ -1320,15 +1333,15 @@ def build_admin_app(
         Route("/api/mailboxes/{action}", endpoint(mailbox_action), methods=["POST"]),
         Route("/api/unpublished", endpoint(unpublished)),
         Route("/api/requeue-failed", endpoint(requeue), methods=["POST"]),
-        Route("/api/messages", endpoint(messages)),
+        Route("/api/messages", endpoint(messages, CONSOLE)),
         Route("/api/messages/{id}", endpoint(message, READER_PAGE)),
         Route("/api/messages/{id}/files/{file_id}", endpoint(attachment, READER_PAGE)),
-        Route("/api/actionable", endpoint(actionable)),
+        Route("/api/actionable", endpoint(actionable, CONSOLE)),
         Route("/api/feedback/{id}", endpoint(feedback), methods=["GET", "PUT"]),
-        Route("/api/knowledge", endpoint(knowledge_list)),
-        Route("/api/knowledge/graph", endpoint(knowledge_graph)),
+        Route("/api/knowledge", endpoint(knowledge_list, CONSOLE)),
+        Route("/api/knowledge/graph", endpoint(knowledge_graph, CONSOLE)),
         Route("/api/knowledge/merge", endpoint(knowledge_merge_many), methods=["POST"]),
-        Route("/api/knowledge/{id}", endpoint(knowledge_entry_page)),
+        Route("/api/knowledge/{id}", endpoint(knowledge_entry_page, CONSOLE)),
         Route("/api/knowledge/{id}/{action}", endpoint(knowledge_action), methods=["POST"]),
         Route("/api/review/next", endpoint(review_next)),
         Route("/api/people", endpoint(people), methods=["GET", "PUT"]),
@@ -1339,13 +1352,13 @@ def build_admin_app(
         Route("/api/calibration", endpoint(calibration_report)),
         Route("/api/lab/classify", endpoint(lab_classify), methods=["POST"]),
         Route("/api/lab/reclassify", endpoint(lab_reclassify), methods=["POST"]),
-        Route("/api/risks", endpoint(risks)),
+        Route("/api/risks", endpoint(risks, CONSOLE)),
         Route("/api/costs", endpoint(cost_page)),
         Route("/api/costs/prices", endpoint(cost_prices), methods=["PUT"]),
         Route("/api/models", endpoint(model_page), methods=["GET", "PUT"]),
         Route("/api/models/{deployment}/price", endpoint(model_price), methods=["PUT"]),
-        Route("/api/reports/preview", endpoint(report_preview), methods=["POST"]),
-        Route("/api/reports/export", endpoint(report_export), methods=["POST"]),
+        Route("/api/reports/preview", endpoint(report_preview, CONSOLE), methods=["POST"]),
+        Route("/api/reports/export", endpoint(report_export, CONSOLE), methods=["POST"]),
         *(Route(f"/{name}", page) for name in PAGES),
         Route("/read/{id}", page),  # the read-only email page MCP results link to
         Mount("/", StaticFiles(directory=STATIC, html=True)),

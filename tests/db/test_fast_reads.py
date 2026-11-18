@@ -214,7 +214,16 @@ def test_threads_and_action_items_match_the_views(
             fast, views = both_ways(
                 stack, monkeypatch, thread_of(READERS[reader], email["communication_id"])
             )
-            assert plain(fast) == plain(views)
+            # Mailbox copies of one message arrive at the same moment, and before 0031
+            # either copy could stand for the group: compare the emails, not the copy.
+            assert (fast is None) == (views is None)
+            if fast is not None and views is not None:
+                assert fast["count"] == views["count"] and fast["truncated"] == views["truncated"]
+                assert sorted(
+                    f"{m['subject']}|{m['received_at']}|{m['sender']}" for m in fast["messages"]
+                ) == sorted(
+                    f"{m['subject']}|{m['received_at']}|{m['sender']}" for m in views["messages"]
+                )
         for person in (None, PAT, f"{PAT},{MORGAN}"):
             fast, views = both_ways(stack, monkeypatch, actionable_of(READERS[reader], person))
             for part in ("actions", "possible", "risks"):
