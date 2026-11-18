@@ -380,6 +380,31 @@ az functionapp config appsettings set -g fs-communication-intelligence -n func-f
 
 More workers than about 16 do not help once embeddings are the limit. Mail that failed before this change: **Requeue failed** in Schedule & Runs (or `ci process --retry-failed`). A retried email is classified again, so the retry costs one more chat call.
 
+**An index for the per-email policy lookups (migration 0035, 2026-11-18).** For every email, processing asks the `policy_decisions` table about that one email version. The table had no index for that, so each question read the whole table: 2.2 million rows and 1.3 million full reads on the dev server on 2026-11-18. Migration 0035 adds the index (`policy_decisions_version`). The code is the same before and after.
+
+Building it blocks writes to that table, which means processing waits; reading and search continue. So do one of these, signed in as `svc_automation@`:
+
+- **Simplest:** in the console's Schedule & Runs, turn processing off and wait for the running pass to end. Apply the migration, then turn processing back on:
+
+```bash
+cd ~/fs-communication-intelligence && git pull && make azure-migrate AZ_PSQL=psql
+```
+
+- **Without stopping processing:** build the index by hand first, in `psql` on the database. This form does not block writes, and takes longer:
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS policy_decisions_version ON ci.policy_decisions (version_id, check_name);
+SELECT indisvalid FROM pg_index WHERE indexrelid = 'ci.policy_decisions_version'::regclass;
+```
+
+  The second line must answer `t`. If it answers `f`, the build was interrupted: run `DROP INDEX CONCURRENTLY ci.policy_decisions_version;` and build it again. Then apply the migration as above; it finds the index and changes nothing (migration 0027 was applied the same way).
+
+If the migration cannot get its lock within 30 seconds, because a processing transaction is still open, it stops with a lock timeout error and changes nothing. Run it again once processing is off. Not measured: how long the build takes on 2.2 million rows, and how much faster processing gets. To check afterwards that the full reads have stopped, run this twice, some minutes apart while mail is processed; `seq_scan` should stay the same and `idx_scan` should rise:
+
+```sql
+SELECT seq_scan, idx_scan FROM pg_stat_user_tables WHERE schemaname = 'ci' AND relname = 'policy_decisions';
+```
+
 ## 10. Connect Claude, ChatGPT and Copilot Studio
 
 **Quick Connect (sign-in broker, ADR-021).** Run once:

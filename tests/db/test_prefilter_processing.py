@@ -141,3 +141,59 @@ def test_retry_skipped_processes_it_in_full(db: tuple[str, Spy]) -> None:
             (row["version_id"],),
         ).fetchone()
         assert requeue_skipped(conn) == 0  # nothing left that the pre-filter skipped
+
+
+def test_the_per_version_lookup_reads_an_index(db: tuple[str, Spy]) -> None:
+    """Migration 0035: processing asks policy_decisions about one version for
+    every email. Without an index on version_id each lookup read the whole table
+    (2.2 million rows on the dev server, 2026-11-18)."""
+    import migrate
+    from psycopg import sql
+
+    database, _ = db
+    # The statement in ci_email.process._prefilter.
+    lookup = (
+        "SELECT 1 FROM policy_decisions WHERE version_id = {} AND check_name = 'prefilter'"
+        " AND reason_code = 'operator_override'"
+    )
+
+    def index_columns(conn: Connection) -> list[list[str]]:
+        rows = conn.execute(
+            "SELECT array_agg(a.attname::text ORDER BY k.ord) AS columns"
+            " FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid"
+            " CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord)"
+            " JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum"
+            " WHERE i.indrelid = 'ci.policy_decisions'::regclass AND i.indisvalid"
+            " AND c.relname = 'policy_decisions_version' GROUP BY c.oid"
+        ).fetchall()
+        return [row["columns"] for row in rows]
+
+    def nodes(plan: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        yield plan
+        for child in plan.get("Plans", []):
+            yield from nodes(child)
+
+    with connect(dbname=database) as conn:
+        assert index_columns(conn) == [["version_id", "check_name"]]  # AC-2.1
+        version_id = state(conn, NEWSLETTER)["version_id"]
+        conn.execute("SET LOCAL enable_seqscan = off")
+        explained = conn.execute(
+            sql.SQL("EXPLAIN (FORMAT JSON) " + lookup).format(sql.Literal(version_id))
+        ).fetchone()
+        conn.rollback()
+        assert explained is not None
+        scans = [
+            node
+            for node in nodes(explained["QUERY PLAN"][0]["Plan"])
+            if node.get("Index Name") == "policy_decisions_version"
+        ]
+        assert scans, explained  # AC-2.2
+        assert scans[0]["Node Type"] in ("Index Scan", "Index Only Scan", "Bitmap Index Scan")
+        assert "version_id" in scans[0]["Index Cond"]
+
+    # AC-2.3: applying again does nothing, by the ledger and by the file itself.
+    assert migrate.apply(database) == []
+    (migration,) = [m for m in migrate.discover() if m.version == "0035"]
+    migrate.psql(database, "--single-transaction", "-f", "-", stdin=migration.path.read_text())
+    with connect(dbname=database) as conn:
+        assert index_columns(conn) == [["version_id", "check_name"]]
