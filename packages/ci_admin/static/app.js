@@ -963,7 +963,7 @@ function messageView(id, m, opts = {}) {
     h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "Message"),
       h("pre", { class: "text" }, body ? body.text : "(no body text)")),
     h("div", { class: "reader-section" },
-      h("p", { class: "muted small", style: "margin:0" }, "Outlook opens the message only if your account can open that mailbox. ", m.note || "")));
+      h("p", { class: "muted small", style: "margin:0" }, m.web_link ? "Open in Outlook opens your own copy of this email. " : "", m.note || "")));
 }
 
 function aiBlock(m) {

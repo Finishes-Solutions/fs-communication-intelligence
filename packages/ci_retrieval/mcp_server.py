@@ -73,8 +73,9 @@ _DATES = (
 
 _LINKS = (
     " Each email carries view_url, a read-only page in the admin console that console admins"
-    " can open after Microsoft sign-in; share view_url, not web_link (web_link opens only in"
-    " the mailbox owner's own Outlook)."
+    " can open after Microsoft sign-in; share view_url. web_link is present only when the"
+    " signed-in person has the email in their own mailbox, and opens it in their own Outlook;"
+    " never share it with anyone else."
 )
 
 _KNOWLEDGE = (
