@@ -408,6 +408,33 @@ az monitor app-insights query -g fs-communication-intelligence --app appi-fs-ci-
 
 (`-o table` prints nothing for this command; keep `--query "tables[0].rows" -o tsv`.) Only `bearer token: no` lines after you signed in means the client never got a token: look in Entra's sign-in logs, tab **User sign-ins (non-interactive)**. `token rejected: <reason>` means the server refused the token for that reason. `bearer token: yes` with 200 means it works.
 
+### Agents: files and emails without your browser
+
+Matthew (2026-11-18): an agent should find "every contract or set of plans" and work with them without opening links in his browser. Four MCP tools do this, in three ways, so an agent can fall back when its platform refuses one:
+
+| Tool | What the agent gets |
+|---|---|
+| `find_files` | Attachments, newest first, one row per file: by file name, subject or sender, or by the text inside the files; narrowed by project, company (sender domain), legal entity, sender, mailbox, file type and dates. |
+| `export_email` | An email as **Markdown** text (headers, the AI's summary marked as such, the full message, the attachment list), a page at a time; or as a **Word** file inside the answer. |
+| `get_attachment` (existing) | An attachment's extracted text, a page at a time. |
+| `get_download_links` | **Short-lived links** that download without signing in: every kept original file of up to 25 emails, and each email as `md` or `docx`. |
+| `get_file` | One original file **inside the answer** (embedded, base64), up to 4 MB by default (`MCP_INLINE_FILE_MAX_BYTES`); larger files get a link instead. |
+
+What to know before relying on it:
+- **Links are bearer secrets.** Anyone holding one can download that single item until it expires (15 minutes by default, `FILE_LINK_MINUTES`, at most 60). Links appear in the AI platform's chat history. Each download is checked again against the grants and reader limits of the person the link was made for, and is audited (`file_link_download`). The link itself is not written to the console's own logs; whether Azure's automatic request logs keep the address (and so the link) is not checked. To end every link at once:
+
+```bash
+cd ~/fs-communication-intelligence && set -a && . ./local/azure-dev.env && set +a && PGPASSWORD="$(az account get-access-token --resource-type oss-rdbms --query accessToken -o tsv)" psql -c "SELECT ci.rotate_file_link_key()"
+```
+
+  (signed in to Azure as `svc_automation@`, which holds the operator role).
+- **Files are not scanned for malware** (Defender for Storage is still required before production). The tools tell the agent to treat files as untrusted and never run them.
+- **Platforms differ.** Recent bug reports say Claude.ai custom connectors reject tool answers that carry a binary file such as a PDF ([anthropics/claude-ai-mcp#1086](https://github.com/anthropics/claude-ai-mcp/issues/1086)); OpenAI lists embedded resources as supported in ChatGPT apps ([openai/mcp-extensions](https://github.com/openai/mcp-extensions/blob/main/docs/spec.md)). Not tried from either platform yet. When `get_file` fails, the agent can use `get_download_links`, or `export_email` / `get_attachment` for text. A platform's code sandbox may also block outside downloads.
+- **Plans.** Text extraction gets title blocks and notes, not drawings; there is no OCR yet. For drawings the agent needs the original file (`get_file` or a link).
+- Email exports are Markdown or Word; PDF is not produced (the agent can convert).
+
+It needs database migration 0033 (the link signing key, made inside the database, so no new secret is shared between the apps). Apply it with `make azure-migrate AZ_PSQL=psql`, signed in as `svc_automation@`. Until then the link tools answer that the migration is missing; `find_files` needs 0032.
+
 ## 11. Copilot Studio with Azure AI Search or other tools
 
 - **Don't give Copilot Studio a search index or database of the mail.** Azure AI Search isn't part of this system: PostgreSQL is the search index (L2), and there's no AI Search resource. A direct index or database connection would skip the per-person authorization, exclusions and audit; every agent must go through this MCP endpoint (L8).

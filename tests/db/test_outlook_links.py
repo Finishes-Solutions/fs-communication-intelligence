@@ -57,8 +57,9 @@ def test_reader_without_a_copy_gets_no_link_anywhere(
         listed = retrieval.list_email(conn, OUTSIDER, retrieval.NO_FILTERS, 100)["results"]
         found = retrieval.search(conn, OUTSIDER, "change order plumbing", EMBEDDER)["results"]
         rows = reports.report_rows(conn, OUTSIDER, "messages")["rows"]
-    assert listed and found and rows
-    assert all(i["web_link"] is None for i in listed + found + rows)
+        risks = reports.risk_overview(conn, OUTSIDER, days=366)["items"]
+    assert listed and found and rows and risks
+    assert all(i["web_link"] is None for i in listed + found + rows + risks)
 
 
 def test_no_sign_in_address_means_no_link(pipeline: dict[str, Any]) -> None:  # noqa: F811

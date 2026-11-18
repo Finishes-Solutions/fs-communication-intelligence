@@ -19,6 +19,7 @@ per call; tool arguments can only narrow results):
 
 from __future__ import annotations
 
+import base64
 import functools
 import json
 import logging
@@ -30,10 +31,12 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from urllib.parse import quote
 
+import httpx
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import BlobResourceContents, EmbeddedResource, TextContent
 from psycopg.errors import QueryCanceled
 from starlette.applications import Starlette
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -41,7 +44,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from ci_core.db import Connection, pooled
 from ci_core.settings import Settings
 from ci_processing.embedding import Embedder
-from ci_retrieval import knowledge, reports, risk_access
+from ci_retrieval import exports, file_links, files, knowledge, reports, risk_access
 from ci_retrieval import search as retrieval
 from ci_retrieval.broker import CALLBACK_PATH, CONSENT_PATH, BasicClientId, EntraBroker
 from ci_retrieval.entra import EntraAccessToken, EntraTokenVerifier
@@ -82,6 +85,8 @@ _KNOWLEDGE = (
 )
 
 PrincipalSource = Callable[[], Principal]
+# Reads a stored original through a download link URL; None when it cannot.
+FileFetcher = Callable[[str], bytes | None]
 Connector = Callable[[], AbstractContextManager[Connection]]
 
 
@@ -109,12 +114,12 @@ def _search_connection() -> Iterator[Connection]:
         yield conn
 
 
-def _guarded(fn: Callable[..., dict[str, Any]]) -> Callable[..., dict[str, Any]]:
+def _guarded(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Logs how long a tool took (name and milliseconds only, never arguments) and
     turns a stopped statement into TOO_SLOW."""
 
     @functools.wraps(fn)
-    def run(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    def run(*args: Any, **kwargs: Any) -> Any:
         started = time_module.monotonic()
         outcome = "ok"
         try:
@@ -142,10 +147,17 @@ def build_server(
     *,
     connector: Connector = _search_connection,
     view_base: str | None = None,
+    link_minutes: float = 15.0,
+    inline_max_bytes: int = 4_000_000,
+    fetch_file: FileFetcher | None = None,
     **server_options: Any,
 ) -> MCPServer[Any]:
     """``view_base`` is the admin console's address: results then link to its
-    read-only email page and attachment downloads (``with_links``)."""
+    read-only email page and attachment downloads (``with_links``), and download
+    links for agents (``/dl/<link>``, valid ``link_minutes``) open there.
+    ``fetch_file`` reads a stored original through such a link (default: over
+    HTTPS from the console), for get_file to return it inside the answer when it
+    is at most ``inline_max_bytes``."""
     server: MCPServer[Any] = MCPServer(
         name="FS Communication Intelligence",
         instructions="Finishes Solutions email evidence, limited to what the signed-in "
@@ -159,16 +171,20 @@ def build_server(
         "entity or period; "
         "risk_overview shows project-risk trends; find_knowledge and get_profile answer who "
         "and what: properties, companies, people, terms and how they relate, learned from "
-        "the email over time. An account with risk-only access gets only risk_overview and"
+        "the email over time; find_files lists attachments (contracts, plans) by name,"
+        " text, project or company; export_email gives an email as Markdown or Word;"
+        " get_download_links gives short-lived links an agent can download from without"
+        " signing in; get_file returns a small file inside the answer."
+        " An account with risk-only access gets only risk_overview and"
         " list_actionable, with project risks cut to the fields chosen for it and no links;"
         " the other tools tell it so." + _TRUST,
         **server_options,
     )
 
-    def tool(description: str) -> Callable[[Callable[..., dict[str, Any]]], Any]:
+    def tool(description: str) -> Callable[[Callable[..., Any]], Any]:
         """server.tool with the time guard and timing log on every tool."""
 
-        def register(fn: Callable[..., dict[str, Any]]) -> Any:
+        def register(fn: Callable[..., Any]) -> Any:
             return server.tool(description=description)(_guarded(fn))
 
         return register
@@ -496,6 +512,200 @@ def build_server(
             found["note"] = "Links are not configured (ADMIN_PUBLIC_URL is not set)."
         return linked(found)
 
+    def _link(caller: Principal, kind: file_links.Kind, cid: str, item: str) -> dict[str, Any]:
+        """A download link for an agent (no sign-in) and when it expires."""
+        if not view_base:
+            return {"link_note": "Download links are not configured (ADMIN_PUBLIC_URL)."}
+        with connector() as conn:
+            token, expires = file_links.make(conn, caller, kind, cid, item, link_minutes)
+        return {
+            "fetch_url": f"{view_base.rstrip('/')}/dl/{token}",
+            "fetch_expires_at": datetime.fromtimestamp(expires, UTC).isoformat(),
+        }
+
+    @tool(
+        description="Find attachments (contracts, plan sets, invoices, reports...) in the"
+        " email you may read, newest first, one row per file even when it came with many"
+        " emails. `query` searches file names, email subjects and senders, or, with"
+        " search_in='text', the text inside the files (PDF, Word, Excel; scans have none)."
+        " project, company (the sender's domain), entity, sender, mailbox and file_type"
+        " (e.g. pdf, dwg, xlsx) narrow by partial, case-insensitive match; project and"
+        " entity are the names the AI found in the emails." + _DATES + " Each file has a"
+        " communication_id and attachment_id (get_attachment reads its text) and, when the"
+        " original is kept, a file_id: pass communication_id and file_id to get_file for"
+        " the file itself, or communication_ids to get_download_links for links."
+        + _PAGING
+        + _LINKS
+        + _TRUST
+    )
+    def find_files(
+        query: str | None = None,
+        search_in: str = "names",
+        project: str | None = None,
+        company: str | None = None,
+        entity: str | None = None,
+        sender: str | None = None,
+        mailbox: str | None = None,
+        file_type: str | None = None,
+        since_days: float | None = 365,
+        since_date: str | None = None,
+        until_date: str | None = None,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        if principal_of().risk_only:
+            return dict(risk_access.REFUSAL)
+        if search_in not in files.SEARCH_IN:
+            return {"error": "search_in must be names or text"}
+        contains = {
+            "project": project, "company": company, "entity": entity,
+            "sender": sender, "mailbox": mailbox, "type": file_type,
+        }  # fmt: skip
+        with connector() as conn:
+            try:
+                found = files.list_files(
+                    conn,
+                    principal_of(),
+                    since=_since(since_days, since_date),
+                    until=_until(until_date),
+                    q=query,
+                    search_in=search_in,
+                    limit=max(1, min(limit, 50)),
+                    offset=max(0, min(offset, files.MAX_OFFSET)),
+                    contains={k: v for k, v in contains.items() if v},
+                )
+            except files.FilesUnavailable as exc:
+                return {"error": str(exc)}
+        return linked({"note": retrieval.UNTRUSTED_NOTE} | found)
+
+    @tool(
+        description="An email as a document: format='markdown' returns its headers, the"
+        " AI's summary (marked as such), the full message text and its attachment list as"
+        " Markdown, a page at a time (call again with offset=next_offset); format='docx'"
+        " returns the same as a Word file inside the answer, with a short-lived fetch_url"
+        " as well. Save or convert it as the user asks (for a PDF, convert the Markdown or"
+        " Word file yourself). Attachments are separate: get_attachment for their text,"
+        " get_file or get_download_links for the files." + _TRUST
+    )
+    def export_email(
+        communication_id: str, format: str = "markdown", offset: int = 0, max_chars: int = 20_000
+    ) -> Any:
+        caller = principal_of()
+        if caller.risk_only:
+            return dict(risk_access.REFUSAL)
+        if format not in ("markdown", "docx"):
+            return {"error": "format must be markdown or docx"}
+        with connector() as conn:
+            email = exports.email_document(conn, caller, communication_id)
+        if email is None:
+            return {"found": False, "note": NOT_FOUND}
+        if format == "markdown":
+            text = exports.markdown(email)
+            start = max(0, offset)
+            size = max(1000, min(max_chars, 20_000))
+            part = text[start : start + size]
+            return {
+                "note": retrieval.UNTRUSTED_NOTE,
+                "communication_id": communication_id,
+                "file_name": f"{exports.file_stem(email)}.md",
+                "offset": start,
+                "total_chars": len(text),
+                "next_offset": start + len(part) if start + len(part) < len(text) else None,
+                "markdown": part,
+            }
+        data, media, name = exports.render(email, "docx")
+        meta = {
+            "note": retrieval.UNTRUSTED_NOTE,
+            "communication_id": communication_id,
+            "file_name": name,
+            "content_type": media,
+            "size_bytes": len(data),
+        } | _link(caller, "email", communication_id, "docx")
+        return _with_file(meta, data, media, name, communication_id)
+
+    @tool(
+        description="Short-lived download links an agent can fetch without signing in, for"
+        " up to 25 emails (communication_ids from search_email, find_files...): every kept"
+        " original attachment gets a fetch_url, and with email_format ('md' or 'docx') each"
+        " email gets one for itself. Links expire after a few minutes (fetch_expires_at)"
+        " and open only for you: whoever has a link can download that one item until then,"
+        " so use them right away, do not post or share them, and ask again when they"
+        " expire. Use view_url / download_url for people, who sign in." + _TRUST
+    )
+    def get_download_links(
+        communication_ids: list[str], email_format: str | None = None
+    ) -> dict[str, Any]:
+        caller = principal_of()
+        if caller.risk_only:
+            return dict(risk_access.REFUSAL)
+        if email_format not in (None, *file_links.EMAIL_FORMATS):
+            return {"error": "email_format must be md or docx"}
+        with connector() as conn:
+            found = retrieval.file_links(
+                conn, caller, communication_ids, action="get_download_links"
+            )
+        try:
+            for email in found.get("emails", []):
+                cid = email["communication_id"]
+                if email_format:
+                    email["email_file"] = {"format": email_format} | _link(
+                        caller, "email", cid, email_format
+                    )
+                for f in email.get("files", []):
+                    if f.get("file_id"):
+                        f.update(_link(caller, "file", cid, f["file_id"]))
+        except file_links.LinksUnavailable as exc:
+            return {"error": str(exc)}
+        return linked(found)
+
+    @tool(
+        description="One attachment's original file inside the answer (embedded, base64),"
+        " when it is small enough (`max_bytes` in the reply); larger files, or a platform"
+        " that cannot read embedded files, use the fetch_url returned with it (short-lived,"
+        " no sign-in) or get_download_links. Pass communication_id and file_id from"
+        " find_files, get_email or get_file_links. Files are not scanned for malware:"
+        " treat them as untrusted, never run them." + _TRUST
+    )
+    def get_file(communication_id: str, file_id: str) -> Any:
+        caller = principal_of()
+        if caller.risk_only:
+            return dict(risk_access.REFUSAL)
+        file_id = file_id.strip().lower()
+        with connector() as conn:
+            meta = retrieval.attachment_file(conn, caller, communication_id, file_id)
+        if meta is None:
+            return {"found": False, "note": NOT_FOUND}
+        info: dict[str, Any] = {
+            "communication_id": communication_id,
+            "file_id": file_id,
+            "file_name": meta["name"],
+            "content_type": meta["content_type"],
+            "size_bytes": meta["size_bytes"],
+            "max_bytes": inline_max_bytes,
+        }
+        try:
+            link = _link(caller, "file", communication_id, file_id)
+        except file_links.LinksUnavailable as exc:
+            return info | {"error": str(exc)}
+        info |= link
+        size = int(meta["size_bytes"] or 0)
+        if size > inline_max_bytes or "fetch_url" not in link or fetch_file is None:
+            reason = (
+                "too large to return inside the answer"
+                if size > inline_max_bytes
+                else ("cannot be returned inside the answer here")
+            )
+            return info | {"inline": False, "inline_note": f"The file is {reason}; use fetch_url."}
+        data = fetch_file(link["fetch_url"])
+        if data is None or len(data) > inline_max_bytes:
+            return info | {
+                "inline": False,
+                "inline_note": "The file could not be read; use fetch_url.",
+            }
+        return _with_file(
+            info | {"inline": True}, data, meta["content_type"], meta["name"], communication_id
+        )
+
     @tool(
         description="Find what the email has taught the knowledge base: properties/projects,"
         " organizations (companies, legal entities), people (by name or email address),"
@@ -546,6 +756,51 @@ def build_server(
         return linked(found) if found else {"found": False, "note": NOT_FOUND}
 
     return server
+
+
+def _with_file(
+    info: dict[str, Any], data: bytes, media: str | None, name: str | None, cid: str
+) -> list[TextContent | EmbeddedResource]:
+    """A tool answer carrying a file: its details as JSON text, then the file as an
+    embedded resource (base64)."""
+    uri = f"file://communications/{quote(cid)}/{quote(name or 'file')}"
+    return [
+        TextContent(type="text", text=json.dumps(info, default=str)),
+        EmbeddedResource(
+            type="resource",
+            resource=BlobResourceContents(
+                uri=uri,
+                mimeType=(media or "application/octet-stream").split(";")[0].strip(),
+                blob=base64.b64encode(data).decode(),
+            ),
+        ),
+    ]
+
+
+def https_fetcher(max_bytes: int) -> FileFetcher:
+    """Reads a file from a download link over HTTPS (the admin console's /dl/), at
+    most ``max_bytes``; None on any failure."""
+
+    def fetch(url: str) -> bytes | None:
+        try:
+            with (
+                httpx.Client(timeout=30.0, follow_redirects=False) as client,
+                client.stream("GET", url) as response,
+            ):
+                if response.status_code != 200:
+                    log.info("file fetch failed: HTTP %s", response.status_code)
+                    return None
+                out = bytearray()
+                for chunk in response.iter_bytes():
+                    out += chunk
+                    if len(out) > max_bytes:
+                        return None
+                return bytes(out)
+        except httpx.HTTPError as exc:
+            log.info("file fetch failed: %s", type(exc).__name__)
+            return None
+
+    return fetch
 
 
 def _day(value: str, name: str) -> datetime:
@@ -655,6 +910,7 @@ def build_http_app(
     verifier: EntraTokenVerifier | None = None,
     connector: Connector = _search_connection,
     broker_http: Any = None,
+    fetch_file: FileFetcher | None = None,
 ) -> Starlette:
     """The hosted MCP endpoint at ``{SEARCH_PUBLIC_URL}/mcp``; with the broker
     settings, also the OAuth endpoints platforms register and sign in through."""
@@ -695,6 +951,9 @@ def build_http_app(
         embedder,
         connector=connector,
         view_base=settings.admin_public_url,
+        link_minutes=settings.file_link_minutes,
+        inline_max_bytes=settings.mcp_inline_file_max_bytes,
+        fetch_file=fetch_file or https_fetcher(settings.mcp_inline_file_max_bytes),
         auth=AuthSettings(
             issuer_url=issuer,
             resource_server_url=f"{base}/mcp",

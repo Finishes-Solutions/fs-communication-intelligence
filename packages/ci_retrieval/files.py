@@ -66,6 +66,17 @@ def _in_folder(group_by: str) -> str:
     return f"WHERE {key} = %(group)s"
 
 
+def _contains(group_by: str) -> str:
+    """Condition (alias f): the grouping's value contains the text %(c_<group_by>)s
+    (case-insensitive, already escaped for LIKE). For agents, who know a name, not
+    a folder's exact key."""
+    key, _ = GROUPS[group_by]
+    match = f"{key} ILIKE '%%' || %(c_{group_by})s || '%%'"
+    if group_by in _LISTS:
+        return f"EXISTS (SELECT 1 FROM {_LISTS[group_by]} AS x(v) WHERE {match})"  # noqa: S608
+    return match
+
+
 SEARCH_IN = ("names", "text")
 MAX_FOLDERS = 500
 MAX_OFFSET = 5000
@@ -150,19 +161,30 @@ def list_files(
     tz: str = "America/Chicago",
     limit: int = 50,
     offset: int = 0,
+    contains: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Files, newest first, one row per file; ``group_by``/``group`` keeps the files
-    of one folder. ``has_more`` says whether the next ``offset`` returns more."""
+    of one folder, ``contains`` (grouping -> text) the files whose project, company,
+    sender... contains that text. ``has_more`` says whether the next ``offset``
+    returns more."""
     _ready(conn)
     if group_by is not None and group_by not in GROUPS:
         raise ValueError(f"group_by must be one of {', '.join(GROUPS)}")
+    wanted = {k: v.strip() for k, v in (contains or {}).items() if v and v.strip()}
+    for name in wanted:
+        if name not in GROUPS:
+            raise ValueError(f"contains takes {', '.join(GROUPS)}")
     limit, offset = max(1, min(limit, 100)), max(0, min(offset, MAX_OFFSET))
     auth = authorize(conn, principal)
     rows: list[dict[str, Any]] = []
     more = False
     if not auth.empty:
         params = _params_for(auth, since, until, q, search_in) | {"tz": tz, "group": group}
-        within = _in_folder(group_by) if group_by is not None else ""
+        conditions = [_in_folder(group_by).removeprefix("WHERE ")] if group_by else []
+        for name, text in wanted.items():
+            conditions.append(_contains(name))
+            params[f"c_{name}"] = _like(text.lower())
+        within = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         found = conn.execute(
             f"""
             WITH f AS MATERIALIZED ({_base(search_in)}),

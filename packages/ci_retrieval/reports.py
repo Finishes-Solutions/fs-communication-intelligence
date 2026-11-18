@@ -568,6 +568,7 @@ def risk_overview(
             current, key=lambda r: (r["occurred_at"], r["communication_id"]), reverse=True
         )[:200]
         out["items"] = [_row(r) for r in newest]
+        outlook_links(conn, principal, out["items"])
     _audit(
         conn,
         principal,
@@ -617,6 +618,7 @@ def review_queue(
             | {"rlabel": label, "exclude": exclude or [], "limit": max(1, min(limit, 50))},
         ).fetchall()
         rows = [_row(r) for r in found]
+        outlook_links(conn, principal, rows)
     _audit(
         conn,
         principal,
