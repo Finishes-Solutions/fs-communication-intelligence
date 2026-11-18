@@ -34,6 +34,7 @@ from ci_retrieval.search import (
     as_views,
     authorize,
     fast_reads,
+    outlook_links,
     person_profile,
     rows_source,
 )
@@ -238,6 +239,7 @@ def report_rows(
         ).fetchall()
         rows = [_row(r) for r in found]
         total = int(found[0]["total"]) if found else 0
+        outlook_links(conn, principal, rows)
     _audit(
         conn,
         principal,

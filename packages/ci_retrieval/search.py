@@ -526,6 +526,49 @@ def _metadata(conn: Connection, ids: Sequence[str]) -> dict[str, dict[str, Any]]
     return {r["communication_id"]: r for r in rows}
 
 
+def outlook_links(conn: Connection, principal: Principal, items: Sequence[Any]) -> None:
+    """Keep ``web_link`` only where it opens for this reader.
+
+    An Outlook web link opens a message only in the mailbox that holds that copy,
+    so another person's copy is useless (and confusing) to show. Each item keeps
+    its link when its mailbox is the reader's own sign-in address; otherwise it
+    gets the link of the copy in the reader's own mailbox (same Internet
+    Message-ID, published), which exists when the reader was on the email and
+    their mailbox is captured; otherwise ``web_link`` is None. Items are dicts or
+    objects with ``communication_id``, ``mailbox`` and ``web_link``. The sign-in
+    address is compared with the mailbox's primary SMTP address, so a reader
+    whose sign-in name differs from it (an alias) gets no link."""
+
+    def get(i: Any, k: str) -> Any:
+        return i[k] if isinstance(i, dict) else getattr(i, k)
+
+    def put(i: Any, v: str | None) -> None:
+        if isinstance(i, dict):
+            i["web_link"] = v
+        else:
+            i.web_link = v
+
+    me = (principal.upn or "").strip().lower()
+    others = [i for i in items if (get(i, "mailbox") or "").lower() != me]
+    if not me or not others:
+        for i in others:
+            put(i, None)
+        return
+    rows = conn.execute(
+        "SELECT src.communication_id::text AS id, min(pc.source_url) AS link"
+        " FROM published_email_messages src"
+        " JOIN published_email_messages mine ON mine.internet_message_id = src.internet_message_id"
+        "  AND lower(mine.mailbox_address) = %(me)s"
+        " JOIN published_communications pc ON pc.id = mine.communication_id"
+        " WHERE src.communication_id = ANY(%(ids)s::uuid[]) AND src.internet_message_id IS NOT NULL"
+        " GROUP BY src.communication_id",
+        {"me": me, "ids": sorted({str(get(i, "communication_id")) for i in others})},
+    ).fetchall()
+    links = {r["id"]: r["link"] for r in rows}
+    for i in others:
+        put(i, links.get(str(get(i, "communication_id"))))
+
+
 def search(
     conn: Connection,
     principal: Principal,
@@ -614,6 +657,7 @@ def search(
                     }
                 )
         results = results[:limit]
+        outlook_links(conn, principal, results)
     _audit(
         conn,
         principal,
@@ -748,7 +792,7 @@ def get_email(
         budget -= len(t["content"])
     _audit(conn, principal, "get_email", {"found": True, "result_ids": [communication_id]})
     conn.commit()
-    return {
+    found = {
         "note": UNTRUSTED_NOTE,
         "communication_id": communication_id,
         "subject": m["title"],
@@ -770,6 +814,8 @@ def get_email(
         "attachments": [dict(a) for a in attachments],
         "text": excerpts,
     }
+    outlook_links(conn, principal, [found])
+    return found
 
 
 def _authorized(conn: Connection, auth: Authorization, communication_id: str) -> bool:
@@ -974,7 +1020,9 @@ def _listing(
                 "entities_ai": list(r["entities"] or []),
             }
         )
-    return out[offset : offset + limit]
+    page = out[offset : offset + limit]
+    outlook_links(conn, principal, page)
+    return page
 
 
 def _listing_rows_views(
