@@ -298,7 +298,16 @@ cd ~/fs-communication-intelligence && git pull && make azure-migrate AZ_PSQL=psq
 
 It only adds functions (no table changes, a few seconds). The code works before and after: until it is applied, everything keeps using the old, slow way. Still slow after it: counts and lists over all time (several seconds), the Knowledge pages with no period (they read every mention), and anything a reader with reader limits asks without a date, because their limits are checked email by email.
 
-**A tool that takes too long now says so.** Each MCP tool stops a database statement after 40 seconds and answers `too_slow` with advice to ask for a shorter period or add a filter, instead of leaving the AI platform to give up at its own limit with no explanation. Each tool call also logs its name and time (no arguments): `mcp tool email_stats ok in 812 ms`. To see which tools are slow or stopped:
+**A tool that takes too long now says so.** Each MCP tool answers `too_slow`, with advice to ask for a shorter period or add a filter, instead of leaving the AI platform to give up at its own limit (about a minute) with no explanation. A tool call has two limits (2026-11-18):
+
+- **50 seconds of database work in all** (`TOOL_BUDGET_SECONDS`). A tool runs several statements. Each one gets what is left of the 50 seconds, and never more than 40. When nothing is left, the next statement is not sent. Before this, the limit was 40 seconds for each statement, so a tool with several slow statements ran far past a minute.
+- **55 seconds for everything** (`TOOL_CEILING_SECONDS`): the embedding call, opening a database connection, fetching a file for `get_file`, and the Python work. At 55 seconds the tool answers `too_slow`. The work still running is left to finish on its own; a statement it has open is stopped by the first limit.
+
+Inside one transaction a statement can run up to 1 second past the 50. The limit is set for the transaction only, so nothing stays on a reused connection.
+
+Each tool call also logs its name and time (no arguments): `mcp tool email_stats ok in 812 ms`. The outcome is `ok`, `too_slow` or `error`. In the 7 days to 2026-11-18 these lines, and the `search timings` lines below, never reached Application Insights, while the `mcp request` lines from the same code did. The likely cause: tools run in a worker thread, and the Functions Python worker ties a log line to its request through the running task or, in a thread, through thread-local storage that the code must set (Microsoft, [Logging from background threads](https://learn.microsoft.com/azure/azure-functions/functions-reference-python#logging-from-background-threads), read 2026-11-18). Now the `mcp tool` line is logged outside the thread, and the thread is given the request's invocation id for the lines logged inside it. Tested locally with a stand-in for the worker's storage. **Not verified in Azure:** that the lines now arrive, that the Python 3.14 worker uses this storage, and that the calls that ended at the host's 2-minute limit were inside a tool at all. After the deploy, run the query below. If it returns no rows while tools are in use, the cause is something else.
+
+To see which tools are slow or stopped:
 
 ```kusto
 traces | where message startswith "mcp tool" | parse message with "mcp tool " tool " " outcome " in " ms:long " ms" | summarize calls = count(), stopped = countif(outcome == "too_slow"), p50 = percentile(ms, 50), p95 = percentile(ms, 95) by tool | order by p95 desc

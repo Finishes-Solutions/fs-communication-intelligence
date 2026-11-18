@@ -663,3 +663,105 @@ def test_download_links_and_files_inside_the_answer(database_ready: str) -> None
     with TestClient(agent_app(database_ready, 10, fetched), base_url=BASE) as client:
         big = call_tool(client, token(), "get_file", {"communication_id": cid, "file_id": file_id})
         assert big["inline"] is False and "fetch_url" in big and fetched == []
+
+
+def test_a_tool_call_answers_within_its_time_limits(
+    app: Any, database_ready: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC-1.7: a tool that cannot finish in time answers too_slow as an ordinary
+    result (HTTP 200), whether the time went to the database or to something else."""
+    from ci_retrieval import mcp_server
+
+    def stalled() -> Any:
+        time.sleep(0.6)  # e.g. a connection that does not open
+        raise OSError("stalled")
+
+    settings = Settings(
+        deployment_environment="development",
+        attachment_unsupported_policy="publish_partial",
+        entra_tenant_id=TENANT,
+        search_public_url=BASE,
+        search_api_client_id=API_ID,
+        search_api_app_id_uri=API_URI,
+    )
+    stalling = build_http_app(settings, FakeEmbedder(), verifier=VERIFIER, connector=stalled)
+    monkeypatch.setattr(mcp_server, "TOOL_CEILING_SECONDS", 0.2)
+    with TestClient(stalling, base_url=BASE) as client:
+        started = time.monotonic()
+        answer = call_tool(client, token(), "list_email", {"limit": 5})
+        assert answer == mcp_server.TOO_SLOW and answer["error"] == "too_slow"
+        assert time.monotonic() - started < 0.55  # before the connector gave up
+        time.sleep(0.6)  # let the abandoned thread end before the app closes
+    monkeypatch.setattr(mcp_server, "TOOL_CEILING_SECONDS", 55.0)
+
+    # The database budget covers the connector the app was built with: with none
+    # left, the tool's first statement is refused and the answer is the same.
+    with TestClient(app, base_url=BASE) as client:
+        october = {"since_date": "2026-10-01", "until_date": "2026-10-31", "limit": 5}
+        monkeypatch.setattr(mcp_server, "TOOL_BUDGET_SECONDS", 0.0)
+        assert call_tool(client, token(), "list_email", october) == mcp_server.TOO_SLOW
+        monkeypatch.setattr(mcp_server, "TOOL_BUDGET_SECONDS", 50.0)
+        assert call_tool(client, token(), "list_email", october)["results"]
+
+
+def test_lines_logged_inside_a_tool_belong_to_the_azure_invocation(app: Any) -> None:
+    """AC-1.6: under the Azure Functions adapter a tool runs in a worker thread,
+    where the worker finds a log line's invocation in its thread-local storage.
+    `search timings` is logged there: the storage holds the request's invocation
+    id at that moment, and nothing once the call is over (threads are reused)."""
+    import logging
+    import threading
+
+    import anyio.to_thread
+
+    storage = threading.local()
+    # Stands in for the worker's func.Context: the adapter reads these two attributes.
+    context: Any = SimpleNamespace(invocation_id="invocation-7", thread_local_storage=storage)
+    seen: list[tuple[str, int, Any]] = []
+
+    class AtEmit(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            kind = " ".join(record.getMessage().split()[:2])
+            seen.append((kind, threading.get_ident(), getattr(storage, "invocation_id", None)))
+
+    def after() -> tuple[int, Any]:
+        return threading.get_ident(), getattr(storage, "invocation_id", None)
+
+    middleware = func.AsgiMiddleware(app)  # type: ignore[no-untyped-call]
+    headers = dict(MCP_HEADERS) | {"Authorization": f"Bearer {token()}"}
+
+    async def send(body: dict[str, Any]) -> func.HttpResponse:
+        request = func.HttpRequest(
+            "POST", f"{BASE}/mcp", headers=headers, body=json.dumps(body).encode()
+        )
+        response: func.HttpResponse = await middleware.handle_async(request, context)
+        return response
+
+    async def scenario() -> tuple[dict[str, Any], tuple[int, Any]]:
+        assert await middleware.notify_startup()  # type: ignore[no-untyped-call]
+        await send(INIT)
+        call = rpc("tools/call", {"name": "search_email", "arguments": {"query": "invoice"}}, 2)
+        answer = await send(call)
+        assert answer.status_code == 200
+        return json.loads(answer.get_body()), await anyio.to_thread.run_sync(after)
+
+    handler = AtEmit(level=logging.INFO)
+    loggers = [logging.getLogger(f"ci_retrieval.{name}") for name in ("search", "mcp_server")]
+    levels = [logger.level for logger in loggers]
+    for logger in loggers:
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+    try:
+        body, (probe_thread, left_behind) = asyncio.run(scenario())
+    finally:
+        for logger, level in zip(loggers, levels, strict=True):
+            logger.removeHandler(handler)
+            logger.setLevel(level)
+    assert "error" not in body and body["result"]["content"]
+    loop_thread = threading.get_ident()
+    (timings,) = [s for s in seen if s[0] == "search timings"]
+    assert timings[1] != loop_thread and timings[2] == "invocation-7"
+    # The tool's own line is logged on the event loop, in the request's task.
+    (tool_line,) = [s for s in seen if s[0] == "mcp tool"]
+    assert tool_line[1] == loop_thread
+    assert (probe_thread, left_behind) == (timings[1], None)
