@@ -352,7 +352,8 @@ def search(args: argparse.Namespace) -> None:
         )
         for e in r["excerpts"][:1]:
             print(f"  > {' '.join((e['text'] or '').split())[:240]}")
-        print(f"  {r['web_link']}")
+        if r["web_link"]:
+            print(f"  {r['web_link']}")
     print(f"\ncoverage: {result['coverage']}")
 
 

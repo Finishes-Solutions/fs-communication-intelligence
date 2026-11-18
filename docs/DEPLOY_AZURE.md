@@ -393,7 +393,7 @@ The hosted endpoint is written to the MCP standard (Streamable HTTP; OAuth prote
 
 Dates: `since_date` and `until_date` (YYYY-MM-DD, both inclusive) pick an exact period on `search_email`, `list_email` and `email_stats`.
 
-**Links and attachments in results.** Outlook links (`web_link`) open only in the mailbox owner's own Outlook. Every email in MCP results therefore also carries `view_url`, a read-only page on the admin console (`/read/<id>`). It opens for **console admins only**, after Microsoft sign-in; anyone else sees "Can't open this email". Stored attachments carry `download_url` (the same page with `?file=`, which downloads the original). Attachment files are not malware-scanned yet, so keep downloads to admins. The tool `get_attachment` returns an attachment's full extracted text a page at a time (pass the `attachment_id` that `get_email` lists); the file itself never goes to Copilot, ChatGPT or Claude. The deploy workflow sets the search app's `ADMIN_PUBLIC_URL` from the GitHub secret of the same name; without it, results carry no `view_url`.
+**Links and attachments in results.** An Outlook link opens a message only in the mailbox that holds it, so `web_link` is returned only when the signed-in person has the email in their own mailbox (the copy in that mailbox, matched by Internet Message-ID; their sign-in address must equal the mailbox's primary address); otherwise it is empty. Every email in MCP results therefore also carries `view_url`, a read-only page on the admin console (`/read/<id>`). It opens for **console admins only**, after Microsoft sign-in; anyone else sees "Can't open this email". Stored attachments carry `download_url` (the same page with `?file=`, which downloads the original). Attachment files are not malware-scanned yet, so keep downloads to admins. The tool `get_attachment` returns an attachment's full extracted text a page at a time (pass the `attachment_id` that `get_email` lists); the file itself never goes to Copilot, ChatGPT or Claude. The deploy workflow sets the search app's `ADMIN_PUBLIC_URL` from the GitHub secret of the same name; without it, results carry no `view_url`.
 
 **Putting file links on a monday.com board.** This system has no monday.com integration (CLAUDE.md §9); the agent does it in two steps:
 
@@ -414,6 +414,33 @@ az monitor app-insights query -g fs-communication-intelligence --app appi-fs-ci-
 
 (`-o table` prints nothing for this command; keep `--query "tables[0].rows" -o tsv`.) Only `bearer token: no` lines after you signed in means the client never got a token: look in Entra's sign-in logs, tab **User sign-ins (non-interactive)**. `token rejected: <reason>` means the server refused the token for that reason. `bearer token: yes` with 200 means it works.
 
+### Agents: files and emails without your browser
+
+Matthew (2026-11-18): an agent should find "every contract or set of plans" and work with them without opening links in his browser. Four MCP tools do this, in three ways, so an agent can fall back when its platform refuses one:
+
+| Tool | What the agent gets |
+|---|---|
+| `find_files` | Attachments, newest first, one row per file: by file name, subject or sender, or by the text inside the files; narrowed by project, company (sender domain), legal entity, sender, mailbox, file type and dates. |
+| `export_email` | An email as **Markdown** text (headers, the AI's summary marked as such, the full message, the attachment list), a page at a time; or as a **Word** file inside the answer. |
+| `get_attachment` (existing) | An attachment's extracted text, a page at a time. |
+| `get_download_links` | **Short-lived links** that download without signing in: every kept original file of up to 25 emails, and each email as `md` or `docx`. |
+| `get_file` | One original file **inside the answer** (embedded, base64), up to 4 MB by default (`MCP_INLINE_FILE_MAX_BYTES`); larger files get a link instead. |
+
+What to know before relying on it:
+- **Links are bearer secrets.** Anyone holding one can download that single item until it expires (15 minutes by default, `FILE_LINK_MINUTES`, at most 60). Links appear in the AI platform's chat history. Each download is checked again against the grants and reader limits of the person the link was made for, and is audited (`file_link_download`). The link itself is not written to the console's own logs; whether Azure's automatic request logs keep the address (and so the link) is not checked. To end every link at once:
+
+```bash
+cd ~/fs-communication-intelligence && set -a && . ./local/azure-dev.env && set +a && PGPASSWORD="$(az account get-access-token --resource-type oss-rdbms --query accessToken -o tsv)" psql -c "SELECT ci.rotate_file_link_key()"
+```
+
+  (signed in to Azure as `svc_automation@`, which holds the operator role).
+- **Files are not scanned for malware** (Defender for Storage is still required before production). The tools tell the agent to treat files as untrusted and never run them.
+- **Platforms differ.** Recent bug reports say Claude.ai custom connectors reject tool answers that carry a binary file such as a PDF ([anthropics/claude-ai-mcp#1086](https://github.com/anthropics/claude-ai-mcp/issues/1086)); OpenAI lists embedded resources as supported in ChatGPT apps ([openai/mcp-extensions](https://github.com/openai/mcp-extensions/blob/main/docs/spec.md)). Not tried from either platform yet. When `get_file` fails, the agent can use `get_download_links`, or `export_email` / `get_attachment` for text. A platform's code sandbox may also block outside downloads.
+- **Plans.** Text extraction gets title blocks and notes, not drawings; there is no OCR yet. For drawings the agent needs the original file (`get_file` or a link).
+- Email exports are Markdown or Word; PDF is not produced (the agent can convert).
+
+It needs database migration 0033 (the link signing key, made inside the database, so no new secret is shared between the apps). Apply it with `make azure-migrate AZ_PSQL=psql`, signed in as `svc_automation@`. Until then the link tools answer that the migration is missing; `find_files` needs 0032.
+
 ## 11. Copilot Studio with Azure AI Search or other tools
 
 - **Don't give Copilot Studio a search index or database of the mail.** Azure AI Search isn't part of this system: PostgreSQL is the search index (L2), and there's no AI Search resource. A direct index or database connection would skip the per-person authorization, exclusions and audit; every agent must go through this MCP endpoint (L8).
@@ -429,7 +456,7 @@ A web page at `https://func-fs-ci-adm-dev-1026.azurewebsites.net/` for console a
 - **Connections** (under Lab): how to connect Claude, ChatGPT and Copilot Studio, with the MCP URL, sign-in URLs, scope and each platform's client ID ready to copy (§10). Needs `scripts/azure/7-connections-page.sh` once.
 - **Mailboxes:** filter, approve or unapprove, exclude or un-exclude (with a reason), approve all enrolled, change mode, and exclude a person or domain in every mailbox.
 - **Search (top bar, ⌘K / Ctrl+K on every page):** one search over the text of emails and the text read from their attached documents, by words and by meaning, in published mail your own grants allow. The top bar and the shortcut open a search box that shows the best matches as you type (the matching passage, with the words marked, and whether it is from the email or a named document), lists pages to jump to, and remembers your last six searches in this browser. Enter opens a result on the **Search** page; ⌘/Ctrl+Enter opens the full list. The Search page adds filters: email text or documents only, mailbox, sender, property, legal entity, label and dates (a period, or from/to days in UTC). A search returns its 25 best matches. The box searches after a short pause in typing, from 3 characters on (Enter searches at once), because every search is a full search on the server; each one is one embedding call (a few tokens) and one audited `search` event, without the search text. A single common word ("invoice") is the slowest kind of search, because the keyword half ranks every passage that contains it: two or three words, or a filter, are faster. Timings are logged as `search timings ms` (see Search speed). Documents are searched only where their text could be read (no OCR yet); the files' names are not searched.
-- **Messages:** search or list published mail by mailbox, sender, label and date. A message shows the AI summary, action and risk, labels, people, the body, and its **files**: preview (PDF, images, text), download, or the extracted text. Signature images and logos aren't processed or shown: every inline image, and any attached image of 100 KB or less. There's also an **Open in Outlook** link, which works only for mailboxes your account can open.
+- **Messages:** search or list published mail by mailbox, sender, label and date. A message shows the AI summary, action and risk, labels, people, the body, and its **files**: preview (PDF, images, text), download, or the extracted text. Signature images and logos aren't processed or shown: every inline image, and any attached image of 100 KB or less. An **Open in Outlook** button appears only when the email is in your own mailbox, and opens your copy.
 - **Action Items:** the same list agents get from `list_actionable`, for any person or window. With a person profile (below), it shows that person's confident items plus a separate **Possible** list, and has a panel to edit profiles.
 - **Not Published:** held, restricted, bulk and failed messages, with metadata and reason only, never the subject or text.
 - **Labels:** shown by name ("Payment", "Needs Approval") or by stored key (`cat_payment_billing`, `approval_required`); switch with **Labels: Names / Keys** in the sidebar. Hovering a label shows the other form. The choice is remembered in that browser.
@@ -463,6 +490,22 @@ CHAT_DEPLOYMENT=gpt-4.1-mini ADMINS="matthews@finishessolutions.com" bash script
 ```
 
 Add the two secrets it prints (`ADMIN_FUNCTION_APP`, `ADMIN_PUBLIC_URL`) to the GitHub environment `development`, then merge the pull request (or rerun **Deploy (development)**). The migrations (`0005`, `0006`) must be applied **before** the new ingestion code deploys; otherwise the capture and processing timers fail every tick until they are. To add another admin later, rerun the script with their address in `ADMINS`.
+
+### Files page
+
+**Files** (sidebar, under Mail; Matthew, 2026-11-18) lists the attachments of the mail you may read, for console admins and Console Viewers alike:
+
+- **Newest** (the default): one row per file, newest first, 50 at a time with **Load More**. A file sent with several emails, or held in several mailboxes, is listed once, with the newest email it came with and how many emails carry it. Click a file to open its email beside the list, with the preview and download; the download button on each row saves the file directly when the original is stored.
+- **Folders**: Projects, Companies (the sender's domain), Legal Entities, Senders, Mailboxes, File Types and Months. Projects and Legal Entities are the names the AI found written in the email, so a file whose email names two projects is in both folders, and one whose email names none is in "No project named". Folder names are as good as the AI's reading of the email; they are not checked.
+- **Search** file names, email subjects and senders, or switch to **Text inside the files** to search the text extracted from PDFs, Word and Excel files (scanned images have no text). The period defaults to the last 12 months.
+
+It needs database migration 0032; apply it like the others, signed in as `svc_automation@`:
+
+```bash
+cd ~/fs-communication-intelligence && git pull && make azure-migrate AZ_PSQL=psql
+```
+
+Until it is applied the page says so; nothing else is affected. Signature images and logos are left out. Search words are not kept in the audit log.
 
 ### Costs page
 

@@ -97,7 +97,7 @@ MAIL_COLUMNS = (
     Column("properties_ai", "Properties / Projects"),
     Column("entities_ai", "Legal Entities"),
     Column("attachments", "Attachments", "number"),
-    Column("web_link", "Outlook Link"),
+    Column("web_link", "Outlook Link (your copy)"),
     Column("communication_id", "Message ID"),
 )
 GROUP_COLUMNS = (

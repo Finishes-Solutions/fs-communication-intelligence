@@ -255,6 +255,26 @@ tbody tr:hover td { background: var(--subtle); }
 .msg-summary { color: var(--muted); font-size: 13px; margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2;
   -webkit-box-orient: vertical; overflow: hidden; }
 .msg .badges { margin-top: 8px; }
+/* ---------- files ---------- */
+.files-views { overflow-x: auto; max-width: 100%; }
+.frow { display: flex; align-items: flex-start; border-bottom: 1px solid var(--line); }
+.frow:last-child { border-bottom: 0; }
+.frow .frow-main { border-bottom: 0; flex: 1; min-width: 0; }
+.frow .frow-dl { margin: 12px 12px 0 0; flex: none; }
+.frow-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.file-badge { flex: none; font-size: 10px; font-weight: 700; letter-spacing: .02em; padding: 2px 5px; border-radius: 5px;
+  background: var(--subtle); color: var(--text-2); border: 1px solid var(--line); }
+.folders { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.folder { display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto; column-gap: 12px; row-gap: 2px;
+  align-items: center; text-align: left; font: inherit; color: inherit; background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 14px 16px; cursor: pointer; min-width: 0; }
+.folder:hover { background: var(--subtle); }
+.folder-icon { grid-row: 1 / 3; color: var(--text-2); display: flex; }
+.folder-name { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-meta { color: var(--muted); font-size: 12px; }
+.folder.none .folder-name { color: var(--muted); font-style: italic; }
+.crumbs { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.crumbs h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .reader { position: sticky; top: 24px; max-height: calc(100vh - 48px); overflow: auto; }
 .reader-head { padding: 22px 24px 18px; border-bottom: 1px solid var(--line); }
 .reader-head h2 { font-size: 19px; line-height: 1.35; letter-spacing: -0.015em; }

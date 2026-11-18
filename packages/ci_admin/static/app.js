@@ -57,6 +57,7 @@ const ICONS = {
   lab: ["M9 3h6", "M10 3v6.5L4.5 19a1.5 1.5 0 0 0 1.3 2h12.4a1.5 1.5 0 0 0 1.3-2L14 9.5V3", "M7 15h10"],
   graph: [ring(6, 6, 2.5), ring(18, 6, 2.5), ring(12, 18, 2.5), "M8.5 6h7", "m7.12 8.24 3.76 7.52", "m16.88 8.24-3.76 7.52"],
   search: [ring(11, 11, 8), "m21 21-4.3-4.3"],
+  folder: ["M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"],
   refresh: ["M21 12a9 9 0 1 1-3-6.7L21 8", "M21 3v5h-5"],
   play: ["M6 4l14 8-14 8z"],
   requeue: ["M3 12a9 9 0 1 0 3-6.7L3 8", "M3 3v5h5"],
@@ -811,6 +812,121 @@ async function messagesPage() {
       n => { shown.textContent = `${num(n)} shown`; })].filter(Boolean));
 }
 
+// ---------- files (/files) --------------------------------------------------------
+// Attachments from the mail this person may read (Matthew, 2026-11-18): newest first,
+// searchable by name or by the text inside, or as folders by project, company and more.
+// A file sent with several emails is listed once; folders come from the emails it came
+// with, so a file sent about two projects is in both. Signature images are left out.
+
+const FILE_VIEWS = [["newest", "Newest"], ["project", "Projects"], ["company", "Companies"], ["entity", "Legal Entities"],
+  ["sender", "Senders"], ["mailbox", "Mailboxes"], ["type", "File Types"], ["month", "Months"]];
+// The folder for files whose emails name nothing of that kind.
+const FILE_NO_KEY = { project: "No project named", entity: "No legal entity named", company: "Unknown company",
+  sender: "Unknown sender", type: "No file type", mailbox: "Unknown mailbox", month: "Unknown month" };
+const fileExt = name => ((name || "").match(/\.([A-Za-z0-9]{1,5})$/) || [, "?"])[1].toUpperCase();
+
+async function filesPage() {
+  const p = pageParams();
+  const view = FILE_VIEWS.some(v => v[0] === p.get("view")) ? p.get("view") : "newest";
+  const group = view !== "newest" && p.has("group") ? p.get("group") : null;
+  const f = {
+    q: h("input", { value: p.get("q") || "" }),
+    match: h("select", {}, [["names", "File names, subjects, senders"], ["text", "Text inside the files"]]
+      .map(([v, t]) => h("option", { value: v, selected: v === (p.get("match") || "names") }, t))),
+    since_days: h("select", {}, [["30", "Last 30 days"], ["90", "Last 90 days"], ["365", "Last 12 months"], ["0", "All time"]]
+      .map(([v, t]) => h("option", { value: v, selected: v === (p.get("since_days") ?? "365") }, t))),
+  };
+  const hint = () => { f.q.placeholder = f.match.value === "text" ? "Words inside the files" : "Search file names, subjects or senders"; };
+  f.match.addEventListener("change", hint); hint();
+  const filters = () => {
+    const q = new URLSearchParams();
+    if (f.q.value.trim()) q.set("q", f.q.value.trim());
+    if (f.match.value !== "names") q.set("match", f.match.value);
+    q.set("since_days", f.since_days.value);
+    return q;
+  };
+  const go = (nextView, nextGroup, label) => {
+    const q = filters();
+    if (nextView !== "newest") q.set("view", nextView);
+    if (nextGroup != null) { q.set("group", nextGroup); if (label) q.set("label", label); }
+    navigate("/files?" + q);
+  };
+  // What the API calls take: the filters as shown on the page (0 days = all time).
+  const query = extra => {
+    const q = filters();
+    if (q.get("since_days") === "0") q.delete("since_days");
+    for (const [k, v] of Object.entries(extra)) q.set(k, v);
+    return q;
+  };
+  const views = h("div", { class: "seg files-views" }, FILE_VIEWS.map(([v, t]) =>
+    h("button", { type: "button", class: v === view ? "on" : "", onclick: () => go(v, null) }, t)));
+  const out = h("div", {}, card({}, h("div", { class: "empty" }, h("div", { class: "spinner" }), "Loading…")));
+  show(pageHead("Files", "Attachments from the mail you may read. Folders come from the emails: their sender, mailbox, date, and the projects and legal entities the AI found named in them."),
+    card({},
+      h("form", { class: "toolbar", onsubmit: e => { e.preventDefault(); go(view, group, p.get("label")); } },
+        searchBox(f.q), f.match, f.since_days, h("button", { class: "btn primary", type: "submit" }, "Search")),
+      h("div", { style: "margin-top:14px" }, views)),
+    out,
+    note("Signature images and logos are left out. A file attached to several emails is listed once, with the newest email it came with."));
+
+  if (view !== "newest" && group === null) {
+    const d = await api("/api/files/folders?" + query({ group_by: view }));
+    const title = FILE_VIEWS.find(v => v[0] === view)[1];
+    out.replaceChildren(card({ title, sub: `${num(d.total_folders)} folder${d.total_folders === 1 ? "" : "s"}` +
+        (d.total_folders > d.folders.length ? `, the ${num(d.folders.length)} largest shown` : "") },
+      d.folders.length ? h("div", { class: "folders" }, d.folders.map(x => {
+        const label = x.label || FILE_NO_KEY[view];
+        return h("button", { type: "button", class: "folder" + (x.key ? "" : " none"), onclick: () => go(view, x.key, label) },
+          h("span", { class: "folder-icon" }, icon("folder")),
+          h("span", { class: "folder-name", title: label }, label),
+          h("span", { class: "folder-meta" }, `${num(x.files)} file${x.files === 1 ? "" : "s"} · ${short(x.last_at)}`));
+      })) : emptyState("No Files Found", "Try a longer period or other search words.", "folder")));
+    return;
+  }
+
+  const detail = h("div", { class: "card reader" }, h("div", { class: "placeholder" },
+    h("div", { class: "empty" }, h("div", { class: "i-wrap" }, icon("folder")), h("div", { class: "empty-title" }, "Select a File"),
+      h("div", { class: "small" }, "The email it came with opens here, with a preview and download."))));
+  const extra = group !== null ? { group_by: view, group } : {};
+  const page = async offset => {
+    const d = await api("/api/files?" + query({ ...extra, limit: 50, offset }));
+    return { rows: d.files, more: d.has_more };
+  };
+  const first = await page(0);
+  const row = r => {
+    const open = h("button", { type: "button", class: "msg frow-main" },
+      h("div", { class: "msg-top" },
+        h("span", { class: "msg-from frow-name" }, h("span", { class: "file-badge" }, fileExt(r.name)), r.name || "(no name)"),
+        h("span", { class: "msg-time" }, short(r.received_at))),
+      h("div", { class: "msg-subject" }, r.subject || "(no subject)"),
+      h("div", { class: "msg-summary" }, `${kb(r.size_bytes)} · from ${r.sender || "unknown sender"}` +
+        (r.emails > 1 ? ` · in ${num(r.emails)} emails` : "")),
+      nameChips(r, 2));
+    open.addEventListener("click", () => {
+      list.querySelectorAll(".msg.on").forEach(x => x.classList.remove("on"));
+      open.classList.add("on"); showMessage(r.communication_id, detail);
+    });
+    return h("div", { class: "frow" }, open, r.file_id
+      ? h("button", { type: "button", class: "btn sm ghost frow-dl", title: `Download ${r.name || "file"}`, "aria-label": `Download ${r.name || "file"}`,
+          onclick: guard(() => saveFile(r.communication_id, r)) }, icon("download"))
+      : null);
+  };
+  const list = h("div", { class: "msg-list" }, first.rows.map(row));
+  const shown = h("span", { class: "muted small" }, `${num(first.rows.length)} shown`);
+  const viewName = (FILE_VIEWS.find(v => v[0] === view) || [])[1];
+  const head = group !== null
+    ? h("div", { class: "card-head" }, h("div", { class: "crumbs" },
+        h("button", { type: "button", class: "linkish", onclick: () => go(view, null) }, `All ${viewName}`),
+        h("span", { class: "muted" }, " › "), h("h2", {}, p.get("label") || group || FILE_NO_KEY[view])), shown)
+    : h("div", { class: "card-head" }, h("h2", {}, p.get("q") ? "Matching Files" : "Newest Files"), shown);
+  out.replaceChildren(h("div", { class: "inbox", style: "margin-top:0" },
+    h("div", { class: "card" }, ...[head,
+      first.rows.length ? list : emptyState("No Files Found", "Try a longer period or other search words.", "folder"),
+      loadMore(first.rows.length, first.more, page, rows => list.append(...rows.map(row)), n => { shown.textContent = `${num(n)} shown`; })]
+      .filter(Boolean)),
+    detail));
+}
+
 async function showMessage(id, holder) {
   holder.replaceChildren(h("div", { class: "placeholder" }, h("div", {}, h("div", { class: "spinner" }), "Loading…")));
   try {
@@ -847,7 +963,7 @@ function messageView(id, m, opts = {}) {
     h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "Message"),
       h("pre", { class: "text" }, body ? body.text : "(no body text)")),
     h("div", { class: "reader-section" },
-      h("p", { class: "muted small", style: "margin:0" }, "Outlook opens the message only if your account can open that mailbox. ", m.note || "")));
+      h("p", { class: "muted small", style: "margin:0" }, m.web_link ? "Open in Outlook opens your own copy of this email. " : "", m.note || "")));
 }
 
 function aiBlock(m) {
@@ -3422,7 +3538,7 @@ const NAV_ALL = [
   ["overview", "Overview", "overview"], ["schedule", "Schedule & Runs", "clock", true], ["costs", "Costs", "dollar", true],
   ["mailboxes", "Mailboxes", "inbox", true],
   null,
-  ["search", "Search", "search"], ["messages", "Messages", "mail"], ["actionable", "Action Items", "check"], ["unpublished", "Not Published", "hidden", true],
+  ["search", "Search", "search"], ["messages", "Messages", "mail"], ["files", "Files", "folder"], ["actionable", "Action Items", "check"], ["unpublished", "Not Published", "hidden", true],
   null,
   ["risks", "Risk Analysis", "alert"], ["knowledge", "Knowledge", "layers"], ["reports", "Reports", "report"],
   ["review", "Label Review", "review", true],
@@ -3434,7 +3550,7 @@ const ADMIN_PAGES = new Set(NAV_ALL.filter(n => n && n[3]).map(n => n[0]).concat
 let NAV = NAV_ALL;
 const visibleNav = () => (isAdmin() ? NAV_ALL : NAV_ALL.filter(n => !n || !n[3]));
 const NAV_GROUPS = ["Operations", "Mail", "Insights", "Tools"];
-const PAGES = { overview, schedule: schedulePage, costs: costsPage, mailboxes: mailboxesPage, messages: messagesPage, search: searchPage,
+const PAGES = { overview, schedule: schedulePage, costs: costsPage, mailboxes: mailboxesPage, messages: messagesPage, search: searchPage, files: filesPage,
   actionable: actionablePage, unpublished: unpublishedPage, lab: labPage, connections: connectionsPage,
   risks: risksPage, knowledge: knowledgePage, reports: reportsPage, review: reviewPage, check: reviewPage, read: readerPage,
   people: peoplePage };
@@ -3537,7 +3653,7 @@ async function render() {
       `${nice(CFG.environment)} environment`) : "",
     labelModeSwitch(),
     h("div", { class: "who" }, h("span", { class: "avatar" }, initials(name)),
-      h("div", { class: "who-text", style: "min-width:0" }, h("div", { class: "who-name" }, name), h("div", { class: "who-role" }, "Console admin")),
+      h("div", { class: "who-text", style: "min-width:0" }, h("div", { class: "who-name" }, name), h("div", { class: "who-role" }, isAdmin() ? "Console admin" : "Console viewer")),
       h("button", { class: "btn sm ghost", title: "Sign out", "aria-label": "Sign out", onclick: signOut }, icon("logout"))));
   // The label list rarely changes: the copy kept from the last visit is used at once
   // and refreshed in the background, so the page's own data is not kept waiting.
