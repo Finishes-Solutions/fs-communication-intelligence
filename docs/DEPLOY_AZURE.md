@@ -458,6 +458,22 @@ CHAT_DEPLOYMENT=gpt-4.1-mini ADMINS="matthews@finishessolutions.com" bash script
 
 Add the two secrets it prints (`ADMIN_FUNCTION_APP`, `ADMIN_PUBLIC_URL`) to the GitHub environment `development`, then merge the pull request (or rerun **Deploy (development)**). The migrations (`0005`, `0006`) must be applied **before** the new ingestion code deploys; otherwise the capture and processing timers fail every tick until they are. To add another admin later, rerun the script with their address in `ADMINS`.
 
+### Files page
+
+**Files** (sidebar, under Mail; Matthew, 2026-11-18) lists the attachments of the mail you may read, for console admins and Console Viewers alike:
+
+- **Newest** (the default): one row per file, newest first, 50 at a time with **Load More**. A file sent with several emails, or held in several mailboxes, is listed once, with the newest email it came with and how many emails carry it. Click a file to open its email beside the list, with the preview and download; the download button on each row saves the file directly when the original is stored.
+- **Folders**: Projects, Companies (the sender's domain), Legal Entities, Senders, Mailboxes, File Types and Months. Projects and Legal Entities are the names the AI found written in the email, so a file whose email names two projects is in both folders, and one whose email names none is in "No project named". Folder names are as good as the AI's reading of the email; they are not checked.
+- **Search** file names, email subjects and senders, or switch to **Text inside the files** to search the text extracted from PDFs, Word and Excel files (scanned images have no text). The period defaults to the last 12 months.
+
+It needs database migration 0032; apply it like the others, signed in as `svc_automation@`:
+
+```bash
+cd ~/fs-communication-intelligence && git pull && make azure-migrate AZ_PSQL=psql
+```
+
+Until it is applied the page says so; nothing else is affected. Signature images and logos are left out. Search words are not kept in the audit log.
+
 ### Costs page
 
 **Costs** in the console shows two figures side by side:

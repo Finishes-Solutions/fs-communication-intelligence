@@ -97,6 +97,7 @@ from ci_processing.embedding import Embedder
 from ci_processing.knowledge import name_key
 from ci_processing.originals import OriginalStore
 from ci_processing.routing import PersonProfile
+from ci_retrieval import files as file_queries
 from ci_retrieval import knowledge as kb
 from ci_retrieval import reports as report_queries
 from ci_retrieval import search as retrieval
@@ -138,6 +139,7 @@ PAGES = (
     "schedule",
     "mailboxes",
     "messages",
+    "files",
     "search",
     "actionable",
     "unpublished",
@@ -679,6 +681,54 @@ def build_admin_app(
                 "Cache-Control": "no-store",
             },
         )
+
+    def _files_query(request: Request) -> dict[str, Any]:
+        q = request.query_params
+        filters = _filters(request)
+        search_in = q.get("match") or "names"
+        if search_in not in file_queries.SEARCH_IN:
+            raise HTTPException(400, "match must be names or text")
+        return {
+            "since": filters.since,
+            "until": filters.until,
+            "q": q.get("q") or None,
+            "search_in": search_in,
+            "tz": _time_zone(),
+        }
+
+    def files(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        """Files, newest first; with group_by and group (the folder's key, which
+        may be empty), the files of one folder."""
+        q = request.query_params
+        group_by = q.get("group_by") or None
+        if group_by is not None and group_by not in file_queries.GROUPS:
+            raise HTTPException(400, "unknown grouping")
+        group = q.get("group") if group_by is not None else None
+        if group_by is not None and group is None:
+            raise HTTPException(400, "group is required with group_by")
+        with connector("ci_search") as conn:
+            try:
+                return file_queries.list_files(
+                    conn,
+                    principal,
+                    group_by=group_by,
+                    group=group,
+                    limit=_int(request, "limit", 50, 1, 100),
+                    offset=_int(request, "offset", 0, 0, file_queries.MAX_OFFSET),
+                    **_files_query(request),
+                )
+            except file_queries.FilesUnavailable as exc:
+                raise HTTPException(503, str(exc)) from exc
+
+    def file_folders(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
+        group_by = request.query_params.get("group_by") or ""
+        if group_by not in file_queries.GROUPS:
+            raise HTTPException(400, "unknown grouping")
+        with connector("ci_search") as conn:
+            try:
+                return file_queries.file_folders(conn, principal, group_by, **_files_query(request))
+            except file_queries.FilesUnavailable as exc:
+                raise HTTPException(503, str(exc)) from exc
 
     def actionable(request: Request, principal: Principal, body: dict[str, Any]) -> Any:
         hours = _float(request.query_params.get("hours"), "hours") or 24
@@ -1337,6 +1387,8 @@ def build_admin_app(
         Route("/api/messages/{id}", endpoint(message, READER_PAGE)),
         Route("/api/messages/{id}/files/{file_id}", endpoint(attachment, READER_PAGE)),
         Route("/api/actionable", endpoint(actionable, CONSOLE)),
+        Route("/api/files", endpoint(files, CONSOLE)),
+        Route("/api/files/folders", endpoint(file_folders, CONSOLE)),
         Route("/api/feedback/{id}", endpoint(feedback), methods=["GET", "PUT"]),
         Route("/api/knowledge", endpoint(knowledge_list, CONSOLE)),
         Route("/api/knowledge/graph", endpoint(knowledge_graph, CONSOLE)),
