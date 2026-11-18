@@ -511,6 +511,24 @@ ADMINS="svc_automation@finishessolutions.com matthews@finishessolutions.com cody
 
 It adds three delegated Graph permissions to the "FS Communications Admin Console" sign-in app (`AppRoleAssignment.ReadWrite.All`, `Application.Read.All`, `User.ReadBasic.All`, the least-privileged set for listing and changing app role assignments) and consents them **for those people only**, not tenant-wide. Entra still refuses a change the admin could not make in the Entra portal: they also need an Entra role such as Cloud Application Administrator. Azure admin and setup at Finishes run as `svc_automation@finishessolutions.com`, so run this script signed in as that account, and make access changes in the console signed in as it too; a personal account without an Entra admin role can view the list but not change it. `REMOVE=1 ADMINS="…"` takes the consent away again. The Email & File Links role is created by the first `people.sh add … files`; the page cannot create roles. Removing your own console access asks you to type `remove`.
 
+**View-only console** (`viewer`, role `Communications.Viewer`; Matthew, 2026-11-18). Two levels of console access:
+
+| | Console Viewer (`viewer`) | Console Admin (`console`) |
+|---|---|---|
+| Overview, Search, Messages, Action Items, Risk Analysis, Knowledge, Reports (and exports), Connections | Yes, read only | Yes |
+| Schedule & Runs (run timing, capture now), Mailboxes & Scope, mail rules, Not Published, requeue | No | Yes |
+| Label Review answers, the Lab, Costs and prices, model choice, People and reader limits, knowledge corrections (merge, rename, hide) | No | Yes |
+
+```bash
+bash scripts/azure/people.sh add someone@finishessolutions.com viewer
+```
+
+```bash
+bash scripts/azure/people.sh add someone@finishessolutions.com search
+```
+
+The first `viewer` add creates the role on the app registration (run it signed in as `svc_automation@`); after that the console's People page can grant it (column **Console Viewer**). Like an admin, a viewer sees the mail their reading role allows: give **AI Search** too (every enrolled mailbox), or the console shows them no mail. That also lets them search from Claude, ChatGPT and Copilot. The People page flags anyone with a console role but no AI Search. Reader limits apply to viewers, and a viewer cannot remove them. Every refusal is made by the console's server (each API call checks the role); the hidden pages and buttons are only a convenience.
+
 **Opening links without the console** (`files`, role `Communications.Files`). Use this for someone who should open the email and file links in MCP results or on a monday board, but not use the console:
 
 ```bash
@@ -537,7 +555,7 @@ The set for Will (2026-11-02: everything except PNS Capital and Chuck's personal
 | Domain | `pns-capital.com` |
 | Words in the email | `pns capital` |
 
-Give the reader `search` and `files`, never `console`: the console shows all mail and does not apply limits. Limits are matched by the reader's sign-in address; while any limit exists, a sign-in without an address gets no results at all. "Words in the email" errs toward hiding (a newsletter that mentions PNS Capital is hidden too), and private mail that names no listed mailbox, person, domain or words is **not** hidden: add a limit for it. After adding limits, check with the reader (or `ci search` signed in as them) that a known PNS email is not found.
+Give the reader `search` and `files` (or `viewer` for the console), never `console`: limits apply in the console too, but a console admin can remove their own. Limits are matched by the reader's sign-in address; while any limit exists, a sign-in without an address gets no results at all. "Words in the email" errs toward hiding (a newsletter that mentions PNS Capital is hidden too), and private mail that names no listed mailbox, person, domain or words is **not** hidden: add a limit for it. After adding limits, check with the reader (or `ci search` signed in as them) that a known PNS email is not found.
 
 **Risks only, without links** (`risks`, role `Communications.Reader.Risks`, migration 0029). Use this for an agent or a person whose AI answers should show project risks but never email links, email text or anything else. A common case is an AMP agent whose answers many people see:
 

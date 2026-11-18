@@ -435,13 +435,15 @@ function token() {
 }
 // The token's app roles, for display only (the API enforces every check):
 // people with only Communications.Files see the read-only page without the console link.
-function isAdmin() {
+function tokenRoles() {
   try {
     const t = token() || "";
-    const claims = JSON.parse(atob(t.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
-    return (claims.roles || []).includes("Communications.Admin");
-  } catch { return false; }
+    return JSON.parse(atob(t.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).roles || [];
+  } catch { return []; }
 }
+// Console admin: every page and every change. Console viewer: the read pages only.
+const isAdmin = () => tokenRoles().includes("Communications.Admin");
+const isConsole = () => isAdmin() || tokenRoles().includes("Communications.Viewer");
 function signOut() {
   ["token", "token_at", "token_exp", "who"].forEach(keep.del);
   ["graph_token", "graph_exp"].forEach(store.del);
@@ -487,7 +489,7 @@ async function overview() {
   const range = d.email_range || {};
   show(
     pageHead("Overview", "Capture, processing and publication at a glance.",
-      h("button", { class: "btn", onclick: requeue }, icon("requeue"), "Requeue Failed"),
+      isAdmin() ? h("button", { class: "btn", onclick: requeue }, icon("requeue"), "Requeue Failed") : null,
       h("button", { class: "btn", onclick: route }, icon("refresh"), "Refresh")),
     h("div", { class: "grid" },
       stat("Mode", "shield", d.mode.mode ? nice(d.mode.mode) : "Not set", `${num(d.mode.eligible_mailboxes)} mailboxes eligible`),
@@ -502,7 +504,7 @@ async function overview() {
     ),
     (s.prompt_shield_enabled === false || s.masking_enabled === false)
       ? note(`Testing mode: ${[s.prompt_shield_enabled === false ? "prompt-injection check" : "", s.masking_enabled === false ? "masking" : ""].filter(Boolean).join(" and ")} switched off in Schedule & Runs.`, "warn") : null,
-    card({ title: "Recent Runs", flush: true, actions: h("a", { class: "btn sm ghost", href: "/schedule" }, "View All") }, runsTable(d.runs)),
+    card({ title: "Recent Runs", flush: true, actions: isAdmin() ? h("a", { class: "btn sm ghost", href: "/schedule" }, "View All") : null }, runsTable(d.runs)),
     h("div", { class: "cols" },
       card({ title: "Message States", sub: "Every stored version, by processing state" },
         bars((d.versions || []).map(r => [h("span", {}, nice(r.processing_state), r.reason ? h("span", { class: "muted" }, ` · ${nice(r.reason)}`) : null),
@@ -523,7 +525,7 @@ async function overview() {
         bars((d.failures || []).map(r => [h("span", { class: "mono" }, r.error_code), r.versions, "bad"]),
           emptyState("No Failures", "Every processed message succeeded.", "ok")))),
     card({ title: "Mailboxes", sub: "Scope state and dataset approvals", flush: true,
-      actions: h("a", { class: "btn sm ghost", href: "/mailboxes" }, "Manage") },
+      actions: isAdmin() ? h("a", { class: "btn sm ghost", href: "/mailboxes" }, "Manage") : null },
       table([["State", r => stateBadge("scope", r.scope_state)],
         ["Test Approved", r => r.test_approved ? badge("Yes", "good") : h("span", { class: "muted" }, "—")],
         ["Production Approved", r => r.production_approved ? badge("Yes", "good") : h("span", { class: "muted" }, "—")],
@@ -831,8 +833,8 @@ function messageView(id, m, opts = {}) {
         h("div", { style: "min-width:200px;flex:1" }, h("div", { class: "who-name" }, sender),
           h("div", { class: "muted small" }, `To ${m.mailbox} · ${when(m.received_at)}`)),
         h("div", { class: "actions" }, safeLink(m.web_link, "Open in Outlook"),
-          opts.readOnly ? null : h("button", { class: "btn sm", onclick: () => { navigate(`/review?id=${encodeURIComponent(id)}`); } }, icon("review"), "Review Labels"),
-          opts.readOnly ? null : h("button", { class: "btn sm", onclick: () => { navigate(`/lab?id=${encodeURIComponent(id)}`); } }, icon("lab"), "Re-Run in Lab")))),
+          opts.readOnly || !isAdmin() ? null : h("button", { class: "btn sm", onclick: () => { navigate(`/review?id=${encodeURIComponent(id)}`); } }, icon("review"), "Review Labels"),
+          opts.readOnly || !isAdmin() ? null : h("button", { class: "btn sm", onclick: () => { navigate(`/lab?id=${encodeURIComponent(id)}`); } }, icon("lab"), "Re-Run in Lab")))),
     aiBlock(m) ? h("div", { class: "reader-section" }, aiBlock(m)) : null,
     nameChips(m) ? h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "Properties and Entities"), nameChips(m)) : null,
     hasLabels ? h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "Labels"),
@@ -866,7 +868,7 @@ async function actionablePage() {
     .map(([v, t]) => h("option", { value: v, selected: v === (p.get("status") || "open") }, t)));
   const out = h("div", {}, h("div", { class: "card" }, h("div", { class: "empty" }, h("div", { class: "spinner" }), "Loading…")));
   show(pageHead("Action Items & Project Risks", "The same list Chuck's agents get from list_actionable. AI proposals, not approvals.",
-    h("a", { class: "btn", href: `/review?${new URLSearchParams({ source: "actionable", person: person.value })}` }, icon("review"), "Review These One by One")),
+    isAdmin() ? h("a", { class: "btn", href: `/review?${new URLSearchParams({ source: "actionable", person: person.value })}` }, icon("review"), "Review These One by One") : null),
   card({},
     h("form", { class: "toolbar", onsubmit: e => { e.preventDefault(); navigate(`/actionable?${new URLSearchParams({ person: person.value, hours: hours.value, status: status.value })}`); } },
       h("div", { class: "search", style: "flex:1 1 320px" }, icon("users"), person), hours, status,
@@ -960,7 +962,8 @@ async function peoplePanel() {
 // Entra refuses anything that admin could not do in the Entra portal.
 
 const ACCESS = [
-  ["console", "Communications.Admin", "Console", "The admin console: all captured mail, settings, scope and costs. Reader limits do not apply."],
+  ["console", "Communications.Admin", "Console Admin", "The whole admin console: run timing, scope, mail rules, people, costs, Label Review and the Lab, plus everything Console Viewer sees."],
+  ["viewer", "Communications.Viewer", "Console Viewer", "The console's read pages only: mail, search, action items, risks, knowledge, reports and the overview. Changes nothing."],
   ["search", "Communications.Reader.All", "AI Search", "Searching every enrolled mailbox from Claude, ChatGPT and Copilot, minus their reader limits."],
   ["files", "Communications.Files", "Email & File Links", "Opening email and file links without the console. Which emails open follows their AI Search access."],
   ["risks", "Communications.Reader.Risks", "Risks Only", "Project risks from every mailbox through the AI tools, with only the details chosen under Risks Only Details: no email links, no email text, no other tools. Give it instead of AI Search, not with it."],
@@ -1029,7 +1032,7 @@ async function changeAccess(acc, person, key, grant) {
   const me = (keep.get("who") || "").toLowerCase();
   if (grant) {
     if (!acc.roleIds[key]) throw new Error(`The ${title} role does not exist yet. Create it once with: bash scripts/azure/people.sh add ${person.upn || "someone@finishessolutions.com"} ${key}`);
-    const broader = key === "risks" && (person.roles.search || person.roles.console)
+    const broader = key === "risks" && (person.roles.search || person.roles.console || person.roles.viewer)
       ? " They already have AI Search or Console, which is broader and wins: remove those for Risks Only to limit them." : "";
     const ok = await ask({ title: `Give ${person.name || person.upn} ${title}?`, confirm: "Grant Access", danger: key !== "files",
       text: `${what} ${key === "files" ? "" : key === "risks" ? "Everyone who sees their AI answers sees these details." : "This lets them read other people's mail."}${broader}` });
@@ -1088,10 +1091,13 @@ function accessCard(acc, limits) {
       const n = p.upn ? limitCount(p.upn) : 0;
       if (!n) return h("span", { class: "muted" }, "—");
       return h("div", { class: "badges" }, badge(`${n} limit${n === 1 ? "" : "s"}`, "info"),
-        p.roles.console ? badge("Console ignores limits", "warn") : null);
+        p.roles.console ? badge("A console admin can remove their own limits", "warn") : null);
     }],
-    ["", p => p.roles.risks && (p.roles.search || p.roles.console)
-      ? badge("Risks Only has no effect: a broader role wins", "warn") : null],
+    ["", p => h("div", { class: "badges" },
+      p.roles.risks && (p.roles.search || p.roles.console || p.roles.viewer)
+        ? badge("Risks Only has no effect: a broader role wins", "warn") : null,
+      (p.roles.console || p.roles.viewer) && !p.roles.search
+        ? badge("Sees no mail in the console without AI Search", "warn") : null)],
   ], acc.people, null, emptyState("Nobody Has Access", "Grant access below.", "users")));
 }
 
@@ -1103,7 +1109,7 @@ function readerLimitsCard(limits) {
   const reason = h("input", { placeholder: "reason_code", value: "private_business" });
   const act = guard(async (data, msg) => { await post("/api/reader-limits", data); toast(msg); route(); });
   return card({ title: "Reader Limits", flush: true,
-    sub: "Hide matching mail from one person, in every mailbox and every AI tool, except emails that person is on. Only for people without the console: the console shows all mail.",
+    sub: "Hide matching mail from one person, in every mailbox, every AI tool and the console, except emails that person is on. Not for console admins: they can remove their own limits.",
     foot: h("form", { class: "toolbar", onsubmit: e => { e.preventDefault();
         act({ action: "add", reader: reader.value, kind: kind.value, value: value.value, reason: reason.value }, "Limit added"); } },
       field("Reader", reader), field("Hide by", kind), field("Value", value), field("Reason", reason),
@@ -1700,7 +1706,7 @@ async function risksPage() {
   const mb = h("input", { placeholder: "All mailboxes", value: mailbox, style: "width:220px" });
   const [d, m] = await Promise.all([
     api("/api/risks?" + new URLSearchParams({ days, mailbox, category, property, impact, likelihood, items: RISK_FEED_PAGE })),
-    api("/api/calibration").catch(() => null),
+    isAdmin() ? api("/api/calibration").catch(() => null) : null,  // Label Review results: admins
   ]);
   const quality = m && m.labels.find(x => x.label === "project_risk");
   const enough = quality && quality.judged >= m.min_sample;
@@ -2364,7 +2370,7 @@ async function readerPage() {
   }
   show(h("div", { class: "reader-page" },
     h("div", { class: "reader-bar" }, h("span", { class: "muted small" }, "FS Communication Intelligence · read-only view"),
-      isAdmin() ? h("a", { href: "/overview", target: "_self", class: "btn sm ghost" }, "Open Console") : null),
+      isConsole() ? h("a", { href: "/overview", target: "_self", class: "btn sm ghost" }, "Open Console") : null),
     card({}, messageView(id, m, { readOnly: true }))));
   const wanted = pageParams().get("file");
   if (wanted) {
@@ -2692,7 +2698,7 @@ async function knowledgePage() {
   all.addEventListener("change", () => setAll(all.checked));
   list.replaceChildren(
     h("div", { class: "card-head" },
-      h("label", { class: "select-all" }, d.results.length ? all : null, h("h2", {}, p.get("q") ? "Matches" : "Most Mentioned")),
+      h("label", { class: "select-all" }, d.results.length && isAdmin() ? all : null, h("h2", {}, p.get("q") ? "Matches" : "Most Mentioned")),
       h("span", { class: "muted small" }, `${num(d.results.length)} shown`)),
     bar,
     d.results.length
@@ -2708,7 +2714,7 @@ async function knowledgePage() {
           list.querySelectorAll(".msg.on").forEach(x => x.classList.remove("on"));
           el.classList.add("on"); open(e.entity_id);
         });
-        return h("div", { class: "k-row" }, h("label", { class: "k-check" }, box), el);
+        return h("div", { class: "k-row" }, isAdmin() ? h("label", { class: "k-check" }, box) : null, el);
       }))
       : emptyState("Nothing Learned Yet", "Entries appear as mail is processed; ci knowledge backfill adds mail processed earlier.", "layers"),
     (d.hidden || []).length ? h("div", { class: "card-body" }, h("div", { class: "section-title" }, "Hidden Entries"),
@@ -2872,12 +2878,12 @@ function entryView(d, holder) {
       h("h2", {}, e.name),
       h("div", { class: "reader-meta" },
         kindBadge(e.kind), h("span", { class: "muted small" }, `#${id} · ${num(e.messages)} messages · ${short(e.first_seen)} to ${short(e.last_seen)}`),
-        h("div", { class: "actions" },
+        isAdmin() ? h("div", { class: "actions" },
           h("button", { class: "btn sm", onclick: rename }, "Rename"),
           detailLabel ? h("button", { class: "btn sm", onclick: editDetail }, `Edit ${detailLabel}`) : null,
           e.kind !== "person" ? h("button", { class: "btn sm", onclick: reclassify }, "Fix Kind…") : null,
           h("button", { class: "btn sm", onclick: merge }, "Merge Into…"),
-          h("button", { class: "btn sm", onclick: hide }, icon("hidden"), "Hide")))),
+          h("button", { class: "btn sm", onclick: hide }, icon("hidden"), "Hide")) : null)),
     h("div", { class: "reader-section" }, h("dl", { class: "kv" }, [
       ["Also Written", (e.also_written || []).join(" · ")], ["Email", e.email], ["Title", e.title], ["Meaning", e.meaning], ["Domain", e.domain],
       ["Display Name", c.name_override ? `${c.name_override} (set by an admin)` : null],
@@ -2885,7 +2891,7 @@ function entryView(d, holder) {
       .filter(([, v]) => v).flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)]))),
     (c.merged_from || []).length ? h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "Merged Into This Entry"),
       h("div", { class: "badges" }, c.merged_from.map(m => h("span", { class: "badge outline" }, `#${m.id} ${m.name}`,
-        h("button", { class: "chip-x", title: "Unmerge", onclick: guard(async () => { await post(`/api/knowledge/${m.id}/unmerge`); toast("Unmerged"); showEntry(id, holder); }) }, icon("x")))))) : null,
+        !isAdmin() ? null : h("button", { class: "chip-x", title: "Unmerge", onclick: guard(async () => { await post(`/api/knowledge/${m.id}/unmerge`); toast("Unmerged"); showEntry(id, holder); }) }, icon("x")))))) : null,
     h("div", { class: "reader-section" }, h("div", { class: "section-title" }, "Facts"),
       table([["", f => f.direction === "out" ? "→" : "←"],
         ["Fact", f => `${ROLE_TEXT[f.relation] || nice(f.relation)}${f.role ? ` (${nice(f.role)})` : ""}`],
@@ -3205,7 +3211,7 @@ function drawTopbar() {
     onclick: () => openPalette() }, icon("search"),
     h("span", { class: "topsearch-text" }, "Search email and documents"), h("kbd", {}, SHORTCUT)));
 }
-const canSearch = () => !!token() && !isReader() && isAdmin();
+const canSearch = () => !!token() && !isReader() && isConsole();
 
 let paletteOpen = false;
 function openPalette() {
@@ -3419,17 +3425,22 @@ async function searchPage() {
 
 // ---------- router -----------------------------------------------------------
 
-const NAV = [
-  ["overview", "Overview", "overview"], ["schedule", "Schedule & Runs", "clock"], ["costs", "Costs", "dollar"],
-  ["mailboxes", "Mailboxes", "inbox"],
+// The fourth entry marks a page for console admins only; console viewers do not see it.
+const NAV_ALL = [
+  ["overview", "Overview", "overview"], ["schedule", "Schedule & Runs", "clock", true], ["costs", "Costs", "dollar", true],
+  ["mailboxes", "Mailboxes", "inbox", true],
   null,
-  ["search", "Search", "search"], ["messages", "Messages", "mail"], ["actionable", "Action Items", "check"], ["unpublished", "Not Published", "hidden"],
+  ["search", "Search", "search"], ["messages", "Messages", "mail"], ["actionable", "Action Items", "check"], ["unpublished", "Not Published", "hidden", true],
   null,
   ["risks", "Risk Analysis", "alert"], ["knowledge", "Knowledge", "layers"], ["reports", "Reports", "report"],
-  ["review", "Label Review", "review"],
+  ["review", "Label Review", "review", true],
   null,
-  ["lab", "Lab", "lab"], ["connections", "Connections", "plug"], ["people", "People", "users"],
+  ["lab", "Lab", "lab", true], ["connections", "Connections", "plug"], ["people", "People", "users", true],
 ];
+const ADMIN_PAGES = new Set(NAV_ALL.filter(n => n && n[3]).map(n => n[0]).concat("check"));
+// The pages this person may open, recomputed after sign-in (roles come from the token).
+let NAV = NAV_ALL;
+const visibleNav = () => (isAdmin() ? NAV_ALL : NAV_ALL.filter(n => !n || !n[3]));
 const NAV_GROUPS = ["Operations", "Mail", "Insights", "Tools"];
 const PAGES = { overview, schedule: schedulePage, costs: costsPage, mailboxes: mailboxesPage, messages: messagesPage, search: searchPage,
   actionable: actionablePage, unpublished: unpublishedPage, lab: labPage, connections: connectionsPage,
@@ -3437,6 +3448,7 @@ const PAGES = { overview, schedule: schedulePage, costs: costsPage, mailboxes: m
   people: peoplePage };
 
 function drawNav() {
+  NAV = visibleNav();
   const nav = document.getElementById("tabs");
   let group = 0;
   const items = [h("div", { class: "nav-label" }, NAV_GROUPS[0])];
@@ -3454,14 +3466,17 @@ async function route() {
   const navName = name === "check" ? "review" : name; // "Label check" became Label Review
   document.querySelectorAll(".nav a").forEach(a => a.classList.toggle("active", a.getAttribute("href") === "/" + navName));
   // A page still waiting after a moment shows that it is loading instead of leaving the last page up.
-  const entry = NAV.find(n => n && n[0] === navName);
+  const entry = NAV_ALL.find(n => n && n[0] === navName);
   const slow = setTimeout(() => {
     if (mine === current && !mine.shown) {
       main().replaceChildren(h("div", { class: "page" }, pageHead(entry ? entry[1] : "Loading", null),
         card({}, h("div", { class: "empty" }, h("div", { class: "spinner" }), "Loading…"))));
     }
   }, 150);
-  try { await (PAGES[name] || overview)(); }
+  try {
+    if (ADMIN_PAGES.has(name) && !isAdmin()) adminOnlyPage(entry ? entry[1] : "This Page");
+    else await (PAGES[name] || overview)();
+  }
   catch (e) {
     if (mine === current && !aborted(e) && e.message !== "signing in") {
       show(pageHead("Something Went Wrong", null), card({}, h("p", { class: "status-failed", style: "margin:0" }, e.message)));
@@ -3470,6 +3485,12 @@ async function route() {
     clearTimeout(slow);
     mine.done = true;
   }
+}
+
+// A console viewer who follows a link to an admin page sees why it does not open.
+function adminOnlyPage(title) {
+  show(pageHead(title, null), card({}, emptyState("Console Admins Only",
+    "Your console access is view-only: you can read mail, action items, risks, knowledge and reports. Ask a console admin if you need to change settings.", "shield")));
 }
 
 // For links opened inside an app's own browser (ChatGPT, Teams...), which has no
@@ -3506,7 +3527,7 @@ async function render() {
       h("h1", {}, "FS Communication Intelligence"),
       h("p", {}, isReader()
         ? "Sign in with your Finishes Solutions account to read this email. Only people given access can open it."
-        : "Sign in with your Finishes Solutions account. Only console admins get in."),
+        : "Sign in with your Finishes Solutions account. Only people given console access get in."),
       signInNote ? h("p", { class: "status-failed small" }, signInNote) : null,
       h("button", { class: "btn primary lg block", onclick: () => signIn() },
         h("span", { class: "ms-logo" }, h("span"), h("span"), h("span"), h("span")), "Sign In with Microsoft"),

@@ -17,6 +17,7 @@ from ci_retrieval import mcp_server, reports, risk_access
 from ci_retrieval import search as retrieval
 from ci_retrieval.identity import (
     CONSOLE_ADMIN,
+    CONSOLE_VIEWER,
     READER_ALL,
     READER_RISKS,
     Principal,
@@ -75,6 +76,7 @@ def test_the_role_is_risk_only_unless_a_broader_role_is_held() -> None:
     assert RISKY.risk_only and COUNTS.risk_only
     assert not BOTH.risk_only and not READER.risk_only
     assert not Principal("a", "a@x.example", (READER_RISKS, CONSOLE_ADMIN)).risk_only
+    assert not Principal("a", "a@x.example", (READER_RISKS, CONSOLE_VIEWER)).risk_only
 
 
 def test_sql_authorization_keeps_only_risk_emails(risky: dict[str, Any]) -> None:

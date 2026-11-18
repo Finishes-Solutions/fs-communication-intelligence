@@ -5,6 +5,7 @@
 #   bash scripts/azure/people.sh list
 #   bash scripts/azure/people.sh add someone@finishessolutions.com            # console + search
 #   bash scripts/azure/people.sh add someone@finishessolutions.com console    # admin console only
+#   bash scripts/azure/people.sh add someone@finishessolutions.com viewer     # view-only console (add search to see mail)
 #   bash scripts/azure/people.sh add someone@finishessolutions.com search     # Claude/ChatGPT/Copilot only
 #   bash scripts/azure/people.sh add someone@finishessolutions.com files      # open email/file links, no console
 #   bash scripts/azure/people.sh add svc_amp@finishessolutions.com risks      # project risks only, no links
@@ -12,8 +13,12 @@
 #   bash scripts/azure/people.sh remove someone@finishessolutions.com files
 #
 # All are app roles on the "FS Communications Search API" registration:
-#   console = Communications.Admin: the admin console, which shows ALL captured
-#             mail (every mailbox), schedule, scope, costs and settings.
+#   console = Communications.Admin: the whole admin console: run timing, scope,
+#             mail rules, people, costs, Label Review, the Lab and every read page.
+#   viewer  = Communications.Viewer: the console's read pages only (mail, search,
+#             action items, risks, knowledge, reports, overview); changes nothing.
+#   Either console role shows the mail the person's reading role allows: give
+#   search too (that is every enrolled mailbox), or the console shows no mail.
 #   search  = Communications.Reader.All: searching every enrolled mailbox from
 #             Claude, ChatGPT or Copilot.
 #   files   = Communications.Files: opening the read-only email page that links in
@@ -31,7 +36,8 @@
 # (turn it on once with scripts/azure/9-console-people.sh).
 # To keep some mail from one search/files reader (e.g. another person's private
 # mail), add reader limits in the console (Mailboxes & Scope > Reader Limits) or
-# with `ci limit`. Limits do not apply to the console role, which shows all mail.
+# with `ci limit`. Limits apply in the console too, but a console admin can remove
+# their own; a viewer cannot.
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
 graph() { az rest --method "$1" --uri "https://graph.microsoft.com/v1.0/$2" \
@@ -46,6 +52,7 @@ ADMIN_ROLE="$(role_id Communications.Admin)"
 READER_ROLE="$(role_id Communications.Reader.All)"
 FILES_ROLE="$(role_id Communications.Files)"
 RISKS_ROLE="$(role_id Communications.Reader.Risks)"
+VIEWER_ROLE="$(role_id Communications.Viewer)"
 add_role() {  # add_role <value> <display name> <description>
   # First use: add the role to the registration. Graph replaces appRoles whole on
   # PATCH, so the existing roles are sent back with it.
@@ -71,13 +78,20 @@ if [ -z "$RISKS_ROLE" ] && [ "$action" = "add" ] && [ "${3:-}" = "risks" ]; then
   RISKS_ROLE="$(role_id Communications.Reader.Risks)"
 fi
 
+if [ -z "$VIEWER_ROLE" ] && [ "$action" = "add" ] && [ "${3:-}" = "viewer" ]; then
+  add_role Communications.Viewer "Communications Console Viewer (read only)" \
+    "The admin console's read pages (mail, action items, risks, reports), without changing anything."
+  VIEWER_ROLE="$(role_id Communications.Viewer)"
+fi
+
 if [ "$action" = "list" ]; then
-  graph GET "servicePrincipals/$API_SP/appRoleAssignedTo?\$top=999" | ADMIN_ROLE="$ADMIN_ROLE" READER_ROLE="$READER_ROLE" FILES_ROLE="$FILES_ROLE" RISKS_ROLE="$RISKS_ROLE" python3 -c '
+  graph GET "servicePrincipals/$API_SP/appRoleAssignedTo?\$top=999" | ADMIN_ROLE="$ADMIN_ROLE" READER_ROLE="$READER_ROLE" FILES_ROLE="$FILES_ROLE" RISKS_ROLE="$RISKS_ROLE" VIEWER_ROLE="$VIEWER_ROLE" python3 -c '
 import json, os, sys
 names = {os.environ["ADMIN_ROLE"]: "console (Communications.Admin)",
          os.environ["READER_ROLE"]: "search (Communications.Reader.All)",
          os.environ["FILES_ROLE"] or "-": "files (Communications.Files)",
-         os.environ["RISKS_ROLE"] or "--": "risks (Communications.Reader.Risks)"}
+         os.environ["RISKS_ROLE"] or "--": "risks (Communications.Reader.Risks)",
+         os.environ["VIEWER_ROLE"] or "---": "viewer (Communications.Viewer)"}
 rows = sorted((a["principalDisplayName"], names.get(a["appRoleId"], a["appRoleId"]))
               for a in json.load(sys.stdin)["value"])
 for who, role in rows:
@@ -86,7 +100,7 @@ print(f"{len(rows)} assignment(s)")'
   exit 0
 fi
 
-[ -n "$upn" ] || { echo "usage: people.sh add|remove someone@finishessolutions.com [console|search|files|risks|both]" >&2; exit 2; }
+[ -n "$upn" ] || { echo "usage: people.sh add|remove someone@finishessolutions.com [console|viewer|search|files|risks|both]" >&2; exit 2; }
 case "$which" in
   console) roles="$ADMIN_ROLE" ;;
   search) roles="$READER_ROLE" ;;
@@ -94,8 +108,10 @@ case "$which" in
     [ -n "$roles" ] || { echo "  nobody has the files role yet (it is created by the first add)"; exit 0; } ;;
   risks) roles="$RISKS_ROLE"
     [ -n "$roles" ] || { echo "  nobody has the risks role yet (it is created by the first add)"; exit 0; } ;;
+  viewer) roles="$VIEWER_ROLE"
+    [ -n "$roles" ] || { echo "  nobody has the viewer role yet (it is created by the first add)"; exit 0; } ;;
   both) roles="$ADMIN_ROLE $READER_ROLE" ;;
-  *) echo "the third argument is console, search, files, risks or both" >&2; exit 2 ;;
+  *) echo "the third argument is console, viewer, search, files, risks or both" >&2; exit 2 ;;
 esac
 oid="$(az ad user show --id "$upn" --query id -o tsv 2>/dev/null)" \
   || { echo "ERROR: no Entra user $upn (check the spelling)" >&2; exit 1; }
@@ -110,6 +126,7 @@ for role in $roles; do
   if [ "$role" = "$ADMIN_ROLE" ]; then label=console
   elif [ "$role" = "$FILES_ROLE" ]; then label=files
   elif [ "$role" = "$RISKS_ROLE" ]; then label=risks
+  elif [ "$role" = "$VIEWER_ROLE" ]; then label=viewer
   else label=search; fi
   assignment="$(echo "$existing" | awk -v r="$role" '$1 == r {print $2}')"
   if [ "$action" = "add" ]; then

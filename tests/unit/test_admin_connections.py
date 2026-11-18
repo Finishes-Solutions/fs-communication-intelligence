@@ -69,10 +69,21 @@ def test_every_sidebar_page_is_served_and_the_platform_logos_exist() -> None:
     from ci_admin.api import PAGES, STATIC
 
     app = (STATIC / "app.js").read_text()
-    nav = app[app.index("const NAV = [") : app.index("];", app.index("const NAV = ["))]
-    keys = re.findall(r'\["([a-z]+)", "[^"]+", "[a-z]+"\]', nav)
+    nav = app[app.index("const NAV_ALL = [") : app.index("];", app.index("const NAV_ALL = ["))]
+    keys = re.findall(r'\["([a-z]+)", "[^"]+", "[a-z]+"(?:, true)?\]', nav)
     assert "connections" in keys and len(keys) >= 10
     assert set(keys) <= set(PAGES)
+    # Pages marked for console admins only (hidden from console viewers).
+    admin_only = set(re.findall(r'\["([a-z]+)", "[^"]+", "[a-z]+", true\]', nav))
+    assert admin_only == {
+        "schedule",
+        "costs",
+        "mailboxes",
+        "unpublished",
+        "review",
+        "lab",
+        "people",
+    }
     for name in ("claude", "chatgpt"):
         logo = (STATIC / "logos" / f"{name}.svg").read_text()
         assert logo.startswith("<svg") and "<script" not in logo
