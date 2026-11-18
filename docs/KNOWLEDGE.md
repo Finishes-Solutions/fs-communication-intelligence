@@ -97,6 +97,15 @@ ci knowledge backfill
 
 Either way the wrong entry stays, merged, so later emails where the AI repeats the mistake still land under the right kind. Unmerge undoes it.
 
+**Merges and renames reach the other pages (migration 0034, 2026-11-18).** Merging "Stokes Rd" into "Gracious Gardens" also makes the rest of the console and the AI tools treat Stokes Rd as Gracious Gardens:
+
+* **Files:** files from Stokes Rd emails are in the Gracious Gardens project folder (and company folders follow merged organizations the same way).
+* **Filters:** a property or entity filter (Messages, Search, Reports, `search_email`, `list_email`, `email_stats`) for "gracious" also finds emails that say "Stokes Rd". Filtering by "stokes" still finds them by the name as written.
+* **Counts and charts:** grouping by property or entity (Reports, `email_stats`) and the Risk page's property heatmap and top properties count them under Gracious Gardens.
+* **Earlier and later mail alike, at once:** nothing is reprocessed and no AI call is made. The email itself still shows the name it was written with (`properties_ai`).
+* **Undo:** Unmerge, Unhide or a rename applies straight away. A hidden entry is not mapped (its emails show the written name). Only merges within one kind count: an entry moved with Fix Kind keeps its written name on these pages.
+* **Spelling variants:** a name is matched by the knowledge base's key (case, spacing and punctuation ignored, so "STOKES RD." matches "Stokes Rd"). A different word ("Stokes Road") is a separate entry until it is merged as well.
+
 **Map** (Matthew, 2026-10-29). The Knowledge page's **Map** view draws the base as an interactive network (`GET /api/knowledge/graph`, `ci_retrieval.knowledge.knowledge_graph`), from the caller's authorized mail only.
 - **Nodes:** the most-mentioned entries (40, 80 or 150) of the chosen kinds. With **Center on…**, or a double-click on a node, it shows one entry and the entries most often mentioned with it.
 - **Links:** two entries are linked when at least N emails (1, 2, 3 or 5) mention both. Thickness is the number of shared emails. A darker link means the emails also state a fact between the two (works for, lender, owner…).

@@ -144,6 +144,7 @@ def _grant_roles(principal: Principal) -> list[str]:
 
 
 def authorize(conn: Connection, principal: Principal) -> Authorization:
+    _check_name_merges(conn)
     rows = conn.execute(
         "SELECT DISTINCT corpus_id::text FROM access_grants WHERE revoked_at IS NULL"
         " AND valid_from <= now() AND (valid_to IS NULL OR valid_to > now())"
@@ -196,13 +197,46 @@ _FILTERS = """
         SELECT 1 FROM published_classifications fc
         WHERE fc.communication_id = {a}.communication_id AND %(label)s = ANY(fc.yes_labels)))
     AND (%(property)s::text IS NULL OR EXISTS (
-        SELECT 1 FROM published_classifications fp2, unnest(fp2.properties) AS x(name)
+        SELECT 1 FROM published_classifications fp2, unnest({props_fp2}) AS x(name)
         WHERE fp2.communication_id = {a}.communication_id
           AND x.name ILIKE '%%' || %(property)s || '%%'))
     AND (%(entity)s::text IS NULL OR EXISTS (
-        SELECT 1 FROM published_classifications fe, unnest(fe.entities) AS x(name)
+        SELECT 1 FROM published_classifications fe, unnest({ents_fe}) AS x(name)
         WHERE fe.communication_id = {a}.communication_id
           AND x.name ILIKE '%%' || %(entity)s || '%%'))"""
+
+
+# ----- Knowledge merges (migration 0034) --------------------------------------
+# Emails keep the property and entity names the AI found as written. Once
+# migration 0034 is applied, name filters and groupings also follow the
+# operator's merges and renames in the knowledge base: canonical_names() maps
+# "Stokes Rd" to "Gracious Gardens" after Stokes Rd was merged into it.
+_NAME_MERGES = False
+
+
+def _check_name_merges(conn: Connection) -> None:
+    """Note once per process that migration 0034 is applied (it is never undone)."""
+    global _NAME_MERGES
+    if not _NAME_MERGES:
+        row = conn.execute(
+            "SELECT to_regprocedure('ci.canonical_names(text,text[])') IS NOT NULL AS ok"
+        ).fetchone()
+        _NAME_MERGES = bool(row and row["ok"])
+
+
+def name_merges() -> bool:
+    """True once a connection in this process has seen migration 0034."""
+    return _NAME_MERGES
+
+
+def shown_names(column: str, kind: str) -> str:
+    """SQL for a name list as shown: merged and renamed entries followed (0034)."""
+    return f"canonical_names('{kind}', {column})" if _NAME_MERGES else column
+
+
+def matched_names(column: str, kind: str) -> str:
+    """SQL for the names a filter matches: as written, and as shown (0034)."""
+    return f"({column} || canonical_names('{kind}', {column}))" if _NAME_MERGES else column
 
 
 # published_communications with the communication_id column the fragments use.
@@ -235,7 +269,20 @@ def _like(term: str | None) -> str | None:
 
 
 def _scope(alias: str) -> str:
-    return _AUTH.format(a=alias) + _FILTERS.format(a=alias)
+    return _AUTH.format(a=alias) + _FILTERS.format(
+        a=alias,
+        props_fp2=matched_names("fp2.properties", "property"),
+        ents_fe=matched_names("fe.entities", "organization"),
+    )
+
+
+def _row_filters(alias: str) -> str:
+    """_ROW_FILTERS on the row alias, with merge-aware name matching (0034)."""
+    return _ROW_FILTERS.format(
+        a=alias,
+        props=matched_names(f"{alias}.properties", "property"),
+        ents=matched_names(f"{alias}.entities", "organization"),
+    )
 
 
 # ----- set-based reads (migration 0031) ---------------------------------------
@@ -260,10 +307,10 @@ _ROW_FILTERS = """
     AND (%(until)s::timestamptz IS NULL OR {a}.occurred_at < %(until)s)
     AND (%(label)s::text IS NULL OR %(label)s = ANY({a}.yes_labels))
     AND (%(property)s::text IS NULL OR EXISTS (
-        SELECT 1 FROM unnest({a}.properties) AS x(name)
+        SELECT 1 FROM unnest({props}) AS x(name)
         WHERE x.name ILIKE '%%' || %(property)s || '%%'))
     AND (%(entity)s::text IS NULL OR EXISTS (
-        SELECT 1 FROM unnest({a}.entities) AS x(name)
+        SELECT 1 FROM unnest({ents}) AS x(name)
         WHERE x.name ILIKE '%%' || %(entity)s || '%%'))"""
 
 _WINDOW = (
@@ -320,7 +367,7 @@ def _allowed_ids(conn: Connection, auth: Authorization, filters: Filters) -> lis
         return [r["id"] for r in rows]
     rows = conn.execute(
         f"SELECT h.communication_id::text AS id FROM {source} h"  # noqa: S608
-        f" WHERE {_AUTH.format(a='h')} {_ROW_FILTERS.format(a='h')}",
+        f" WHERE {_AUTH.format(a='h')} {_row_filters('h')}",
         params,
     ).fetchall()
     return [r["id"] for r in rows]
@@ -927,7 +974,7 @@ def _listing_rows(
                pc.disposition, pc.summary, pc.action_text, pc.action_for, pc.due_text,
                pc.risk_text, pc.properties, pc.entities
         FROM {as_views(rows_source(wanted, since))}
-        WHERE {_AUTH.format(a="pc")} {_ROW_FILTERS.format(a="pc")} {extra_where}
+        WHERE {_AUTH.format(a="pc")} {_row_filters("pc")} {extra_where}
         ORDER BY pc.occurred_at DESC, pc.communication_id
         LIMIT %(fetch)s"""  # noqa: S608 - fragments are constants; values are bound parameters
 
