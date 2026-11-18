@@ -21,6 +21,7 @@ query text is not logged).
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -792,7 +793,7 @@ def get_email(
     params = _params(auth, Filters()) | {"id": communication_id}
     row = (
         conn.execute(
-            f"SELECT pc.id::text AS communication_id FROM {_PUBLISHED} pc"  # noqa: S608
+            f"SELECT pc.id::text AS communication_id, pc.published_at FROM {_PUBLISHED} pc"  # noqa: S608
             f" WHERE pc.id = %(id)s::uuid AND {_AUTH.format(a='pc')}",
             params,
         ).fetchone()
@@ -846,6 +847,7 @@ def get_email(
         "sender": m["sender"],
         "mailbox": m["mailbox_address"],
         "received_at": m["occurred_at"].isoformat(),
+        "processed_at": row["published_at"].isoformat() if row["published_at"] else None,
         "web_link": m["source_url"],
         "participants": [dict(p) for p in people],
         "labels": list(m["yes_labels"] or []),
@@ -1069,7 +1071,145 @@ def _listing(
         )
     page = out[offset : offset + limit]
     outlook_links(conn, principal, page)
+    _processed_at(conn, page)
     return page
+
+
+def _processed_at(conn: Connection, items: list[dict[str, Any]]) -> None:
+    """Add each email's processed_at: when its current version was published (became
+    searchable). Later than received_at; a reprocessed email gets a new one."""
+    if not items:
+        return
+    stamps = {
+        r["id"]: r["published_at"]
+        for r in conn.execute(
+            "SELECT id::text AS id, published_at FROM published_communications"
+            " WHERE id = ANY(%s::uuid[])",
+            ([i["communication_id"] for i in items],),
+        ).fetchall()
+    }
+    for item in items:
+        stamp = stamps.get(item["communication_id"])
+        item["processed_at"] = stamp.isoformat() if stamp else None
+
+
+# ----- polling by processing time (migration 0035) ----------------------------
+# A poller asking "what is new since my last check" by received time misses an
+# email that arrived before the check but finished processing after it. These
+# list published emails in the order they were processed, with a cursor
+# (published_at, communication_id) so no email is skipped or repeated at a page
+# boundary. A reprocessed email (new version) appears again with a new time.
+_ZERO_ID = "00000000-0000-0000-0000-000000000000"
+_PROCESSED_BATCH = 500
+_PROCESSED_BATCHES = 20  # rows read per call at most: 10,000 (a reader with limits)
+
+
+def encode_cursor(at: datetime, communication_id: str) -> str:
+    """An opaque position in processing order."""
+    raw = json.dumps([at.astimezone(UTC).isoformat(), communication_id]).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def decode_cursor(cursor: str) -> tuple[datetime, str]:
+    """A cursor from encode_cursor; ValueError for anything else."""
+    try:
+        raw = base64.urlsafe_b64decode(cursor.strip() + "=" * (-len(cursor.strip()) % 4))
+        at_text, cid = json.loads(raw)
+        at = datetime.fromisoformat(at_text)
+        if at.tzinfo is None or not re.fullmatch(r"[0-9a-f-]{36}", cid):
+            raise ValueError
+        return at, cid
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("cursor is not one this server gave out") from exc
+
+
+def processed_polling(conn: Connection) -> bool:
+    """True once migration 0035 is applied."""
+    row = conn.execute(
+        "SELECT to_regprocedure('ci.published_processed(timestamptz,uuid,integer)')"
+        " IS NOT NULL AS ok"
+    ).fetchone()
+    return bool(row and row["ok"])
+
+
+def list_processed(
+    conn: Connection,
+    principal: Principal,
+    filters: Filters = NO_FILTERS,
+    *,
+    processed_since: datetime | None = None,
+    cursor: str | None = None,
+    limit: int = 25,
+) -> dict[str, Any]:
+    """Authorized emails processed after ``cursor`` (or since ``processed_since``),
+    oldest processed first, ``limit`` at a time. ``next_cursor`` is where the next
+    call starts; it is returned even when nothing more is waiting, so a poller keeps
+    it for its next check. ``filters`` narrow as in list_email (their dates are
+    received dates)."""
+    limit = max(1, min(limit, 100))
+    if cursor:
+        after_at, after_id = decode_cursor(cursor)
+    else:
+        after_at = processed_since or datetime(2000, 1, 1, tzinfo=UTC)
+        after_id = _ZERO_ID
+    if not processed_polling(conn):
+        raise ValueError("processed_since needs database migration 0035")
+    auth = authorize(conn, principal)
+    ids: list[str] = []
+    stamps: dict[str, datetime] = {}
+    position = (after_at, after_id)
+    exhausted = False
+    if not auth.empty:
+        params = _params(auth, filters)
+        sql = (
+            "SELECT h.communication_id::text AS id, h.published_at,"  # noqa: S608
+            f" ({_scope('h')}) AS ok"
+            " FROM published_processed(%(after_at)s, %(after_id)s::uuid, %(batch)s) h"
+            " ORDER BY h.published_at, h.communication_id"
+        )
+        for _ in range(_PROCESSED_BATCHES):
+            rows = conn.execute(
+                sql,
+                params
+                | {"after_at": position[0], "after_id": position[1], "batch": _PROCESSED_BATCH},
+            ).fetchall()
+            for r in rows:
+                if r["ok"]:
+                    if len(ids) == limit:  # one more than a page: there is more
+                        break
+                    ids.append(r["id"])
+                    stamps[r["id"]] = r["published_at"]
+                position = (r["published_at"], r["id"])
+            else:
+                if len(rows) < _PROCESSED_BATCH:
+                    exhausted = True
+                    break
+                continue
+            break
+    else:
+        exhausted = True
+    # position is the last row read that is not past this page (rows the reader may
+    # not see are stepped over), so the next call starts right after it.
+    items = _listing(conn, principal, NO_FILTERS, "", {}, len(ids), ids=ids) if ids else []
+    order = {cid: n for n, cid in enumerate(ids)}
+    items.sort(key=lambda i: order.get(i["communication_id"], len(order)))
+    for item in items:
+        stamp = stamps.get(item["communication_id"])
+        item["processed_at"] = stamp.isoformat() if stamp else item.get("processed_at")
+    _audit(
+        conn,
+        principal,
+        "list_email_processed",
+        {"result_ids": [i["communication_id"] for i in items]},
+    )
+    conn.commit()
+    return {
+        "note": UNTRUSTED_NOTE,
+        "results": items,
+        "has_more": not exhausted,
+        "next_cursor": encode_cursor(position[0], position[1]),
+        "coverage": coverage(conn),
+    }
 
 
 def _listing_rows_views(

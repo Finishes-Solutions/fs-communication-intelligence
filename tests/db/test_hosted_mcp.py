@@ -512,6 +512,54 @@ def test_dates_times_ranges_and_paging_by_time(app: Any) -> None:
         assert "since must be a date like 2026-10-01" in json.dumps(bad)
 
 
+def test_polling_by_processing_time_with_a_cursor(app: Any, database_ready: str) -> None:
+    """list_email(processed_since=..., cursor=...) for pollers such as the AMP relay:
+    oldest processed first, every email once, and a reprocessed email comes again."""
+    with TestClient(app, base_url=BASE) as client:
+
+        def tool(name: str, **args: Any) -> dict[str, Any]:
+            return call_tool(client, token(), name, args)
+
+        everything = tool("list_email", since="2000-01-01", limit=100)
+        assert all(r["processed_at"] >= r["received_at"] for r in everything["results"])
+        subjects = {r["subject"] for r in everything["results"]}
+
+        seen: list[dict[str, Any]] = []
+        args: dict[str, Any] = {"processed_since": "2000-01-01", "limit": 2}
+        for _ in range(100):
+            page = tool("list_email", **args)
+            seen += page["results"]
+            args = {"cursor": page["next_cursor"], "limit": 2}
+            if not page["has_more"]:
+                break
+        stamps = [r["processed_at"] for r in seen]
+        assert stamps == sorted(stamps)  # oldest processed first
+        assert {r["subject"] for r in seen} == subjects  # every email (copies may repeat)
+        assert len({r["communication_id"] for r in seen}) == len(seen)  # none twice
+
+        # Nothing new since the last cursor; then one email is processed again.
+        quiet = tool("list_email", cursor=args["cursor"])
+        assert quiet["results"] == [] and quiet["has_more"] is False
+        again = everything["results"][-1]["communication_id"]
+        with connect(dbname=database_ready) as conn:
+            conn.execute(
+                "UPDATE communication_versions v SET published_at = now() + interval '1 minute'"
+                " FROM communications c WHERE c.active_version_id = v.id AND c.id = %s",
+                (again,),
+            )
+            conn.commit()
+        fresh = tool("list_email", cursor=quiet["next_cursor"])
+        assert [r["communication_id"] for r in fresh["results"]] == [again]
+
+        # Polling keeps the other filters, and a forged cursor is refused clearly.
+        none = tool("list_email", processed_since="2000-01-01", mailbox="nobody@example.com")
+        assert none["results"] == []
+        bad = raw_tool(client, token(), "list_email", {"cursor": "not-a-cursor"})
+        assert "cursor is not one this server gave out" in json.dumps(bad)
+        later = tool("list_email", processed_since="2100-01-01")
+        assert later["results"] == [] and later["next_cursor"]
+
+
 def test_agents_find_files_and_get_emails_as_documents(app: Any) -> None:
     import base64
     import io
