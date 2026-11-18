@@ -109,3 +109,13 @@ def test_links_from_ai_clients_reuse_an_existing_sign_in() -> None:
     assert 'keep.set("flow:" + state, v)' in app and "returnPathOf(state)" in app
     assert "canSignInSilently() && !signInNote" in app
     assert 'keep.set("signed_out", "1")' in app
+
+
+def test_the_console_keeps_no_search_history() -> None:
+    """Searches are not remembered in the browser (Matthew, 2026-11-18); a list an
+    earlier version saved is deleted when the page loads."""
+    from ci_admin.api import STATIC
+
+    app = (STATIC / "app.js").read_text()
+    assert 'keep.del("recent_searches")' in app
+    assert 'set("recent_searches"' not in app and "Recent Searches" not in app
