@@ -238,6 +238,9 @@ def store_missing_originals(
             WHERE a.original_stored_at IS NULL AND v.processing_state = 'published'
               AND a.extraction_status <> 'not_attempted' AND a.size_bytes <= %s
               AND a.extraction_status <> 'skipped'
+              -- Over the size limit when processed: left as it was, even if the limit was
+              -- raised since (50 MB from 2026-11-18 applies to new mail only, Matthew).
+              AND a.extraction_status <> 'too_large'
             ORDER BY random() LIMIT %s
             """,
             (backends.attachment_max_bytes, limit),

@@ -639,6 +639,42 @@ def test_missing_originals_are_backfilled(database_ready: str, files: DirectoryS
     assert all(files.get(r["sha256"]) is not None for r in cleared if r["sha256"])
 
 
+def test_files_over_the_limit_when_processed_are_not_backfilled_later(
+    database_ready: str, files: DirectoryStore
+) -> None:
+    """Raising the size limit applies to new mail only (Matthew, 2026-11-18): a file that
+    was over the limit when its message was processed is not downloaded afterwards."""
+    with connect(dbname=database_ready) as conn:
+        row = conn.execute(
+            "UPDATE email_attachments SET extraction_status = 'too_large',"
+            " original_stored_at = NULL, size_bytes = 30 * 1024 * 1024"
+            " WHERE name = 'CO-007-BuildingC.pdf' RETURNING version_id, native_attachment_id"
+        ).fetchone()
+        conn.commit()
+    assert row
+    store_missing_originals(
+        lambda: connect(dbname=database_ready, role="ci_ingest"),
+        Backends(
+            FakeScreener(),
+            FakeClassifier(),
+            FakeEmbedder(),
+            graph=FixtureGraphClient.from_directory(),
+            extraction_enabled=True,
+            originals=files,
+            attachment_max_bytes=50 * 1024 * 1024,
+        ),
+        limit=500,
+    )
+    with connect(dbname=database_ready) as conn:
+        after = conn.execute(
+            "SELECT extraction_status, original_stored_at FROM email_attachments"
+            " WHERE version_id = %s AND native_attachment_id = %s",
+            (row["version_id"], row["native_attachment_id"]),
+        ).fetchone()
+    assert after is not None
+    assert after["extraction_status"] == "too_large" and after["original_stored_at"] is None
+
+
 def test_failed_attachments_are_reread_and_messages_republished(
     database_ready: str, files: DirectoryStore
 ) -> None:
