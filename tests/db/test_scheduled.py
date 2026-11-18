@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -59,9 +60,12 @@ def test_first_run_inventories_then_refuses_until_mailboxes_are_approved(
         exclude_mailbox(
             conn, "casey.private@finishessolutions.example", "pytest", reason="personal_mailbox"
         )
+    # Ticks with nothing to do may already have stored counts (every tick
+    # refreshes them, and an empty table is always counted): start empty.
+    forget_stored_counts()
     captured = run_capture(load_settings(), NOW)
     assert captured is not None and captured["new_version"] == 20
-    assert stored_counts() == 0  # nothing is stored until a run has done work
+    assert stored_counts() == 0  # run_capture (tests only) is not a tick
     processed = run_processing(load_settings())
     assert processed is not None
     assert stored_counts() == 6  # AC-3.7: a processing run that did work recounts
@@ -116,7 +120,7 @@ def test_runs_complete_on_a_database_without_the_stored_counts(
     migration = Path(__file__).resolve().parents[2] / "db/migrations/0038_ops_counts.sql"
     with connect() as conn:
         conn.execute("DROP VIEW ci.coverage_snapshot")
-        conn.execute("DROP FUNCTION ci.refresh_ops_counts(interval)")
+        conn.execute("DROP FUNCTION ci.refresh_ops_counts(interval, boolean)")
         conn.execute("DROP TABLE ci.ops_counts")
         conn.commit()
     try:
@@ -150,3 +154,52 @@ def test_app_kill_switch_beats_the_schedule(monkeypatch: pytest.MonkeyPatch) -> 
     with connect() as conn:
         conn.execute("UPDATE ops_settings SET run_requested_at = NULL")
         conn.commit()
+
+
+def counted_at() -> datetime:
+    with connect() as conn:
+        row = conn.execute("SELECT min(refreshed_at) AS t FROM ops_counts").fetchone()
+        conn.rollback()
+    assert row is not None and row["t"] is not None
+    return cast(datetime, row["t"])
+
+
+def test_idle_ticks_recount_after_the_last_run_of_a_busy_period() -> None:
+    """Every scheduler and processing tick refreshes the stored counts, also when
+    it does no work (both switches off here): a run that finished after the last
+    recount is counted once that recount is 5 minutes old; with no run finished
+    since, an idle tick counts nothing."""
+    with connect() as conn:
+        conn.execute("SELECT refresh_ops_counts(changed => true)")
+        conn.execute(
+            "UPDATE ops_runs SET started_at = started_at - interval '1 hour',"
+            " finished_at = finished_at - interval '1 hour' WHERE finished_at IS NOT NULL"
+        )
+        # The last run of a busy period ended a minute after a recount 3 minutes ago.
+        conn.execute("UPDATE ops_counts SET refreshed_at = now() - interval '3 minutes'")
+        conn.execute(
+            "INSERT INTO ops_runs (kind, trigger, started_at, finished_at, status)"
+            " VALUES ('process', 'schedule', now() - interval '150 seconds',"
+            " now() - interval '2 minutes', 'succeeded')"
+        )
+        conn.commit()
+    young = counted_at()
+    assert run_processing(load_settings()) is None  # PROCESSING_ENABLED is not set
+    assert counted_at() == young  # under 5 minutes old: not yet
+    with connect() as conn:
+        conn.execute("UPDATE ops_counts SET refreshed_at = refreshed_at - interval '5 minutes'")
+        conn.commit()
+    assert not scheduler_tick(load_settings(), NOW).due  # CAPTURE_ENABLED is not set
+    recounted = counted_at()
+    assert recounted > young  # the idle tick recounted
+    with connect() as conn:  # 10 minutes later, nothing has run since
+        conn.execute("UPDATE ops_counts SET refreshed_at = refreshed_at - interval '10 minutes'")
+        conn.execute(
+            "UPDATE ops_runs SET started_at = started_at - interval '1 hour',"
+            " finished_at = finished_at - interval '1 hour' WHERE finished_at IS NOT NULL"
+        )
+        conn.commit()
+    stale = counted_at()
+    assert run_processing(load_settings()) is None
+    assert not scheduler_tick(load_settings(), NOW).due
+    assert counted_at() == stale  # nothing changed: nothing counted

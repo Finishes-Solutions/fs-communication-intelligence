@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from ci_cli import pipeline, scheduled
 from ci_cli.pipeline import include_all_enrolled, tenant_init
 from ci_cli.scheduled import run_backfill, scheduler_tick
 from ci_core import ops
@@ -23,7 +24,9 @@ def env(monkeypatch: pytest.MonkeyPatch, database: str) -> None:
     monkeypatch.setenv("CAPTURE_ENABLED", "true")
 
 
-def test_plan_is_captured_newest_first_and_a_rerun_stores_nothing_new() -> None:
+def test_plan_is_captured_newest_first_and_a_rerun_stores_nothing_new(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     with connect() as conn:
         tenant_init(conn, "pytest")
         conn.commit()
@@ -70,7 +73,22 @@ def test_plan_is_captured_newest_first_and_a_rerun_stores_nothing_new() -> None:
     with connect(role="ci_operator") as conn:
         ops.plan_backfill(conn, "pytest", since_day="2025-12-01", until_day=None, days=93, now=NOW)
         conn.commit()
+    # Each window that captured refreshes the stored counts (migration 0038), so a
+    # tick that runs windows for over an hour keeps them current.
+    refreshed: list[bool] = []
+    real_refresh = pipeline.refresh_counts
+
+    def spy(*, changed: bool = False) -> None:
+        refreshed.append(changed)
+        real_refresh(changed=changed)
+
+    monkeypatch.setattr(scheduled, "refresh_counts", spy)
     assert run_backfill(load_settings(), NOW).due
+    assert refreshed == [False] * 4
+    with connect() as conn:
+        stored = conn.execute("SELECT count(*) AS n FROM ops_counts").fetchone()
+        conn.rollback()
+    assert stored is not None and stored["n"] == 6
     with connect(role="ci_operator") as conn:
         again = [r for r in ops.recent_runs(conn) if r["kind"] == "capture"][:4]
     assert sum((r["counts"] or {}).get("new_version", 0) for r in again) == 0

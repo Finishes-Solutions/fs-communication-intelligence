@@ -7,6 +7,7 @@ each is on a large database is measured separately (docs/DATABASE.md).
 """
 
 import json
+import re
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -108,6 +109,8 @@ def ways(
         with monkeypatch.context() as patch:
             if mode != "paged":
                 patch.setattr(retrieval, "paged_reads", lambda conn: False)
+                # No paged read either way; this keeps the spy below to the paged mode.
+                patch.setattr(retrieval, "_paged_skipped", lambda auth, filters: True)
             if mode == "views":
                 patch.setattr(retrieval, "fast_reads", lambda conn: False)
                 patch.setattr(reports, "fast_reads", lambda conn: False)
@@ -125,12 +128,23 @@ class _Rows:
         return self.rows
 
 
-def spy_outcomes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Records how each paged listing ended: ``filled`` (the newest rows held the
-    page), ``read whole`` (fewer rows than asked for: the period was read whole)
-    or ``fallback`` (None: the caller reads as before 0039)."""
+def spy_outcomes(
+    monkeypatch: pytest.MonkeyPatch, reads: list[tuple[bool, int]] | None = None
+) -> list[str]:
+    """Records how each listing ended: ``skipped`` (no paged read: straight to the
+    0031 read), ``filled`` (the newest rows held the page), ``read whole`` (fewer
+    rows than asked for: the period was read whole) or ``fallback`` (None: the
+    caller reads as before 0039). ``reads`` gets, for each paged listing, whether
+    it had a mailbox filter and how many published_page reads it made."""
     seen: list[str] = []
     real = retrieval._listing_rows_paged
+    real_skip = retrieval._paged_skipped
+
+    def skip(auth: retrieval.Authorization, filters: retrieval.Filters) -> bool:
+        skipped = real_skip(auth, filters)
+        if skipped:
+            seen.append("skipped")
+        return skipped
 
     def spy(conn: Connection, *args: Any) -> list[dict[str, Any]] | None:
         groups: list[int] = []
@@ -144,6 +158,8 @@ def spy_outcomes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
                 return _Rows(rows)
 
         result = real(cast(Connection, Recording()), *args)
+        if reads is not None:
+            reads.append((bool(args[1].mailbox), len(groups)))
         need = args[4]
         if result is None:
             seen.append("fallback")
@@ -152,6 +168,7 @@ def spy_outcomes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         return result
 
     monkeypatch.setattr(retrieval, "_listing_rows_paged", spy)
+    monkeypatch.setattr(retrieval, "_paged_skipped", skip)
     return seen
 
 
@@ -218,7 +235,8 @@ def test_lists_match_the_views(
     reader: str,
     case: str,
 ) -> None:
-    outcomes = spy_outcomes(monkeypatch)
+    reads: list[tuple[bool, int]] = []
+    outcomes = spy_outcomes(monkeypatch, reads)
     got = ways(
         stack, monkeypatch, lambda c: retrieval.list_email(c, READERS[reader], LISTS[case], 100)
     )
@@ -226,9 +244,19 @@ def test_lists_match_the_views(
     assert in_order(fast) == in_order(got["set"])
     assert as_emails(fast) == as_emails(got["set"]) == as_emails(got["views"])
     assert fast["has_more"] == got["set"]["has_more"] == got["views"]["has_more"]
-    # 13 emails: the newest 303 asked for are the whole period, so the paged answer
-    # is the one compared (no fallback); nobody is refused before any read.
-    assert outcomes == ([] if reader == "nobody" else ["read whole"])
+    # Risk-only readers, own-mailbox readers, readers with reader limits and
+    # property or entity filters go straight to the 0031 read; nobody is refused
+    # before any read. Otherwise 13 emails: the newest 303 asked for are the whole
+    # period, so the paged answer is the one compared (no fallback), from one read
+    # (one per look-back period with a mailbox filter: 3, 30, 365 days, all).
+    skipped = reader in ("own", "risk_only", "limited") or case in ("a property", "an entity")
+    if reader == "nobody":
+        assert outcomes == [] and reads == []
+    elif skipped:
+        assert outcomes == ["skipped"] and reads == []
+    else:
+        assert outcomes == ["read whole"]
+        assert reads == ([(True, 4)] if case == "a mailbox" else [(False, 1)])
     if reader == "nobody":
         assert fast["results"] == []
     if reader == "limited" and case == "everything":
@@ -264,12 +292,14 @@ def test_lists_match_when_the_newest_rows_are_few(
     monkeypatch: pytest.MonkeyPatch,
     bounds: tuple[int, int],
 ) -> None:
-    """With pages of 2 to 4 emails every outcome happens on 13 emails (with 2 to 40,
-    a cut page is asked again for more), and the answer is still the one without
+    """With reads of 2 to 4 emails (or 2 to 40) every outcome happens on 13 emails,
+    each paged listing reads once (once per look-back period with a mailbox
+    filter) and never asks again for more, and the answer is still the one without
     0039 and the views'."""
     monkeypatch.setattr(retrieval, "PAGE_ROWS_MIN", bounds[0])
     monkeypatch.setattr(retrieval, "PAGE_ROWS_MAX", bounds[1])
-    outcomes = spy_outcomes(monkeypatch)
+    reads: list[tuple[bool, int]] = []
+    outcomes = spy_outcomes(monkeypatch, reads)
     for reader, who in READERS.items():
         for case, filters in LISTS.items():
             for limit in (1, 3, 100):
@@ -282,9 +312,11 @@ def test_lists_match_when_the_newest_rows_are_few(
                 assert in_order(got["paged"]) == in_order(got["set"]), where
                 assert as_emails(got["paged"]) == as_emails(got["views"]), where
                 assert got["paged"]["has_more"] == got["set"]["has_more"], where
-    # Up to 40 rows always reach all 13 emails, so only pages of 4 fall back.
-    expected = {"filled", "read whole"} | ({"fallback"} if bounds[1] < 13 else set())
-    assert set(outcomes) == expected, outcomes
+    # One try only: a read of 3 x need rows that is cut and does not fill the page
+    # falls back at once, also with up to 40 rows.
+    assert set(outcomes) == {"skipped", "filled", "read whole", "fallback"}, outcomes
+    assert {n for mailbox, n in reads if not mailbox} == {1}, reads
+    assert {n for mailbox, n in reads if mailbox} <= {1, 2, 3, 4}, reads
 
 
 def test_lists_page_with_an_offset(
@@ -556,11 +588,11 @@ def test_the_page_migration_applies_without_superuser(
     path = Path(__file__).resolve().parents[2] / "db/migrations/0039_published_page.sql"
     with stack(None) as conn:
         conn.execute("DROP FUNCTION published_page(timestamptz, timestamptz, text, text, integer)")
-        conn.execute("CREATE ROLE pytest_migrator_38 NOSUPERUSER")
-        conn.execute("GRANT USAGE, CREATE ON SCHEMA ci TO pytest_migrator_38")
-        conn.execute("GRANT SELECT ON ALL TABLES IN SCHEMA ci TO pytest_migrator_38")
-        conn.execute("GRANT ci_search TO pytest_migrator_38 WITH ADMIN OPTION")
-        conn.execute("SET ROLE pytest_migrator_38")
+        conn.execute("CREATE ROLE pytest_migrator_39 NOSUPERUSER")
+        conn.execute("GRANT USAGE, CREATE ON SCHEMA ci TO pytest_migrator_39")
+        conn.execute("GRANT SELECT ON ALL TABLES IN SCHEMA ci TO pytest_migrator_39")
+        conn.execute("GRANT ci_search TO pytest_migrator_39 WITH ADMIN OPTION")
+        conn.execute("SET ROLE pytest_migrator_39")
         conn.execute(path.read_text())
         conn.execute("SET ROLE ci_search")
         page = conn.execute(
@@ -568,3 +600,40 @@ def test_the_page_migration_applies_without_superuser(
         ).fetchone()
         conn.rollback()
     assert page is not None and page["n"] == 5
+
+
+def test_only_the_search_role_may_call_published_page(
+    stack: Callable[[AppRole | None], Connection],
+) -> None:
+    """EXECUTE on published_page is granted to ci_search only, not to PUBLIC."""
+    signature = "ci.published_page(timestamptz, timestamptz, text, text, integer)"
+    with stack(None) as conn:
+        allowed = {
+            role: conn.execute(
+                "SELECT has_function_privilege(%s, %s, 'EXECUTE') AS ok", (role, signature)
+            ).fetchone()
+            for role in ("ci_search", "ci_ingest", "ci_operator", "public")
+        }
+        conn.rollback()
+    assert {role: bool(row and row["ok"]) for role, row in allowed.items()} == {
+        "ci_search": True,
+        "ci_ingest": False,
+        "ci_operator": False,
+        "public": False,
+    }
+
+
+def test_the_python_row_cap_equals_the_function_cap(
+    stack: Callable[[AppRole | None], Connection],
+) -> None:
+    """PAGE_ROWS_MAX mirrors published_page's cap: a larger value would make a cut
+    read look like a period read whole."""
+    with stack(None) as conn:
+        row = conn.execute(
+            "SELECT prosrc FROM pg_proc WHERE oid ="
+            " 'ci.published_page(timestamptz, timestamptz, text, text, integer)'::regprocedure"
+        ).fetchone()
+        conn.rollback()
+    assert row is not None
+    cap = re.search(r"least\(greatest\(coalesce\(row_limit, 1\), 1\), (\d+)\)", row["prosrc"])
+    assert cap is not None and int(cap.group(1)) == retrieval.PAGE_ROWS_MAX

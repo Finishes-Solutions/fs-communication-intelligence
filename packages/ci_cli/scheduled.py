@@ -107,7 +107,15 @@ def run_capture(settings: Settings, now: datetime | None = None) -> dict[str, in
 
 
 def scheduler_tick(settings: Settings, now: datetime | None = None) -> ops.Decision:
-    """Run a capture if the schedule (or a "run now" request) says one is due."""
+    """Run a capture if the schedule (or a "run now" request) says one is due.
+    Every tick then refreshes the stored counts (migration 0038), which counts
+    only when a run finished since the last recount, at most every 5 minutes."""
+    decision = _scheduler_tick(settings, now)
+    refresh_counts()
+    return decision
+
+
+def _scheduler_tick(settings: Settings, now: datetime | None = None) -> ops.Decision:
     now = now or datetime.now(UTC)
     if not settings.capture_enabled:
         return ops.Decision(False, "CAPTURE_ENABLED app setting is false")
@@ -135,8 +143,6 @@ def scheduler_tick(settings: Settings, now: datetime | None = None) -> ops.Decis
         log.exception("capture failed")
     with connect(role="ci_ingest") as conn:
         ops.finish_run(conn, run_id, status, counts, error)
-    if status in ("succeeded", "partial"):
-        refresh_counts()  # the dashboard's stored counts (migration 0038)
     return decision
 
 
@@ -184,7 +190,9 @@ def run_backfill(
             ops.finish_backfill_window(conn, window, status, counts, error)
             conn.commit()
         if status in ("succeeded", "partial"):
-            refresh_counts()  # at most once per 5 minutes, however short the windows
+            # A tick may run windows for 100 minutes: the counts follow along,
+            # at most once per 5 minutes, however short the windows.
+            refresh_counts()
         if status == "refused":
             log.warning("backfill stopped: capture refused (%s); windows stay pending", error)
             break
@@ -193,6 +201,15 @@ def run_backfill(
 
 
 def run_processing(settings: Settings) -> dict[str, int] | None:
+    """One processing tick, then a refresh of the stored counts (migration 0038)
+    whether or not it did work: the counts follow the last run of a busy period
+    once they are 5 minutes old, and an idle refresh counts nothing."""
+    counts = _run_processing(settings)
+    refresh_counts()
+    return counts
+
+
+def _run_processing(settings: Settings) -> dict[str, int] | None:
     if not settings.processing_enabled:
         log.info("processing skipped: PROCESSING_ENABLED is false")
         return None
@@ -266,7 +283,5 @@ def run_processing(settings: Settings) -> dict[str, int] | None:
             ops.finish_run(conn, run_id, status, counts, error)
         else:  # nothing was queued: keep the history to runs that did work
             conn.execute("DELETE FROM ops_runs WHERE id = %s", (run_id,))
-    if counts:
-        refresh_counts()  # the dashboard's stored counts (migration 0038)
     log.info("processing counts=%s", counts)
     return counts

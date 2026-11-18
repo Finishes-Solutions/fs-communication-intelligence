@@ -329,9 +329,9 @@ Each search logs its timings to App Insights, with no query text: `search timing
 traces | where message startswith "search timings" | order by timestamp desc | take 50
 ```
 
-**Stored counts for the Overview and the coverage block (migration 0038, 2026-11-18).** The console Overview counted three whole tables on every load, and every search result's coverage block counted every email (cached 30 minutes per app instance, so the first search on a new instance paid for it). Migration 0038 adds a small table, `ops_counts`, that keeps those counts. The ingestion app recounts it after each capture or processing run that did work, at most once every 5 minutes. Nothing is written per email.
+**Stored counts for the Overview and the coverage block (migration 0038, 2026-11-18).** The console Overview counted three whole tables on every load, and every search result's coverage block counted every email (cached 30 minutes per app instance, so the first search on a new instance paid for it). Migration 0038 adds a small table, `ops_counts`, that keeps those counts. The ingestion app asks for a recount on every 5-minute tick of its two timers (and after each backfill window); the database recounts only when a capture or processing run has finished since the last recount and that recount is at least 5 minutes old, so the counts follow a run within about 5 to 10 minutes, the last run of a busy period included. A tick with nothing new counts nothing. A recount has 3 minutes and waits at most 5 seconds for a lock; never more than one a minute. Nothing is written per email.
 
-- **On the Overview:** Published Messages, the failed count, Message States, Labels, Attachments and Failures come from the stored counts, and a line under the heading says when they were taken. Mode, Waiting to Process, the email dates, mailboxes and Recent Runs are still live. A change made without a run (Requeue Failed, a mail rule) shows after the next run.
+- **On the Overview:** Published Messages, the failed count, Message States, Labels, Attachments and Failures come from the stored counts, and a line under the heading says when they were taken. Mode, Waiting to Process, the email dates, mailboxes and Recent Runs are still live. A change made without a run (Requeue Failed, a mail rule) shows after the next run that finishes.
 - **In search results:** the coverage block is read from the stored counts and read again after a minute. After a mode change the stored coverage is not used until the next recount.
 - **Before the first recount, or without the migration,** everything is counted live as before, and the Overview shows no line. The code can be deployed before or after the migration.
 
@@ -341,23 +341,23 @@ Apply it signed in as `svc_automation@` (seconds; it only creates the table):
 cd ~/fs-communication-intelligence && git pull && make azure-migrate AZ_PSQL=psql
 ```
 
-The counts appear after the next run that did work. To fill them at once, in `psql` on the database as the migrating login:
+The counts appear on the first tick after the migration (the table is empty, so the first call always counts). To fill them at once, in `psql` on the database as the migrating login:
 
 ```sql
-SELECT ci.refresh_ops_counts('0');
+SELECT ci.refresh_ops_counts(changed => true);
 SELECT name, refreshed_at FROM ci.ops_counts;
 ```
 
-The first line answers `t` and the second lists six rows. A recount that fails never fails the run: the ingestion log has `counts not refreshed: <error type>` and the old counts stay.
+The first line answers `t` and the second lists six rows. Later the same line recounts only when the counts are at least a minute old (`changed => true` skips the check for a finished run, nothing else); it answers `f` otherwise. A recount that fails never fails the run: the ingestion log has `counts not refreshed: <error type>` and the old counts stay.
 
 Tested locally on the synthetic fixtures only. Not verified in Azure:
 
-- **How long a recount takes on the real data.** It runs the same six counts the pages ran, once per run instead of once per load; the planning estimate is 8 to 10 seconds added to a run that did work, which is a guess until measured.
-- **That the migrating login can read the six counting views.** The recount runs as the login that applied the migration. Locally a login with no superuser and read access to the schema is enough. If the `SELECT ci.refresh_ops_counts('0');` above fails with permission denied, the views belong to another login: ask before changing any grant.
+- **How long a recount takes on the real data.** It runs the same six counts the pages ran, at most once per 5 minutes while runs keep finishing instead of once per load; the planning estimate is 8 to 10 seconds added to the tick that recounts, which is a guess until measured. An idle tick only checks `ops_runs` for a finished run.
+- **That the migrating login can read the six counting views.** The recount runs as the login that applied the migration. Locally a login with no superuser and read access to the schema is enough. If the `SELECT ci.refresh_ops_counts(changed => true);` above fails with permission denied, the views belong to another login: ask before changing any grant.
 
 **A list page reads about a page of emails (migration 0039, 2026-11-18).** Since 0031 a list (`list_email`, the console's Messages, the action items and risks of `list_actionable`) read every published email of its period and then kept the newest the reader may see. With no period, that was every email, for page one as for page ten. Migration 0039 adds `ci.published_page`: it hands back only the newest emails, 200 for a normal page (three times the page, at least 200, at most 20,000). Who may read what is still checked in the same database statement, before anything leaves the database, exactly as before. Page N costs the emails up to that page, not the whole period.
 
-When the newest emails do not fill the reader's page, the list asks once for ten times as many, and then reads the old way. That happens for narrow lists: a rare label, property or entity filter, readers who see only their own mailbox or only risks, and one person's action items. They cost what they cost today (Cody, 2026-11-18: ship this, measure which narrow lists people use before doing more).
+Some lists skip this and read the old way from the start, at exactly today's cost: readers who see only risks, readers whose only access is their own mailbox, readers with reader limits, and lists filtered by property or entity. Every other list makes one read of the newest `max(200, 3 x need)` emails (with a mailbox filter and no start date, one per look-back period: 3, 30 and 365 days, then all), and when that does not fill the page it reads the old way. So a narrow list (a rare label, one person's action items) costs today's cost plus at most one read of `max(200, 3 x need)` rows, and the skipped cases cost exactly today's (Cody, 2026-11-18: ship this, measure which narrow lists people use before doing more).
 
 Apply it signed in as `svc_automation@` (seconds; it only adds a function):
 
@@ -563,7 +563,7 @@ It needs database migration 0033 (the link signing key, made inside the database
 
 A web page at `https://func-fs-ci-adm-dev-1026.azurewebsites.net/` for console admins (you, for now):
 
-- **Overview:** mode, schedule, backlog, message states and reasons, labels, attachment extraction, failures, and recent runs. Also **Requeue Failed**. Once migration 0038 is applied, the published and failed counts and the charts are as of the last capture or processing run, and a line under the heading gives the time (see Search speed, "Stored counts").
+- **Overview:** mode, schedule, backlog, message states and reasons, labels, attachment extraction, failures, and recent runs. Also **Requeue Failed**. Once migration 0038 is applied, the published and failed counts and the charts are as of the last recount, within about 10 minutes of the last capture or processing run, and a line under the heading gives the time (see Search speed, "Stored counts").
 - **Schedule & Runs:** how often capture runs, its look-back, active hours, weekdays only, processing on/off, and **Run Capture Now** (look back up to 93 days). Below that, every run with its counts.
 - **Connections** (under Lab): how to connect Claude, ChatGPT and Copilot Studio, with the MCP URL, sign-in URLs, scope and each platform's client ID ready to copy (§10). Needs `scripts/azure/7-connections-page.sh` once.
 - **Mailboxes:** filter, approve or unapprove, exclude or un-exclude (with a reason), approve all enrolled, change mode, and exclude a person or domain in every mailbox.

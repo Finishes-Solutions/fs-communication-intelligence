@@ -12,8 +12,9 @@
 -- ci_search can already read through the published_* views; authorization and the
 -- other filters are applied by the caller (ci_retrieval.search._AUTH, as a WHERE
 -- in the same statement) before anything leaves the database. When the newest
--- rows do not fill the reader's page, the caller asks for more and then falls
--- back to the 0031 read (ci_retrieval.search._listing_rows_paged).
+-- rows do not fill the reader's page, the caller falls back to the 0031 read
+-- without asking again (ci_retrieval.search._listing_rows_paged); lists the
+-- newest rows rarely fill do not call it (search._paged_skipped).
 --
 -- The ids are picked with the same joins published_window uses (an email with its
 -- message and mailbox), so every id picked comes back: a caller that gets fewer
@@ -34,12 +35,13 @@ RETURNS TABLE (communication_id uuid, corpus_id uuid, occurred_at timestamptz, t
                risk_impact text, risk_likelihood text, risk_reason text,
                conversation_id text)
 LANGUAGE plpgsql STABLE SECURITY DEFINER
-SET search_path = ci, public
+SET search_path = ci, public, pg_temp
 -- Planned for the values given, as published_window (0031).
 SET plan_cache_mode = force_custom_plan
 AS $$
 #variable_conflict use_column
 DECLARE
+    -- ci_retrieval.search.PAGE_ROWS_MAX mirrors this cap (test_fast_reads checks).
     n integer := least(greatest(coalesce(row_limit, 1), 1), 20000);
     picked uuid[];
 BEGIN

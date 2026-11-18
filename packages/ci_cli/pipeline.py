@@ -166,13 +166,15 @@ def capture_profile(settings: Settings) -> dict[str, Any]:
     }
 
 
-def refresh_counts() -> None:
-    """Recount the stored dashboard and coverage counts (migration 0038) after a
-    capture or processing run that did work, on a connection of its own. It never
-    fails the run: the database skips it when the counts are under 5 minutes old."""
+def refresh_counts(*, changed: bool = False) -> None:
+    """Recount the stored dashboard and coverage counts (migration 0038), on a
+    connection of its own. Called on every scheduler and processing tick: the
+    database counts only when a run finished since the last recount (or
+    ``changed``: the CLI's work records no run) and that recount is at least 5
+    minutes old. It never fails the run."""
     try:
         with connect(role="ci_ingest") as conn:
-            ops.refresh_counts(conn)
+            ops.refresh_counts(conn, changed=changed)
     except Exception as exc:  # e.g. the connection: the run's result stands
         log.warning("counts not refreshed: %s", type(exc).__name__)
 
@@ -187,7 +189,7 @@ def capture(args: argparse.Namespace) -> None:
         profile=capture_profile(settings),
         workers=args.workers,
     )
-    refresh_counts()
+    refresh_counts(changed=True)  # the CLI records no run
     total: Counter[str] = Counter()
     for r in results:
         total.update(r.counts)
@@ -269,7 +271,7 @@ def process(args: argparse.Namespace) -> None:
             with connect(role="ci_ingest") as conn:
                 record_usage(conn, configured.meter.drain(), source="cli")
                 conn.commit()
-    refresh_counts()
+    refresh_counts(changed=True)  # the CLI records no run
     print(f"processed: {dict(sorted(counts.items()))}")
 
 

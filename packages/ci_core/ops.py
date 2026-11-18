@@ -492,19 +492,32 @@ def recent_runs(conn: Connection, limit: int = 50, offset: int = 0) -> list[dict
 COUNT_NAMES = frozenset({"versions", "failures", "labels", "extraction", "originals", "coverage"})
 
 
-def refresh_counts(conn: Connection) -> bool:
+# A recount runs the six counting views once; past this it is stopped and the
+# old counts stay (the run that called it is not held up longer).
+REFRESH_TIMEOUT = "3min"
+
+
+def refresh_counts(conn: Connection, *, changed: bool = False) -> bool:
     """Recount the stored dashboard and coverage counts (``ci.refresh_ops_counts``,
-    ingestion role). True when it recounted; False when the counts are fresh enough,
-    another session is recounting, the database has no migration 0038, or it failed.
-    It never fails the run that calls it: a failure is logged by type and undone."""
+    ingestion role). It recounts when a run has finished since the last recount
+    (``ops_runs``), or when ``changed`` says the caller did work that records no
+    run (the CLI), and the last recount is at least 5 minutes old; otherwise it
+    counts nothing, so calling it on every tick is cheap. True when it recounted;
+    False when the counts are fresh enough, another session is recounting, the
+    database has no migration 0038, or it failed. It never fails the run that
+    calls it: a failure is logged by type and undone."""
     try:
         with conn.transaction():
             ready = conn.execute(
-                "SELECT to_regprocedure('ci.refresh_ops_counts(interval)') IS NOT NULL AS ready"
+                "SELECT to_regprocedure('ci.refresh_ops_counts(interval, boolean)') IS NOT NULL"
+                " AS ready"
             ).fetchone()
             if not ready or not ready["ready"]:
                 return False
-            done = conn.execute("SELECT refresh_ops_counts() AS done").fetchone()
+            conn.execute(f"SET LOCAL statement_timeout = '{REFRESH_TIMEOUT}'")
+            done = conn.execute(
+                "SELECT refresh_ops_counts(changed => %s) AS done", (changed,)
+            ).fetchone()
             return bool(done and done["done"])
     except psycopg.Error as exc:
         log.warning("counts not refreshed: %s", type(exc).__name__)

@@ -1042,11 +1042,29 @@ def _listing_rows(
 # published_page returns the newest row_limit published emails of the period;
 # the listing applies _AUTH and the filters to those in the same statement. A
 # page that the newest rows fill costs about those rows instead of the whole
-# period. When they do not fill it (a rare label, property or entity, an
-# own-mailbox or risk-only reader, one person's action items), more rows are
-# asked for once, then the 0031 read is used as before (Cody, 2026-11-18).
+# period. Lists that are narrow from the start (risk-only and own-mailbox
+# readers, a property or entity filter) and readers with reader limits skip it
+# and cost exactly today's (_paged_skipped). Any other list makes one paged read
+# (one per look-back period with a mailbox filter), then the 0031 read is used
+# as before: a narrow list costs today's plus at most one read of
+# max(200, 3 x need) rows (Cody, 2026-11-18).
 PAGE_ROWS_MIN = 200
+# published_page's own cap (0039); a read asking more gets this many. Must equal
+# the SQL value (tests/db/test_fast_reads.py checks).
 PAGE_ROWS_MAX = 20_000
+
+
+def _paged_skipped(auth: Authorization, filters: Filters) -> bool:
+    """True for lists that go straight to the 0031 read, with no paged read first.
+    Risk-only readers, readers whose only access is their own mailbox, and
+    property or entity filters: the newest emails rarely fill them. Readers with
+    reader limits always use the set-based read, whatever the filters."""
+    return (
+        auth.risk_only
+        or not auth.corpora
+        or auth.restricted_reader is not None
+        or bool(filters.property or filters.entity)
+    )
 
 
 def paged_reads(conn: Connection) -> bool:
@@ -1092,29 +1110,25 @@ def _listing_rows_paged(
     # The newest rows cost the same whatever the period, so the whole period is
     # asked for at once: the first rows of a shorter period are the same rows.
     # Only a mailbox makes published_page read that mailbox's whole period first,
-    # so there the growing periods of _listing_rows are kept.
+    # so there the growing periods of _listing_rows are kept, one read each.
     narrow = filters.sender or filters.property or filters.entity
     spans: list[int | None] = [None]
     if filters.since is None and filters.mailbox and not narrow:
         spans = [*_LOOK_BACK_DAYS, None]
     end = filters.until or datetime.now(UTC)
-    first = min(max(PAGE_ROWS_MIN, 3 * need), PAGE_ROWS_MAX)
-    row_limits = sorted({first, min(first * 10, PAGE_ROWS_MAX)})
+    row_limit = min(max(PAGE_ROWS_MIN, 3 * need), PAGE_ROWS_MAX)
     for span in spans:
         since = filters.since if span is None else end - timedelta(days=span)
-        rows: list[dict[str, Any]] = []
-        for row_limit in row_limits:
-            found = conn.execute(sql, params | {"since": since, "row_limit": row_limit}).fetchall()
-            scanned = found[0]["scanned"] if found else 0
-            rows = [r for r in found if r["communication_id"] is not None]
-            if len({_copy_group(r) for r in rows}) >= need:
-                return rows
-            if scanned < row_limit:
-                break  # every email of the period was read
-        else:
-            return None  # the newest rows were cut and still do not fill the page
+        found = conn.execute(sql, params | {"since": since, "row_limit": row_limit}).fetchall()
+        scanned = found[0]["scanned"] if found else 0
+        rows = [r for r in found if r["communication_id"] is not None]
+        if len({_copy_group(r) for r in rows}) >= need:
+            return rows
+        if scanned >= row_limit:
+            return None  # the newest rows were cut and do not fill the page
         if span is None:
-            # _listing_rows keeps at most this many rows of the whole period.
+            # Every email of the period was read. _listing_rows keeps at most
+            # this many rows of the whole period.
             return rows[: max(500, need * 3)]
     return None
 
@@ -1145,7 +1159,8 @@ def _listing(
     index (published_labelled, 0021).
 
     With migration 0039 a list without ``ids`` or ``conversation`` first reads
-    only the newest emails (``_listing_rows_paged``). With migration 0031 the rows
+    only the newest emails (``_listing_rows_paged``), except the lists
+    ``_paged_skipped`` names. With migration 0031 the rows
     come from the set-based functions. Without it,
     from the views (``_listing_rows_views``): the answer is the same, more slowly,
     and at most the newest 500 rows are read."""
@@ -1154,7 +1169,12 @@ def _listing(
         return []
     if fast_reads(conn):
         paged = None
-        if ids is None and conversation is None and paged_reads(conn):
+        if (
+            ids is None
+            and conversation is None
+            and not _paged_skipped(auth, filters)
+            and paged_reads(conn)
+        ):
             paged = _listing_rows_paged(
                 conn, auth, filters, extra_where, extra, offset + limit, labels
             )
