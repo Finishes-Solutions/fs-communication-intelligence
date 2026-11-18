@@ -333,6 +333,32 @@ Other things that make a search slow:
 - **Processing running at full speed** competes with search for the embedding quota (a search waits at most 20 seconds) and for the database's CPU.
 - **The database tier:** `B2ms` is a burstable tier. Under long processing runs it can use up its CPU credits and slow down, and `B2s` would be slower. Keep `B2ms` or larger while mail is being processed and searched.
 
+### Load test: many agents at once
+
+`scripts/loadtest/mcp_load.py` (2026-11-18) simulates many AI agents calling the MCP endpoint at once, with a realistic mix of read-only tools (searches and lists most, then one email, action items, counts, risks, files, knowledge), each agent waiting a random "thinking" time between calls. At the end it prints, per tool, how many calls succeeded, failed or were stopped as too slow (40 s), and how long they took (median, 95th and 99th percentile, slowest). It prints no email text. Every call is a real, audited call by the signed-in account on the live database, so start small at a quiet time.
+
+Once, signed in as `svc_automation@`, let the Azure CLI get a token for the search API (it pre-authorizes the CLI for `Communications.Search`; `REMOVE=1` undoes it):
+
+```bash
+bash scripts/azure/12-loadtest-cli-access.sh
+```
+
+Then, from the repository on the Mac, a small run first:
+
+```bash
+uv run python scripts/loadtest/mcp_load.py --agents 10 --minutes 3
+```
+
+and, if that is clean, the full one (more than 20 agents needs `--yes`):
+
+```bash
+uv run python scripts/loadtest/mcp_load.py --agents 100 --minutes 5 --yes
+```
+
+`--think 10` (default) is about one call per agent every 10 seconds; `--think 0` is every agent calling back to back, a worst case. `--csv calls.csv` keeps every call's time, tool, outcome and duration. While it runs, watch the database with the usage check (CPU, connections, IOPS) or in the portal. Medians and p95 of a few seconds with no errors mean the setup holds at that load; `too_slow`, `http_429`/`http_503` or network errors mean the app or the database ran out of capacity. The first calls after a quiet period include the search app's cold start.
+
+**PgBouncer is not used yet.** Azure's built-in PgBouncer pools in transaction mode, where session settings do not carry over between transactions; the apps set the database role (`SET ROLE`), timeouts and `search_path` per connection, so pointing them at port 6432 would lose those settings or let one request run with another's role. Making the connection code transaction-safe comes first, and only if the load test shows connections are the limit. The server's connection limit (`max_connections`) was fixed when the server was created and does not change with a resize.
+
 ### Processing speed and Azure OpenAI rate limits
 
 `PROCESSING_WORKERS` (app setting) is how many emails are processed at once, and `PROCESSING_MINUTES` is how long each 5-minute timer run may work. The embedding deployment's tokens-per-minute quota sets the real ceiling: Azure checks it over windows of about 10 seconds, so a few emails with long attachments sent at once get HTTP 429 even when the minute's total would fit.
