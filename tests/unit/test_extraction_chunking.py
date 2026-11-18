@@ -136,3 +136,104 @@ def test_child_errors_are_reported_by_class_only() -> None:
     assert _error_class(trace) == "pypdf.errors.PdfReadError"
     assert _error_class(b"Weird: <html>\n") == "Weird"
     assert _error_class(b"a b c\n") == "unknown"
+
+
+# ----- ZIP archives (Matthew, 2026-11-18) ------------------------------------
+
+
+def zipped(files: dict[str, bytes], *, encrypted: tuple[str, ...] = ()) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, data in files.items():
+            z.writestr(name, data)
+    raw = bytearray(buf.getvalue())
+    for name in encrypted:  # set the "encrypted" flag in both headers of that entry
+        for signature, flag_at, name_at in ((b"PK\x03\x04", 6, 30), (b"PK\x01\x02", 8, 46)):
+            at = raw.find(signature)
+            while at != -1:
+                if raw[at + name_at : at + name_at + len(name)] == name.encode():
+                    raw[at + flag_at] |= 0x1
+                at = raw.find(signature, at + 4)
+    return bytes(raw)
+
+
+def test_zip_kind_comes_from_bytes_and_the_name() -> None:
+    archive = zipped({"a.txt": b"hello"})
+    assert detect_kind("plans.zip", None, archive) == "zip"
+    assert detect_kind("plans", "application/x-zip-compressed", archive) == "zip"
+    assert detect_kind("tool.jar", "application/java-archive", archive) is None
+    assert detect_kind("fake.zip", "application/zip", b"not a zip") is None
+
+
+def test_zip_files_are_read_and_unreadable_ones_named() -> None:
+    archive = zipped(
+        {
+            "Invoices/Invoice-4471.pdf": fixture_pdf(),
+            "scope.docx": docx(["Change order 7 for Lot 4"]),
+            "notes.txt": b"Draw request due Friday",
+            "Drawings/site.dwg": b"\x00\x01binary",
+            "secret.txt": b"locked",
+            "Empty/": b"",
+        },
+        encrypted=("secret.txt",),
+    )
+    result = extract("Package.zip", "application/zip", archive, max_bytes=50 * MB)
+    assert result.status is ExtractionStatus.EXTRACTED and result.kind == "zip"
+    text = result.text
+    assert "[file Invoices/Invoice-4471.pdf]" in text and "$18,250.00" in text
+    assert "[file scope.docx]" in text and "Change order 7 for Lot 4" in text
+    assert "[file notes.txt]" in text and "Draw request due Friday" in text
+    assert "[file Drawings/site.dwg: not read, unsupported type]" in text
+    assert "[file secret.txt: not read, encrypted]" in text and "locked" not in text
+
+
+def test_nested_zips_are_read_ten_levels_deep_and_no_further() -> None:
+    def nest(levels: int) -> bytes:
+        archive = zipped({"deepest.txt": f"level {levels} text".encode()})
+        for level in range(levels - 1, 0, -1):
+            archive = zipped({f"level{level + 1}.zip": archive, f"note{level}.txt": b"x"})
+        return archive
+
+    ten = extract("ten.zip", None, nest(10), max_bytes=50 * MB)
+    assert ten.status is ExtractionStatus.EXTRACTED and "level 10 text" in ten.text
+    assert "[archive level2.zip]" in ten.text
+    eleven = extract("eleven.zip", None, nest(11), max_bytes=50 * MB)
+    assert "level 11 text" not in eleven.text
+    assert "level11.zip: not read, nested too deep]" in eleven.text
+    assert "[file note1.txt]" in eleven.text  # everything above the limit is still read
+
+
+def test_zip_bomb_member_is_stopped_by_bytes_actually_read() -> None:
+    # 60 MB of zeros compresses to about 60 KB: over the per-file limit when decompressed.
+    archive = zipped({"bomb.txt": b"\x00" * (60 * MB), "ok.txt": b"still read"})
+    assert len(archive) < MB
+    result = extract("bomb.zip", None, archive, max_bytes=50 * MB)
+    assert "[file bomb.txt: not read, too large]" in result.text
+    assert "still read" in result.text
+
+
+def test_zip_total_budget_and_file_count_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ci_processing import extraction
+
+    monkeypatch.setattr(extraction, "ZIP_MAX_TOTAL_BYTES", 1000)
+    monkeypatch.setattr(extraction, "ZIP_MAX_MEMBER_BYTES", 600)
+    files = {f"f{i}.txt": f"file {i} ".encode() * 40 for i in range(5)}  # about 300 bytes each
+    result = extract("many.zip", None, zipped(files), max_bytes=MB)
+    assert "file 0" in result.text and "file 2" in result.text
+    assert "archive size limit reached" in result.text and "file 4 " not in result.text
+
+    monkeypatch.setattr(extraction, "ZIP_MAX_TOTAL_BYTES", 10 * MB)
+    monkeypatch.setattr(extraction, "ZIP_MAX_MEMBERS", 3)
+    counted = extract("many.zip", None, zipped(files), max_bytes=MB)
+    assert "file 2" in counted.text and "file 3 " not in counted.text
+    assert "file count limit reached" in counted.text
+
+
+def test_empty_and_damaged_zips() -> None:
+    empty = io.BytesIO()
+    zipfile.ZipFile(empty, "w").close()
+    assert extract("empty.zip", None, empty.getvalue(), max_bytes=MB).status is (
+        ExtractionStatus.NO_TEXT
+    )
+    damaged = extract("damaged.zip", None, b"PK\x03\x04garbage", max_bytes=MB)
+    assert damaged.status is ExtractionStatus.FAILED
