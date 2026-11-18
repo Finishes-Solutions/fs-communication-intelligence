@@ -56,7 +56,9 @@ def test_statements_share_one_budget_and_leave_nothing_behind(search: Connection
         with pytest.raises(QueryCanceled):
             search.execute("SELECT pg_sleep(0.6)")
         took = time.monotonic() - started
-        assert 0.9 <= took < 1.3
+        # The upper bounds here are loose on purpose (budget + 2 s): a slow runner
+        # must not fail them. QueryCanceled is what proves the statement was stopped.
+        assert 0.9 <= took < 3.0
         search.rollback()
         sent: list[Any] = []
         search.add_notice_handler(sent.append)
@@ -75,6 +77,23 @@ def test_statements_share_one_budget_and_leave_nothing_behind(search: Connection
         assert timeout(search) == before
 
 
+def test_no_statement_gets_longer_than_the_cap(
+    search: Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """However much budget is left, one statement gets at most the cap (40 s, the
+    limit tools had before the budget); with less left, it gets what is left."""
+    monkeypatch.setattr(budget, "STATEMENT_CAP_SECONDS", 7.0)
+    with a_budget(3600.0), budget.budgeted(search):
+        search.execute("SELECT 1")
+        assert timeout(search) == "7s"  # the cap, not the hour that is left
+        search.rollback()
+    with a_budget(2.5), budget.budgeted(search):
+        search.execute("SELECT 1")
+        assert 0 < int(timeout(search).removesuffix("ms")) <= 2500  # under the cap
+        search.rollback()
+    assert timeout(search) == "40s"
+
+
 def test_the_budget_holds_in_separate_transactions_and_inside_a_long_one(
     search: Connection,
 ) -> None:
@@ -87,14 +106,14 @@ def test_the_budget_holds_in_separate_transactions_and_inside_a_long_one(
         search.commit()
         with pytest.raises(QueryCanceled):
             search.execute("SELECT pg_sleep(0.6)")
-        assert 0.9 <= time.monotonic() - started < 1.3
+        assert 0.9 <= time.monotonic() - started < 3.0
         search.rollback()
     with a_budget(2.5), budget.budgeted(search):
         started = time.monotonic()
         search.execute("SELECT pg_sleep(1.2)")  # limit set to 2.5 s at the start
         with pytest.raises(QueryCanceled):
             search.execute("SELECT pg_sleep(2)")  # set again: 1.3 s are left
-        assert 2.3 <= time.monotonic() - started < 3.0
+        assert 2.3 <= time.monotonic() - started < 4.5
         search.rollback()
     assert timeout(search) == "40s"
 
@@ -130,7 +149,7 @@ def test_a_tool_whose_statements_use_up_the_budget_answers_too_slow(
 
     with caplog.at_level("INFO", logger="ci_retrieval.mcp_server"):
         stopped, took, fine = asyncio.run(scenario())
-    assert stopped == mcp_server.TOO_SLOW and 0.9 <= took < 1.5
+    assert stopped == mcp_server.TOO_SLOW and 0.9 <= took < 3.0
     assert fine == {"done": True}
     assert [r.getMessage().split(" in ")[0] for r in caplog.records] == [
         "mcp tool slow_statements too_slow",

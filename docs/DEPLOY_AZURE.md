@@ -397,7 +397,9 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS policy_decisions_version ON ci.policy_de
 SELECT indisvalid FROM pg_index WHERE indexrelid = 'ci.policy_decisions_version'::regclass;
 ```
 
-  The second line must answer `t`. If it answers `f`, the build was interrupted: run `DROP INDEX CONCURRENTLY ci.policy_decisions_version;` and build it again. Then apply the migration as above; it finds the index and changes nothing (migration 0027 was applied the same way).
+  The second line must answer `t`. If it answers `f`, the build was interrupted: run `DROP INDEX CONCURRENTLY ci.policy_decisions_version;` and build it again. Then apply the migration as above; it finds the index and changes nothing (migration 0027 was applied the same way). The migration checks this itself: if an index of that name is invalid, or is not on `(version_id, check_name)`, it stops with an error and is not recorded as applied (tested locally).
+
+Apply 0035 to the dev database only after it is merged, from a checkout that has it: `db/migrate.py` refuses to run from a checkout that lacks a migration the database already has.
 
 If the migration cannot get its lock within 30 seconds, because a processing transaction is still open, it stops with a lock timeout error and changes nothing. Run it again once processing is off. Not measured: how long the build takes on 2.2 million rows, and how much faster processing gets. To check afterwards that the full reads have stopped, run this twice, some minutes apart while mail is processed; `seq_scan` should stay the same and `idx_scan` should rise:
 

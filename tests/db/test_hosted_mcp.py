@@ -295,10 +295,13 @@ def test_served_through_the_azure_functions_adapter(app: Any) -> None:
 
     async def scenario() -> tuple[int, int, dict[str, Any]]:
         assert await middleware.notify_startup()  # type: ignore[no-untyped-call]
-        anonymous = await send(INIT, None)
-        signed = await send(INIT, token())
-        tools = await send(rpc("tools/list", {}, 2), token())
-        return anonymous.status_code, signed.status_code, json.loads(tools.get_body())
+        try:
+            anonymous = await send(INIT, None)
+            signed = await send(INIT, token())
+            tools = await send(rpc("tools/list", {}, 2), token())
+            return anonymous.status_code, signed.status_code, json.loads(tools.get_body())
+        finally:  # end the app's lifespan before the loop closes (no shutdown error logged)
+            await middleware.notify_shutdown()  # type: ignore[no-untyped-call]
 
     anonymous, signed, tools = asyncio.run(scenario())
     assert (anonymous, signed) == (401, 200)
@@ -687,10 +690,10 @@ def test_a_tool_call_answers_within_its_time_limits(
     stalling = build_http_app(settings, FakeEmbedder(), verifier=VERIFIER, connector=stalled)
     monkeypatch.setattr(mcp_server, "TOOL_CEILING_SECONDS", 0.2)
     with TestClient(stalling, base_url=BASE) as client:
-        started = time.monotonic()
+        # The connector raises after 0.6 s, which would be an error answer: too_slow
+        # can only come from the ceiling, so no clock is read here.
         answer = call_tool(client, token(), "list_email", {"limit": 5})
         assert answer == mcp_server.TOO_SLOW and answer["error"] == "too_slow"
-        assert time.monotonic() - started < 0.55  # before the connector gave up
         time.sleep(0.6)  # let the abandoned thread end before the app closes
     monkeypatch.setattr(mcp_server, "TOOL_CEILING_SECONDS", 55.0)
 
@@ -739,11 +742,14 @@ def test_lines_logged_inside_a_tool_belong_to_the_azure_invocation(app: Any) -> 
 
     async def scenario() -> tuple[dict[str, Any], tuple[int, Any]]:
         assert await middleware.notify_startup()  # type: ignore[no-untyped-call]
-        await send(INIT)
-        call = rpc("tools/call", {"name": "search_email", "arguments": {"query": "invoice"}}, 2)
-        answer = await send(call)
-        assert answer.status_code == 200
-        return json.loads(answer.get_body()), await anyio.to_thread.run_sync(after)
+        try:
+            await send(INIT)
+            call = rpc("tools/call", {"name": "search_email", "arguments": {"query": "invoice"}}, 2)
+            answer = await send(call)
+            assert answer.status_code == 200
+            return json.loads(answer.get_body()), await anyio.to_thread.run_sync(after)
+        finally:  # end the app's lifespan before the loop closes (no shutdown error logged)
+            await middleware.notify_shutdown()  # type: ignore[no-untyped-call]
 
     handler = AtEmit(level=logging.INFO)
     loggers = [logging.getLogger(f"ci_retrieval.{name}") for name in ("search", "mcp_server")]

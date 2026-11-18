@@ -7,6 +7,7 @@ from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
+import psycopg
 import pytest
 
 from ci_cli.seed import seed
@@ -197,3 +198,62 @@ def test_the_per_version_lookup_reads_an_index(db: tuple[str, Spy]) -> None:
     migrate.psql(database, "--single-transaction", "-f", "-", stdin=migration.path.read_text())
     with connect(dbname=database) as conn:
         assert index_columns(conn) == [["version_id", "check_name"]]
+
+
+def test_the_migration_refuses_a_wrong_or_invalid_index_of_that_name(
+    db: tuple[str, Spy],
+) -> None:
+    """Migration 0035 is written to be a no-op over an index built by hand. An
+    interrupted CREATE INDEX CONCURRENTLY leaves an invalid index under the same
+    name, and IF NOT EXISTS would accept it: the migration must fail instead and
+    must not be recorded as applied."""
+    import migrate
+
+    database, _ = db
+    (migration,) = [m for m in migrate.discover() if m.version == "0035"]
+    text = migration.path.read_text()
+
+    def ledger(conn: Connection) -> int:
+        row = conn.execute(
+            "SELECT count(*) AS n FROM schema_migrations WHERE version = '0035'"
+        ).fetchone()
+        assert row is not None
+        return int(row["n"])
+
+    # An invalid index (what an interrupted concurrent build leaves), undone by
+    # the rollback.
+    with connect(dbname=database) as conn:
+        conn.execute(
+            "UPDATE pg_index SET indisvalid = false"
+            " WHERE indexrelid = 'ci.policy_decisions_version'::regclass"
+        )
+        with pytest.raises(psycopg.errors.RaiseException, match="invalid or is not on"):
+            conn.execute(text)
+        conn.rollback()
+
+    # The same name on other columns, through the runner: no ledger row.
+    try:
+        with connect(dbname=database) as conn:
+            conn.execute("DROP INDEX policy_decisions_version")
+            conn.execute("CREATE INDEX policy_decisions_version ON policy_decisions (check_name)")
+            conn.execute("DELETE FROM schema_migrations WHERE version = '0035'")
+            conn.commit()
+        with pytest.raises(migrate.MigrationError, match="invalid or is not on"):
+            migrate.apply(database)
+        with connect(dbname=database) as conn:
+            assert ledger(conn) == 0
+            conn.rollback()
+    finally:
+        # Put the database back as the other tests expect it.
+        with connect(dbname=database) as conn:
+            conn.execute("DROP INDEX IF EXISTS policy_decisions_version")
+            conn.execute("DELETE FROM schema_migrations WHERE version = '0035'")
+            conn.commit()
+        assert [m.version for m in migrate.apply(database)] == ["0035"]
+    with connect(dbname=database) as conn:
+        assert ledger(conn) == 1
+        row = conn.execute(
+            "SELECT pg_get_indexdef('ci.policy_decisions_version'::regclass) AS d"
+        ).fetchone()
+        conn.rollback()
+    assert row is not None and "(version_id, check_name)" in row["d"]

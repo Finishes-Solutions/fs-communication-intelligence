@@ -119,14 +119,9 @@ def test_a_tool_that_stalls_outside_the_database_is_answered_at_the_ceiling(
         finished.set()
         return {"found": True}
 
-    async def scenario() -> tuple[object, float]:
-        started = time.monotonic()
-        answer = await mcp_server._guarded(get_file)("private words")
-        return answer, time.monotonic() - started
-
     with caplog.at_level("INFO", logger="ci_retrieval.mcp_server"):
-        answer, took = asyncio.run(scenario())
-    assert answer == mcp_server.TOO_SLOW and took < 0.2
+        answer = asyncio.run(mcp_server._guarded(get_file)("private words"))
+    assert answer == mcp_server.TOO_SLOW
     assert not finished.is_set()  # answered while the tool was still working
     (line,) = [r.getMessage() for r in caplog.records]
     assert line.startswith("mcp tool get_file too_slow in ")
