@@ -639,6 +639,91 @@ def test_missing_originals_are_backfilled(database_ready: str, files: DirectoryS
     assert all(files.get(r["sha256"]) is not None for r in cleared if r["sha256"])
 
 
+def test_original_downloads_that_fail_are_not_retried_forever(
+    database_ready: str, files: DirectoryStore
+) -> None:
+    """A deleted message's file is tried once; a throttled one backs off (migration 0036).
+    Before, both were tried again on every 5-minute run."""
+    from ci_email.graph import Throttled
+
+    graph = FixtureGraphClient.from_directory()
+    watched = ("Invoice-4471.pdf", "CO-007-BuildingC.pdf")
+
+    class Flaky:  # throttles one attachment, serves the rest from the fixtures
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(graph, name)
+
+        def get_attachment_bytes(self, mailbox: str, message: str, attachment: str) -> bytes:
+            self.calls.append(attachment)
+            if attachment == "att-0201":
+                raise Throttled(30)
+            return graph.get_attachment_bytes(mailbox, message, attachment)
+
+    def run(source: Any) -> Any:
+        backends = Backends(
+            FakeScreener(), FakeClassifier(), FakeEmbedder(), graph=source,
+            extraction_enabled=True, originals=files,
+        )  # fmt: skip
+        return store_missing_originals(
+            lambda: connect(dbname=database_ready, role="ci_ingest"), backends, limit=500
+        )
+
+    def reset(conn: Connection) -> None:
+        conn.execute(
+            "UPDATE email_attachments SET original_attempts = 0, original_failed_at = NULL,"
+            " original_fail_reason = NULL, native_attachment_id = CASE native_attachment_id"
+            "  WHEN 'att-gone' THEN 'att-0101' ELSE native_attachment_id END"
+            " WHERE name = ANY(%s)",
+            (list(watched),),
+        )
+
+    run(graph)  # anything else waiting is stored first, so only these two are tried
+    with connect(dbname=database_ready) as conn:
+        conn.execute(
+            "UPDATE email_attachments SET original_stored_at = NULL,"
+            " native_attachment_id = CASE name WHEN 'Invoice-4471.pdf' THEN 'att-gone'"
+            "  ELSE native_attachment_id END"  # the message is gone from the mailbox
+            " WHERE name = ANY(%s)",
+            (list(watched),),
+        )
+        conn.commit()
+    flaky = Flaky()
+    try:
+        first = run(flaky)
+        assert first["original_download_failed:ItemNotFound"] == 1
+        assert first["original_download_failed:Throttled"] == 1
+        assert run(flaky)["original_download_failed"] == 0  # neither is tried again at once
+        with connect(dbname=database_ready) as conn:
+            rows = {
+                r["name"]: r
+                for r in conn.execute(
+                    "SELECT name, original_attempts, original_fail_reason FROM email_attachments"
+                    " WHERE name = ANY(%s)",
+                    (list(watched),),
+                ).fetchall()
+            }
+            assert rows["Invoice-4471.pdf"]["original_fail_reason"] == "ItemNotFound"
+            assert rows["CO-007-BuildingC.pdf"]["original_attempts"] == 1
+            # Three hours later the throttled file is due again; the missing one never is.
+            conn.execute(
+                "UPDATE email_attachments SET original_failed_at = now() - interval '3 hours'"
+                " WHERE name = ANY(%s)",
+                (list(watched),),
+            )
+            conn.commit()
+        flaky.calls.clear()
+        again = run(flaky)
+        assert flaky.calls == ["att-0201"] and again["original_download_failed:Throttled"] == 1
+    finally:  # put the shared fixtures back for the tests that follow
+        with connect(dbname=database_ready) as conn:
+            reset(conn)
+            conn.commit()
+        run(graph)
+
+
 def test_files_over_the_limit_when_processed_are_not_backfilled_later(
     database_ready: str, files: DirectoryStore
 ) -> None:

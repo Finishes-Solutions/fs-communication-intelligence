@@ -217,6 +217,29 @@ def _store_original(
     return True
 
 
+# Original files that cannot be downloaded (migration 0036): a permanent reason
+# stops the retries; any other is retried after 2, 4, 8 and 16 hours, then left.
+PERMANENT_DOWNLOAD_FAILURES = ("ItemNotFound", "MailboxAccessDenied", "MailboxNotFound")
+MAX_ORIGINAL_ATTEMPTS = 5
+_PERMANENT_SQL = ", ".join(f"'{r}'" for r in PERMANENT_DOWNLOAD_FAILURES)
+_RETRY_DUE = (
+    f" AND a.original_attempts < {MAX_ORIGINAL_ATTEMPTS}"
+    " AND (a.original_fail_reason IS NULL"
+    f"      OR a.original_fail_reason NOT IN ({_PERMANENT_SQL}))"
+    " AND (a.original_failed_at IS NULL"
+    "      OR a.original_failed_at < now() - interval '1 hour' * power(2, a.original_attempts))"
+)
+
+
+def _retries_tracked(conn: Connection) -> bool:
+    """True once migration 0036 is applied (failed downloads are recorded)."""
+    row = conn.execute(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'ci'"
+        " AND table_name = 'email_attachments' AND column_name = 'original_attempts') AS ok"
+    ).fetchone()
+    return bool(row and row["ok"])
+
+
 def store_missing_originals(
     connect: Callable[[], Connection], backends: Backends, limit: int = 100
 ) -> Counter[str]:
@@ -226,8 +249,10 @@ def store_missing_originals(
     if backends.originals is None or backends.graph is None:
         return counts
     with connect() as conn:
+        tracked = _retries_tracked(conn)
+        retry = _RETRY_DUE if tracked else ""
         rows = conn.execute(
-            """
+            f"""
             SELECT a.version_id::text, a.native_attachment_id, a.content_type, a.sha256,
                    c.native_id, s.native_scope_id
             FROM email_attachments a
@@ -241,8 +266,9 @@ def store_missing_originals(
               -- Over the size limit when processed: left as it was, even if the limit was
               -- raised since (50 MB from 2026-11-18 applies to new mail only, Matthew).
               AND a.extraction_status <> 'too_large'
+              {retry}
             ORDER BY random() LIMIT %s
-            """,
+            """,  # noqa: S608 - retry is built from constants
             (backends.attachment_max_bytes, limit),
         ).fetchall()
         conn.commit()
@@ -260,8 +286,19 @@ def store_missing_originals(
                     data = backends.graph.get_attachment_bytes(
                         r["native_scope_id"], r["native_id"], r["native_attachment_id"]
                     )
-                except GraphError:
+                except GraphError as exc:
+                    reason = type(exc).__name__
                     counts["original_download_failed"] += 1
+                    counts[f"original_download_failed:{reason}"] += 1
+                    if tracked:
+                        conn.execute(
+                            "UPDATE email_attachments SET original_attempts ="
+                            " original_attempts + 1, original_failed_at = now(),"
+                            " original_fail_reason = %s"
+                            " WHERE version_id = %s AND native_attachment_id = %s",
+                            (reason, r["version_id"], r["native_attachment_id"]),
+                        )
+                        conn.commit()
                     continue
                 digest = hashlib.sha256(data).hexdigest()
                 if not _store_original(conn, backends, digest, data, r["content_type"]):
