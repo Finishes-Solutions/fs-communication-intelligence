@@ -52,6 +52,8 @@ svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none;
 .side {
   position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; gap: 4px;
   background: var(--sidebar); border-right: 1px solid var(--line); padding: 16px 12px;
+  /* a laptop screen is shorter than the full menu: the sidebar scrolls on its own */
+  overflow-y: auto; overscroll-behavior: contain;
 }
 .brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 18px; }
 .brand-mark { width: 28px; height: 28px; border-radius: 8px; background: var(--primary); color: var(--on-primary);
@@ -476,6 +478,13 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.35); }
 .shell.signed-out main { padding: 0; }
 .grid > .card, .cols > .card, .inbox > .card, .lab > .card { margin-top: 0; }
 .toolbar .search { flex: 1 1 220px; }
+/* short screens (laptops): a tighter menu, so more of it fits before it scrolls */
+@media (min-width: 901px) and (max-height: 900px) {
+  .side { padding: 12px 10px; }
+  .brand { padding-bottom: 10px; }
+  .nav-label { padding: 10px 10px 4px; }
+  .nav a { padding: 5px 10px; }
+}
 /* the sidebar color runs the full page height, also below a short sidebar */
 .shell:not(.signed-out) { background: linear-gradient(to right, var(--sidebar) 247px, var(--line) 247px, var(--line) 248px, var(--bg) 248px); }
 @media (max-width: 900px) {
