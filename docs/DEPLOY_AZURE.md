@@ -298,6 +298,34 @@ cd ~/fs-communication-intelligence && git pull && make azure-migrate AZ_PSQL=psq
 
 It only adds functions (no table changes, a few seconds). The code works before and after: until it is applied, everything keeps using the old, slow way. Still slow after it: counts and lists over all time (several seconds), the Knowledge pages with no period (they read every mention), and anything a reader with reader limits asks without a date, because their limits are checked email by email.
 
+**Keyword search from a small table (migration 0040, 2026-11-19).** Measured on the dev server on 2026-11-18 (E16ds_v5, 4.95 million chunks, vector index preloaded): the meaning half of a search took 0.2 s, but the keyword half did not finish in 120 s for "change order" or "retainage", although finding their 86,763 and 16,016 matching passages took 0.1 and 1.1 s. Ranking the matches reads each passage's keyword data, which was stored out of line in a 39 GB area of the chunks table together with the passage text and embeddings: one scattered disk read per match. A bigger server does not fix that. Migration 0040 keeps a copy of each passage's keyword data in a small table of its own (`ci.chunk_terms`, about 6 GB plus a 3 GB index) that fits in memory, and the keyword half ranks from it once it is built. A term matching more than 20,000 passages is ranked among its newest 20,000 only (`ci.chunk_terms_state.score_limit`); older matches can still come from the meaning half or a narrower period. Until the build finishes, search works as before.
+
+Signed in as `svc_automation@`, from the repository folder:
+
+1. Apply the migration (seconds). It waits at most 30 seconds for processing to let go of the chunks table; if it stops with `lock timeout`, turn processing off (`uv run --env-file local/azure-dev.env ci schedule set --processing-off`), run it again, and turn processing back on (`--processing-on`).
+
+   ```bash
+   git pull && make azure-migrate AZ_PSQL=psql
+   ```
+
+2. Copy the existing passages and switch keyword search over. It prints progress with an estimate of the time left (expect one to a few hours: it reads the 39 GB area once, in order), then builds the index without blocking processing, checks that no passage is missing and switches over. Processing can keep running. If it is interrupted, run it again: it continues where it stopped.
+
+   ```bash
+   uv run --env-file local/azure-dev.env python scripts/keyword_table.py build
+   ```
+
+3. Load the table into memory (also after a server restart or resize), then check:
+
+   ```bash
+   uv run --env-file local/azure-dev.env python scripts/keyword_table.py prewarm
+   ```
+
+   ```bash
+   uv run --env-file local/azure-dev.env python scripts/keyword_table.py status
+   ```
+
+To switch keyword search back to the chunks table: `python scripts/keyword_table.py off` (and `on` to return). New passages are added to the table as they are written. Only the keyword half of search uses it: reader-limit `term` rules and the Files page's text search still read the chunks table. Tested on the synthetic fixtures (same passages and scores from either table); not yet timed in Azure.
+
 **A tool that takes too long now says so.** Each MCP tool answers `too_slow`, with advice to ask for a shorter period or add a filter, instead of leaving the AI platform to give up at its own limit (about a minute) with no explanation. A tool call has two limits (2026-11-18):
 
 - **50 seconds of database work in all** (`TOOL_BUDGET_SECONDS`). A tool runs several statements. Each one gets what is left of the 50 seconds, and never more than 40. When nothing is left, the next statement is not sent. Before this, the limit was 40 seconds for each statement, so a tool with several slow statements ran far past a minute.
@@ -567,7 +595,7 @@ A web page at `https://func-fs-ci-adm-dev-1026.azurewebsites.net/` for console a
 - **Schedule & Runs:** how often capture runs, its look-back, active hours, weekdays only, processing on/off, and **Run Capture Now** (look back up to 93 days). Below that, every run with its counts.
 - **Connections** (under Lab): how to connect Claude, ChatGPT and Copilot Studio, with the MCP URL, sign-in URLs, scope and each platform's client ID ready to copy (§10). Needs `scripts/azure/7-connections-page.sh` once.
 - **Mailboxes:** filter, approve or unapprove, exclude or un-exclude (with a reason), approve all enrolled, change mode, and exclude a person or domain in every mailbox.
-- **Search (top bar, ⌘K / Ctrl+K on every page):** one search over the text of emails and the text read from their attached documents, by words and by meaning, in published mail your own grants allow. The top bar and the shortcut open a search box that shows the best matches as you type (the matching passage, with the words marked, and whether it is from the email or a named document), lists pages to jump to, and remembers your last six searches in this browser. Enter opens a result on the **Search** page; ⌘/Ctrl+Enter opens the full list. The Search page adds filters: email text or documents only, mailbox, sender, property, legal entity, label and dates (a period, or from/to days in UTC). A search returns its 25 best matches. The box searches after a short pause in typing, from 3 characters on (Enter searches at once), because every search is a full search on the server; each one is one embedding call (a few tokens) and one audited `search` event, without the search text. A single common word ("invoice") is the slowest kind of search, because the keyword half ranks every passage that contains it: two or three words, or a filter, are faster. Timings are logged as `search timings ms` (see Search speed). Documents are searched only where their text could be read (no OCR yet); the files' names are not searched.
+- **Search (top bar, ⌘K / Ctrl+K on every page):** one search over the text of emails and the text read from their attached documents, by words and by meaning, in published mail your own grants allow. The top bar and the shortcut open a search box that shows the best matches as you type (the matching passage, with the words marked, and whether it is from the email or a named document), lists pages to jump to, and remembers your last six searches in this browser. Enter opens a result on the **Search** page; ⌘/Ctrl+Enter opens the full list. The Search page adds filters: email text or documents only, mailbox, sender, property, legal entity, label and dates (a period, or from/to days in UTC). A search returns its 25 best matches. The box searches after a short pause in typing, from 3 characters on (Enter searches at once), because every search is a full search on the server; each one is one embedding call (a few tokens) and one audited `search` event, without the search text. A single common word ("invoice") is the slowest kind of search, because the keyword half ranks every passage that contains it (since migration 0040, at most its newest 20,000): two or three words, or a filter, are faster. Timings are logged as `search timings ms` (see Search speed). Documents are searched only where their text could be read (no OCR yet); the files' names are not searched.
 - **Messages:** search or list published mail by mailbox, sender, label and date. A message shows the AI summary, action and risk, labels, people, the body, and its **files**: preview (PDF, images, text), download, or the extracted text. Signature images and logos aren't processed or shown: every inline image, and any attached image of 100 KB or less. An **Open in Outlook** button appears only when the email is in your own mailbox, and opens your copy.
 - **Action Items:** the same list agents get from `list_actionable`, for any person or window. With a person profile (below), it shows that person's confident items plus a separate **Possible** list, and has a panel to edit profiles.
 - **Not Published:** held, restricted, bulk and failed messages, with metadata and reason only, never the subject or text.
