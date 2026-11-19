@@ -127,7 +127,7 @@ def outcome_of(response: httpx.Response) -> tuple[str, Any]:
             data = json.loads(result["content"][0]["text"])
         except KeyError, IndexError, ValueError, TypeError:
             return "ok", None  # a file or other non-JSON answer
-    if isinstance(data, dict) and data.get("too_slow"):
+    if isinstance(data, dict) and data.get("error") == "too_slow":  # stopped at 40 s
         return "too_slow", data
     if isinstance(data, dict) and "error" in data:
         return "answered_error", data
