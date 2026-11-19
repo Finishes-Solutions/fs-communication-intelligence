@@ -1,7 +1,11 @@
 """The ``ci`` command: guards, exit codes and committed changes."""
 
+from types import SimpleNamespace
+from typing import Any
+
 import pytest
 
+from ci_cli import backends, pipeline
 from ci_cli.main import main
 from ci_core.db import connect
 
@@ -83,3 +87,42 @@ def test_runs_lists_recent_runs_backlog_and_failures(capsys: pytest.CaptureFixtu
     with connect() as conn:
         conn.execute("DELETE FROM ops_runs")
         conn.commit()
+
+
+@pytest.mark.parametrize("command", [["capture", "--hours", "1"], ["process", "--limit", "1"]])
+def test_capture_and_process_recount_the_stored_counts(
+    monkeypatch: pytest.MonkeyPatch, command: list[str]
+) -> None:
+    """``ci capture`` and ``ci process`` record no run in ops_runs, so they ask for a
+    recount themselves (migration 0038): counts an hour old are recounted even
+    though no run finished since. Mail and the AI steps are stubbed out."""
+    monkeypatch.setattr(pipeline, "capture_window", lambda *a, **k: [])
+    monkeypatch.setattr(backends, "graph_client", lambda settings: None)
+    monkeypatch.setattr(backends, "with_model", lambda settings, schedule: settings)
+    monkeypatch.setattr(backends, "processing_backends", lambda settings: None)
+    monkeypatch.setattr(
+        backends,
+        "with_switches",
+        lambda backends, settings, schedule: SimpleNamespace(meter=None),
+    )
+    monkeypatch.setattr(backends, "risk_rater", lambda *a: None)
+    monkeypatch.setattr(backends, "action_resolver", lambda *a: None)
+    monkeypatch.setattr(pipeline, "process_all", lambda *a, **k: {})
+    monkeypatch.setattr(pipeline, "rate_pending_risks", lambda *a, **k: {})
+    monkeypatch.setattr(pipeline, "resolve_pending_actions", lambda *a, **k: {})
+
+    def counted_at() -> Any:
+        with connect() as conn:
+            row = conn.execute("SELECT min(refreshed_at) AS t FROM ops_counts").fetchone()
+            conn.rollback()
+        return row and row["t"]
+
+    with connect() as conn:
+        conn.execute("SELECT refresh_ops_counts(changed => true)")
+        conn.execute("UPDATE ops_counts SET refreshed_at = refreshed_at - interval '1 hour'")
+        conn.execute("UPDATE ops_runs SET finished_at = finished_at - interval '1 day'")
+        conn.commit()
+    before = counted_at()
+    assert before is not None
+    assert main(command) == 0
+    assert counted_at() > before

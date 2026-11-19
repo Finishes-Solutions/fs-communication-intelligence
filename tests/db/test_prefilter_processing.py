@@ -7,6 +7,7 @@ from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
+import psycopg
 import pytest
 
 from ci_cli.seed import seed
@@ -141,3 +142,118 @@ def test_retry_skipped_processes_it_in_full(db: tuple[str, Spy]) -> None:
             (row["version_id"],),
         ).fetchone()
         assert requeue_skipped(conn) == 0  # nothing left that the pre-filter skipped
+
+
+def test_the_per_version_lookup_reads_an_index(db: tuple[str, Spy]) -> None:
+    """Migration 0037: processing asks policy_decisions about one version for
+    every email. Without an index on version_id each lookup read the whole table
+    (2.2 million rows on the dev server, 2026-11-18)."""
+    import migrate
+    from psycopg import sql
+
+    database, _ = db
+    # The statement in ci_email.process._prefilter.
+    lookup = (
+        "SELECT 1 FROM policy_decisions WHERE version_id = {} AND check_name = 'prefilter'"
+        " AND reason_code = 'operator_override'"
+    )
+
+    def index_columns(conn: Connection) -> list[list[str]]:
+        rows = conn.execute(
+            "SELECT array_agg(a.attname::text ORDER BY k.ord) AS columns"
+            " FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid"
+            " CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord)"
+            " JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum"
+            " WHERE i.indrelid = 'ci.policy_decisions'::regclass AND i.indisvalid"
+            " AND c.relname = 'policy_decisions_version' GROUP BY c.oid"
+        ).fetchall()
+        return [row["columns"] for row in rows]
+
+    def nodes(plan: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        yield plan
+        for child in plan.get("Plans", []):
+            yield from nodes(child)
+
+    with connect(dbname=database) as conn:
+        assert index_columns(conn) == [["version_id", "check_name"]]  # AC-2.1
+        version_id = state(conn, NEWSLETTER)["version_id"]
+        conn.execute("SET LOCAL enable_seqscan = off")
+        explained = conn.execute(
+            sql.SQL("EXPLAIN (FORMAT JSON) " + lookup).format(sql.Literal(version_id))
+        ).fetchone()
+        conn.rollback()
+        assert explained is not None
+        scans = [
+            node
+            for node in nodes(explained["QUERY PLAN"][0]["Plan"])
+            if node.get("Index Name") == "policy_decisions_version"
+        ]
+        assert scans, explained  # AC-2.2
+        assert scans[0]["Node Type"] in ("Index Scan", "Index Only Scan", "Bitmap Index Scan")
+        assert "version_id" in scans[0]["Index Cond"]
+
+    # AC-2.3: applying again does nothing, by the ledger and by the file itself.
+    assert migrate.apply(database) == []
+    (migration,) = [m for m in migrate.discover() if m.version == "0037"]
+    migrate.psql(database, "--single-transaction", "-f", "-", stdin=migration.path.read_text())
+    with connect(dbname=database) as conn:
+        assert index_columns(conn) == [["version_id", "check_name"]]
+
+
+def test_the_migration_refuses_a_wrong_or_invalid_index_of_that_name(
+    db: tuple[str, Spy],
+) -> None:
+    """Migration 0037 is written to be a no-op over an index built by hand. An
+    interrupted CREATE INDEX CONCURRENTLY leaves an invalid index under the same
+    name, and IF NOT EXISTS would accept it: the migration must fail instead and
+    must not be recorded as applied."""
+    import migrate
+
+    database, _ = db
+    (migration,) = [m for m in migrate.discover() if m.version == "0037"]
+    text = migration.path.read_text()
+
+    def ledger(conn: Connection) -> int:
+        row = conn.execute(
+            "SELECT count(*) AS n FROM schema_migrations WHERE version = '0037'"
+        ).fetchone()
+        assert row is not None
+        return int(row["n"])
+
+    # An invalid index (what an interrupted concurrent build leaves), undone by
+    # the rollback.
+    with connect(dbname=database) as conn:
+        conn.execute(
+            "UPDATE pg_index SET indisvalid = false"
+            " WHERE indexrelid = 'ci.policy_decisions_version'::regclass"
+        )
+        with pytest.raises(psycopg.errors.RaiseException, match="invalid or is not on"):
+            conn.execute(text)
+        conn.rollback()
+
+    # The same name on other columns, through the runner: no ledger row.
+    try:
+        with connect(dbname=database) as conn:
+            conn.execute("DROP INDEX policy_decisions_version")
+            conn.execute("CREATE INDEX policy_decisions_version ON policy_decisions (check_name)")
+            conn.execute("DELETE FROM schema_migrations WHERE version = '0037'")
+            conn.commit()
+        with pytest.raises(migrate.MigrationError, match="invalid or is not on"):
+            migrate.apply(database)
+        with connect(dbname=database) as conn:
+            assert ledger(conn) == 0
+            conn.rollback()
+    finally:
+        # Put the database back as the other tests expect it.
+        with connect(dbname=database) as conn:
+            conn.execute("DROP INDEX IF EXISTS policy_decisions_version")
+            conn.execute("DELETE FROM schema_migrations WHERE version = '0037'")
+            conn.commit()
+        assert [m.version for m in migrate.apply(database)] == ["0037"]
+    with connect(dbname=database) as conn:
+        assert ledger(conn) == 1
+        row = conn.execute(
+            "SELECT pg_get_indexdef('ci.policy_decisions_version'::regclass) AS d"
+        ).fetchone()
+        conn.rollback()
+    assert row is not None and "(version_id, check_name)" in row["d"]
