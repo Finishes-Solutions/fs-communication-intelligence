@@ -69,6 +69,12 @@ _NAMES = (
     ' (case-insensitive, e.g. property="willow", entity="capital company").'
 )
 
+# Only lists carry the shown names (search.py _shown_names, migration 0034).
+_SHOWN = (
+    " properties_shown and entities_shown are the same names after the operator's"
+    " Knowledge merges and renames."
+)
+
 _DATES = (
     " Dates and times: `since` and `until` take a date (2026-10-01: that whole day) or a"
     " date and time (2026-10-01T14:30), in US Central time unless the value ends in Z or an"
@@ -398,6 +404,7 @@ def build_server(
         " The other filters still apply; their dates are received dates."
         + _DATES
         + _NAMES
+        + _SHOWN
         + _LINKS
         + _TRUST
     )

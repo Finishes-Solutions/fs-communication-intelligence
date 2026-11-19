@@ -27,7 +27,7 @@ import logging
 import re
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -242,6 +242,58 @@ def shown_names(column: str, kind: str) -> str:
 def matched_names(column: str, kind: str) -> str:
     """SQL for the names a filter matches: as written, and as shown (0034)."""
     return f"({column} || canonical_names('{kind}', {column}))" if _NAME_MERGES else column
+
+
+def shown_name_map(
+    conn: Connection, names: Iterable[tuple[str, str]]
+) -> dict[tuple[str, str], str]:
+    """{(kind, written): shown} for each name, in one query for all of them (0034).
+    Empty before migration 0034. Names come from email text, so they are bound as
+    parameters, never placed in the SQL."""
+    if not _NAME_MERGES:
+        return {}
+    pairs = sorted({(k, n) for k, n in names if isinstance(n, str)})
+    if not pairs:
+        return {}
+    return {
+        (m["kind"], m["written"]): m["shown"]
+        for m in conn.execute(
+            "SELECT t.k AS kind, t.w AS written, (canonical_names(t.k, ARRAY[t.w]))[1] AS shown"
+            " FROM unnest(%s::text[], %s::text[]) AS t(k, w)",
+            ([k for k, _ in pairs], [n for _, n in pairs]),
+        ).fetchall()
+    }
+
+
+def apply_shown_names(
+    names: Iterable[str], kind: str, mapped: dict[tuple[str, str], str]
+) -> list[str]:
+    """``names`` as shown: each mapped, duplicates dropped case-insensitively, order kept."""
+    seen: dict[str, str] = {}
+    for n in names:
+        name = mapped.get((kind, n)) or n
+        seen.setdefault(name.casefold(), name)
+    return list(seen.values())
+
+
+# The list fields that get a shown copy: (written field, shown field, knowledge kind).
+_SHOWN_FIELDS = (
+    ("properties_ai", "properties_shown", "property"),
+    ("entities_ai", "entities_shown", "organization"),
+)
+
+
+def _shown_names(conn: Connection, items: list[dict[str, Any]]) -> None:
+    """Add ``properties_shown`` and ``entities_shown`` to each list row: the names
+    after the operator's Knowledge merges and renames (0034). ``properties_ai`` and
+    ``entities_ai`` keep the names as written (CLAUDE.md 3a, docs/KNOWLEDGE.md).
+    Before migration 0034 the copies equal the written names. One query per page."""
+    mapped = shown_name_map(
+        conn, ((kind, n) for i in items for written, _, kind in _SHOWN_FIELDS for n in i[written])
+    )
+    for i in items:
+        for written, shown, kind in _SHOWN_FIELDS:
+            i[shown] = apply_shown_names(i[written], kind, mapped) if mapped else list(i[written])
 
 
 # published_communications with the communication_id column the fragments use.
@@ -1219,6 +1271,7 @@ def _listing(
     page = out[offset : offset + limit]
     outlook_links(conn, principal, page)
     _processed_at(conn, page)
+    _shown_names(conn, page)
     return page
 
 
