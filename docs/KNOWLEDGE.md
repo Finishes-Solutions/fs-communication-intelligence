@@ -102,7 +102,7 @@ Either way the wrong entry stays, merged, so later emails where the AI repeats t
 * **Files:** files from Stokes Rd emails are in the Gracious Gardens project folder (and company folders follow merged organizations the same way).
 * **Filters:** a property or entity filter (Messages, Search, Reports, `search_email`, `list_email`, `email_stats`) for "gracious" also finds emails that say "Stokes Rd". Filtering by "stokes" still finds them by the name as written.
 * **Counts and charts:** grouping by property or entity (Reports, `email_stats`) and the Risk page's property heatmap and top properties count them under Gracious Gardens.
-* **Earlier and later mail alike, at once:** nothing is reprocessed and no AI call is made. The email itself still shows the name it was written with (`properties_ai`).
+* **Earlier and later mail alike, at once:** nothing is reprocessed and no AI call is made. The email itself still shows the name it was written with (`properties_ai`); email lists (`list_email`, and the threads, action items and Knowledge emails built on them) also return the merged names as `properties_shown` and `entities_shown`.
 * **Undo:** Unmerge, Unhide or a rename applies straight away. A hidden entry is not mapped (its emails show the written name). Only merges within one kind count: an entry moved with Fix Kind keeps its written name on these pages.
 * **Spelling variants:** a name is matched by the knowledge base's key (case, spacing and punctuation ignored, so "STOKES RD." matches "Stokes Rd"). A different word ("Stokes Road") is a separate entry until it is merged as well.
 

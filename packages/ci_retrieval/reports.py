@@ -32,6 +32,7 @@ from ci_retrieval.search import (
     _row_filters,
     _scope,
     action_rule_params,
+    apply_shown_names,
     as_views,
     authorize,
     fast_reads,
@@ -39,6 +40,7 @@ from ci_retrieval.search import (
     outlook_links,
     person_profile,
     rows_source,
+    shown_name_map,
     shown_names,
 )
 
@@ -266,23 +268,11 @@ def _shown_property_names(conn: Connection, rows: list[dict[str, Any]]) -> None:
         r["written_properties"] = list(r["properties"] or [])
     if not name_merges():  # before migration 0034: as written
         return
-    written = sorted({n for r in rows for n in r["written_properties"]})
-    if not written:
+    mapped = shown_name_map(conn, (("property", n) for r in rows for n in r["written_properties"]))
+    if not mapped:
         return
-    mapped = {
-        m["written"]: m["shown"]
-        for m in conn.execute(
-            "SELECT w AS written, (canonical_names('property', ARRAY[w]))[1] AS shown"
-            " FROM unnest(%s::text[]) AS w",
-            (written,),
-        ).fetchall()
-    }
     for r in rows:
-        seen: dict[str, str] = {}
-        for n in r["written_properties"]:
-            name = mapped.get(n) or n
-            seen.setdefault(name.casefold(), name)
-        r["properties"] = list(seen.values())
+        r["properties"] = apply_shown_names(r["written_properties"], "property", mapped)
 
 
 def _group_sql(group_by: str) -> tuple[str, str]:
