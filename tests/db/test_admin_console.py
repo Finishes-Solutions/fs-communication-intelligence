@@ -3,6 +3,7 @@ comes only through the caller's own grants. Tokens are signed with a throwaway
 RSA key standing in for Entra's; everything else is the production code path.
 """
 
+import json
 import re
 import time
 from collections.abc import Iterator
@@ -18,6 +19,7 @@ from starlette.testclient import TestClient
 from ci_admin.api import ADMIN_ROLE, ADMIN_SCOPE, FILES_ROLE, VIEWER_ROLE, build_admin_app
 from ci_admin.lab import LabBackends
 from ci_cli.seed import seed
+from ci_core import ops
 from ci_core.db import AppRole, Connection, connect
 from ci_core.settings import Settings
 from ci_email.capture import capture_window
@@ -221,6 +223,35 @@ def test_overview_counts(client: TestClient) -> None:
     dates = data["email_range"]
     assert dates["oldest_at"] and dates["latest_at"]
     assert dates["oldest_at"] <= dates["latest_at"]
+    assert data["counts_as_of"] is None  # nothing stored yet: counted live
+
+
+def test_overview_says_when_stored_counts_were_taken(
+    client: TestClient, database_ready: str
+) -> None:
+    """AC-3.9: after a refresh (migration 0038) the same numbers come from the
+    stored counts, and the answer says when they were taken."""
+    live = client.get("/api/overview", headers=auth()).json()
+    try:
+        with connect(dbname=database_ready, role="ci_ingest") as conn:
+            assert ops.refresh_counts(conn) is True
+        stored = client.get("/api/overview", headers=auth()).json()
+        viewer = auth(oid="viewer-oid", roles=[READER_ALL, VIEWER_ROLE])
+        assert client.get("/api/overview", headers=viewer).json()["counts_as_of"]
+    finally:  # later tests in this module change mail and read live counts
+        with connect(dbname=database_ready) as conn:
+            conn.execute("DELETE FROM ops_counts")
+            conn.commit()
+        retrieval._coverage_cache.clear()  # per process, shared by every test module
+    assert datetime.fromisoformat(stored["counts_as_of"]) <= datetime.now(UTC)
+
+    def same(rows: list[dict[str, Any]]) -> list[str]:
+        return sorted(json.dumps(row, sort_keys=True) for row in rows)
+
+    for name in ("versions", "failures", "labels", "uncertain_labels", "extraction", "originals"):
+        assert same(stored[name]) == same(live[name]), name
+    assert stored["backlog"] == live["backlog"] and stored["mailboxes"] == live["mailboxes"]
+    assert client.get("/api/overview", headers=auth()).json()["counts_as_of"] is None
 
 
 def test_schedule_changes_are_validated_and_audited(

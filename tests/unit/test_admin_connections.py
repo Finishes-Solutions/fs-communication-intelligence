@@ -111,6 +111,27 @@ def test_links_from_ai_clients_reuse_an_existing_sign_in() -> None:
     assert 'keep.set("signed_out", "1")' in app
 
 
+def test_the_overview_says_when_its_stored_counts_were_taken() -> None:
+    """With stored counts (migration 0038) some Overview numbers are as of the last
+    run: the page says which and when, only then, and Requeue Failed says the failed
+    count will not move yet."""
+    from ci_admin.api import STATIC
+
+    app = (STATIC / "app.js").read_text()
+    page = app[app.index("async function overview()") : app.index("async function schedulePage()")]
+    assert 'd.counts_as_of ? h("p", { class: "muted small", style: "margin:-14px 0 16px" },' in page
+    assert (
+        "`Published messages, the failed count and the charts below are as of"
+        " ${short(d.counts_as_of)}. They update after each capture or processing run;"
+        " everything else on this page is live.`" in page
+    )
+    assert '`${r.requeued} failed ${r.requeued === 1 ? "message" : "messages"} requeued.`' in page
+    assert (
+        '(d.counts_as_of ? " The failed count here updates after the next processing run." : "")'
+        in page
+    )
+
+
 def test_the_console_keeps_no_search_history() -> None:
     """Searches are not remembered in the browser (Matthew, 2026-11-18); a list an
     earlier version saved is deleted when the page loads."""

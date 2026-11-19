@@ -485,13 +485,22 @@ async function overview() {
   const published = (d.versions || []).filter(v => v.processing_state === "published")
     .reduce((n, v) => n + v.versions, 0);
   const s = d.schedule;
-  const requeue = guard(async () => { const r = await post("/api/requeue-failed"); toast(`${r.requeued} failed messages requeued.`); route(); });
+  // With stored counts (counts_as_of) the failed count moves only at the next run.
+  const requeue = guard(async () => {
+    const r = await post("/api/requeue-failed");
+    toast(`${r.requeued} failed ${r.requeued === 1 ? "message" : "messages"} requeued.`
+      + (d.counts_as_of ? " The failed count here updates after the next processing run." : ""));
+    route();
+  });
   const failed = (d.failures || []).reduce((n, f) => n + f.versions, 0);
   const range = d.email_range || {};
   show(
     pageHead("Overview", "Capture, processing and publication at a glance.",
       isAdmin() ? h("button", { class: "btn", onclick: requeue }, icon("requeue"), "Requeue Failed") : null,
       h("button", { class: "btn", onclick: route }, icon("refresh"), "Refresh")),
+    // Stored counts (migration 0038): say which numbers they are and how old.
+    d.counts_as_of ? h("p", { class: "muted small", style: "margin:-14px 0 16px" },
+      `Published messages, the failed count and the charts below are as of ${short(d.counts_as_of)}. They update after each capture or processing run; everything else on this page is live.`) : null,
     h("div", { class: "grid" },
       stat("Mode", "shield", d.mode.mode ? nice(d.mode.mode) : "Not set", `${num(d.mode.eligible_mailboxes)} mailboxes eligible`),
       stat("Scheduled Capture", "clock", s.capture_enabled ? every(s.capture_interval_min) : "Off",

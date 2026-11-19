@@ -9,6 +9,7 @@ Run history holds counts and codes only, never content.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import uuid
@@ -17,8 +18,12 @@ from datetime import date, datetime, time, timedelta
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
+import psycopg
+
 from ci_core.db import Connection, required
 from ci_core.operator import OperatorError, audit
+
+log = logging.getLogger(__name__)
 
 INTERVALS = (15, 30, 60, 120, 240, 720, 1440)
 MAX_REQUEST_HOURS = 24 * 93  # a requested backfill; the scheduled window stays <= 744
@@ -483,28 +488,108 @@ def recent_runs(conn: Connection, limit: int = 50, offset: int = 0) -> list[dict
     return [_jsonable(r) for r in rows]
 
 
+# The rows of ci.ops_counts (migration 0038): one per counting view.
+COUNT_NAMES = frozenset({"versions", "failures", "labels", "extraction", "originals", "coverage"})
+
+
+# A recount runs the six counting views once; past this it is stopped and the
+# old counts stay (the run that called it is not held up longer).
+REFRESH_TIMEOUT = "3min"
+
+
+def refresh_counts(conn: Connection, *, changed: bool = False) -> bool:
+    """Recount the stored dashboard and coverage counts (``ci.refresh_ops_counts``,
+    ingestion role). It recounts when a run has finished since the last recount
+    (``ops_runs``), or when ``changed`` says the caller did work that records no
+    run (the CLI), and the last recount is at least 5 minutes old; otherwise it
+    counts nothing, so calling it on every tick is cheap. True when it recounted;
+    False when the counts are fresh enough, another session is recounting, the
+    database has no migration 0038, or it failed. It never fails the run that
+    calls it: a failure is logged by type and undone."""
+    try:
+        with conn.transaction():
+            ready = conn.execute(
+                "SELECT to_regprocedure('ci.refresh_ops_counts(interval, boolean)') IS NOT NULL"
+                " AS ready"
+            ).fetchone()
+            if not ready or not ready["ready"]:
+                return False
+            conn.execute(f"SET LOCAL statement_timeout = '{REFRESH_TIMEOUT}'")
+            done = conn.execute(
+                "SELECT refresh_ops_counts(changed => %s) AS done", (changed,)
+            ).fetchone()
+            return bool(done and done["done"])
+    except psycopg.Error as exc:
+        log.warning("counts not refreshed: %s", type(exc).__name__)
+        return False
+
+
+def _stored_counts(conn: Connection) -> tuple[dict[str, list[dict[str, Any]]], str] | None:
+    """The stored counts and when they were taken, or None to count live: without
+    migration 0038, without the right to read the table, or before its first
+    refresh. The check asks instead of trying, so no error is raised or caught."""
+    readable = conn.execute(
+        "SELECT coalesce(has_table_privilege(to_regclass('ci.ops_counts')::oid, 'SELECT'),"
+        " false) AS readable"
+    ).fetchone()
+    if not readable or not readable["readable"]:
+        return None
+    found = conn.execute("SELECT name, rows, refreshed_at FROM ops_counts").fetchall()
+    if {r["name"] for r in found} != COUNT_NAMES:
+        return None
+    as_of = min(r["refreshed_at"] for r in found)
+    return {r["name"]: list(r["rows"]) for r in found}, as_of.isoformat()
+
+
 def overview(conn: Connection) -> dict[str, Any]:
-    """Counts only, for the dashboard (operator role)."""
+    """Counts only, for the dashboard (operator role).
+
+    Message states, failures, labels and the two attachment counts come from the
+    stored counts when they exist (``counts_as_of`` says when they were taken),
+    otherwise from the live views (``counts_as_of`` is None): all from one or all
+    from the other, never a mix. Mailboxes, the backlog and the email dates are
+    always live."""
 
     def rows(sql: str) -> list[dict[str, Any]]:
         return [_jsonable(r) for r in conn.execute(sql).fetchall()]
 
+    def by(count: str, found: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return sorted(found, key=lambda r: -r[count])  # as ORDER BY <count> DESC
+
+    stored = _stored_counts(conn)
+    if stored is not None:
+        counts, as_of = stored
+        labels = by("messages", counts["labels"])
+        sections: dict[str, Any] = {
+            "versions": by("versions", counts["versions"]),
+            "failures": by("versions", counts["failures"]),
+            "labels": [r for r in labels if r["decision"] == "yes"],
+            "uncertain_labels": [r for r in labels if r["decision"] in ("review", "unresolved")],
+            "extraction": by("attachments", counts["extraction"]),
+            "originals": by("attachments", counts["originals"]),
+            "counts_as_of": as_of,
+        }
+    else:
+        sections = {
+            "versions": rows("SELECT * FROM ops_version_states ORDER BY versions DESC"),
+            "failures": rows("SELECT * FROM ops_failures ORDER BY versions DESC"),
+            "labels": rows(
+                "SELECT * FROM ops_label_counts WHERE decision = 'yes' ORDER BY messages DESC"
+            ),
+            "uncertain_labels": rows(
+                "SELECT * FROM ops_label_counts"
+                " WHERE decision IN ('review', 'unresolved')"
+                " ORDER BY messages DESC"
+            ),
+            "extraction": rows("SELECT * FROM ops_extraction_counts ORDER BY attachments DESC"),
+            "originals": rows("SELECT * FROM ops_original_counts ORDER BY attachments DESC"),
+            "counts_as_of": None,
+        }
     return {
         "mailboxes": rows("SELECT * FROM ops_mailbox_states ORDER BY mailboxes DESC"),
-        "versions": rows("SELECT * FROM ops_version_states ORDER BY versions DESC"),
         "backlog": rows("SELECT * FROM ops_backlog")[0],
         "email_range": rows("SELECT * FROM ops_email_range")[0],
-        "failures": rows("SELECT * FROM ops_failures ORDER BY versions DESC"),
-        "labels": rows(
-            "SELECT * FROM ops_label_counts WHERE decision = 'yes' ORDER BY messages DESC"
-        ),
-        "uncertain_labels": rows(
-            "SELECT * FROM ops_label_counts"
-            " WHERE decision IN ('review', 'unresolved')"
-            " ORDER BY messages DESC"
-        ),
-        "extraction": rows("SELECT * FROM ops_extraction_counts ORDER BY attachments DESC"),
-        "originals": rows("SELECT * FROM ops_original_counts ORDER BY attachments DESC"),
+        **sections,
     }
 
 

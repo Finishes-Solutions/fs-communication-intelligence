@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from psycopg.errors import UndefinedFunction, UndefinedTable
+
 from ci_core.db import Connection
 from ci_processing.embedding import Embedder
 from ci_retrieval.identity import READER_ALL, Principal
@@ -50,6 +52,8 @@ NEAREST_K = 200
 # an hour old is fine: the count takes seconds once a year of mail is stored, and
 # the request that recounts waits for it.
 COVERAGE_SECONDS = 1800.0
+# An answer read from the stored counts (migration 0038) is kept this long.
+COVERAGE_STORED_SECONDS = 60.0
 MAX_CHUNKS_PER_MESSAGE = 3
 ACTION_LABELS = ("action_required", "approval_required")
 # Executive "risks" are risks to a project or property (Matthew, 2026-10-28), not
@@ -527,17 +531,45 @@ def _audit(conn: Connection, principal: Principal, action: str, details: dict[st
     )
 
 
-_coverage_cache: dict[str, tuple[float, dict[str, int]]] = {}
+# database -> (when read, the answer, whether it came from the stored counts)
+_coverage_cache: dict[str, tuple[float, dict[str, int], bool]] = {}
 _coverage_lock = threading.Lock()
 
 
+def _stored_coverage(conn: Connection) -> list[dict[str, Any]] | None:
+    """The coverage counts kept by ``ci.refresh_ops_counts`` (migration 0038), or
+    None to count live: without the migration, before its first refresh, or after
+    a mode change (the view then has no row). The check asks instead of trying, so
+    no error is raised or caught and a statement stopped by the tool's time budget
+    is never mistaken for a missing migration."""
+    readable = conn.execute(
+        "SELECT coalesce(has_table_privilege(to_regclass('ci.coverage_snapshot')::oid,"
+        " 'SELECT'), false) AS readable"
+    ).fetchone()
+    if not readable or not readable["readable"]:
+        return None
+    stored = conn.execute("SELECT rows FROM coverage_snapshot").fetchone()
+    return None if stored is None else list(stored["rows"])
+
+
 def coverage(conn: Connection, *, max_age: float = COVERAGE_SECONDS) -> dict[str, int]:
-    """Messages per processing state, recounted at most every ``max_age`` seconds."""
+    """Messages per processing state. Read from the stored counts when there are
+    any (cheap, so read again after ``COVERAGE_STORED_SECONDS``), otherwise counted
+    live at most every ``max_age`` seconds."""
     with _coverage_lock:
         cached = _coverage_cache.get(conn.info.dbname)
-        if cached and time.monotonic() - cached[0] < max_age:
-            return dict(cached[1])
-    rows = conn.execute("SELECT processing_state, reason, messages FROM coverage_counts").fetchall()
+        if cached:
+            keep = min(max_age, COVERAGE_STORED_SECONDS) if cached[2] else max_age
+            if time.monotonic() - cached[0] < keep:
+                return dict(cached[1])
+    stored = _stored_coverage(conn)
+    rows = (
+        stored
+        if stored is not None
+        else conn.execute(
+            "SELECT processing_state, reason, messages FROM coverage_counts"
+        ).fetchall()
+    )
     out: dict[str, int] = {}
     for r in rows:
         key = (
@@ -547,7 +579,7 @@ def coverage(conn: Connection, *, max_age: float = COVERAGE_SECONDS) -> dict[str
         )
         out[key] = out.get(key, 0) + int(r["messages"])
     with _coverage_lock:
-        _coverage_cache[conn.info.dbname] = (time.monotonic(), out)
+        _coverage_cache[conn.info.dbname] = (time.monotonic(), out, stored is not None)
     return dict(out)
 
 
@@ -952,6 +984,13 @@ def _label_lookup(conn: Connection) -> bool:
 # end date and stops at the first that fills the page.
 _LOOK_BACK_DAYS = (3, 30, 365)
 
+# The columns a listing reads from a published_window row (alias pc).
+_LIST_COLUMNS = """pc.communication_id::text AS communication_id, pc.title, pc.occurred_at,
+               pc.source_url, pc.mailbox_address, pc.internet_message_id,
+               pc.content_fingerprint, pc.direction, pc.sender, pc.yes_labels,
+               pc.disposition, pc.summary, pc.action_text, pc.action_for, pc.due_text,
+               pc.risk_text, pc.properties, pc.entities"""
+
 
 def _listing_rows(
     conn: Connection,
@@ -970,11 +1009,7 @@ def _listing_rows(
 
     def sql(since: datetime | None) -> str:
         return f"""
-        SELECT pc.communication_id::text AS communication_id, pc.title, pc.occurred_at,
-               pc.source_url, pc.mailbox_address, pc.internet_message_id,
-               pc.content_fingerprint, pc.direction, pc.sender, pc.yes_labels,
-               pc.disposition, pc.summary, pc.action_text, pc.action_for, pc.due_text,
-               pc.risk_text, pc.properties, pc.entities
+        SELECT {_LIST_COLUMNS}
         FROM {as_views(rows_source(wanted, since))}
         WHERE {_AUTH.format(a="pc")} {_row_filters("pc")} {extra_where}
         ORDER BY pc.occurred_at DESC, pc.communication_id
@@ -1003,6 +1038,101 @@ def _listing_rows(
     return rows
 
 
+# ----- a list page costs a page (migration 0039) ------------------------------
+# published_page returns the newest row_limit published emails of the period;
+# the listing applies _AUTH and the filters to those in the same statement. A
+# page that the newest rows fill costs about those rows instead of the whole
+# period. Lists that are narrow from the start (risk-only and own-mailbox
+# readers, a property or entity filter) and readers with reader limits skip it
+# and cost exactly today's (_paged_skipped). Any other list makes one paged read
+# (one per look-back period with a mailbox filter), then the 0031 read is used
+# as before: a narrow list costs today's plus at most one read of
+# max(200, 3 x need) rows (Cody, 2026-11-18).
+PAGE_ROWS_MIN = 200
+# published_page's own cap (0039); a read asking more gets this many. Must equal
+# the SQL value (tests/db/test_fast_reads.py checks).
+PAGE_ROWS_MAX = 20_000
+
+
+def _paged_skipped(auth: Authorization, filters: Filters) -> bool:
+    """True for lists that go straight to the 0031 read, with no paged read first.
+    Risk-only readers, readers whose only access is their own mailbox, and
+    property or entity filters: the newest emails rarely fill them. Readers with
+    reader limits always use the set-based read, whatever the filters."""
+    return (
+        auth.risk_only
+        or not auth.corpora
+        or auth.restricted_reader is not None
+        or bool(filters.property or filters.entity)
+    )
+
+
+def paged_reads(conn: Connection) -> bool:
+    """True once migration 0039 is applied; until then lists use the 0031 read."""
+    row = conn.execute(
+        "SELECT to_regprocedure('ci.published_page(timestamptz, timestamptz, text, text,"
+        " integer)') IS NOT NULL AS ok"
+    ).fetchone()
+    return bool(row and row["ok"])
+
+
+def _listing_rows_paged(
+    conn: Connection,
+    auth: Authorization,
+    filters: Filters,
+    extra_where: str,
+    extra: dict[str, Any],
+    need: int,
+    labels: Sequence[str] | None,
+) -> list[dict[str, Any]] | None:
+    """The listing's rows, newest first, from the newest emails only (0039); None
+    when they do not give ``need`` emails, for the caller to read as before.
+
+    The rows authorized and filtered among the newest N emails are the first rows
+    of the whole answer, so once they hold ``need`` different emails (copies
+    collapse later) the page is the same as _listing_rows gives. When fewer than N
+    came back, the period was read whole: that is _listing_rows' answer too."""
+    wanted = list(labels) if labels else ([filters.label] if filters.label else None)
+    labelled = "AND pc.yes_labels && %(src_labels)s::text[]" if wanted else ""
+    sql = f"""
+    WITH page AS MATERIALIZED (SELECT * FROM published_page(
+            %(since)s::timestamptz, %(until)s::timestamptz, %(mailbox)s::text,
+            %(sender)s::text, %(row_limit)s::integer))
+    SELECT m.scanned, x.*
+    FROM (SELECT count(*) AS scanned FROM page) m
+    LEFT JOIN LATERAL (
+        SELECT {_LIST_COLUMNS}
+        FROM {as_views("page")}
+        WHERE {_AUTH.format(a="pc")} {_row_filters("pc")} {labelled} {extra_where}) x ON true
+    ORDER BY x.occurred_at DESC NULLS LAST, x.communication_id::uuid"""  # noqa: S608 - fragments are constants; values are bound parameters
+
+    params = _params(auth, filters) | extra | {"src_labels": wanted, "only_ids": None}
+    # The newest rows cost the same whatever the period, so the whole period is
+    # asked for at once: the first rows of a shorter period are the same rows.
+    # Only a mailbox makes published_page read that mailbox's whole period first,
+    # so there the growing periods of _listing_rows are kept, one read each.
+    narrow = filters.sender or filters.property or filters.entity
+    spans: list[int | None] = [None]
+    if filters.since is None and filters.mailbox and not narrow:
+        spans = [*_LOOK_BACK_DAYS, None]
+    end = filters.until or datetime.now(UTC)
+    row_limit = min(max(PAGE_ROWS_MIN, 3 * need), PAGE_ROWS_MAX)
+    for span in spans:
+        since = filters.since if span is None else end - timedelta(days=span)
+        found = conn.execute(sql, params | {"since": since, "row_limit": row_limit}).fetchall()
+        scanned = found[0]["scanned"] if found else 0
+        rows = [r for r in found if r["communication_id"] is not None]
+        if len({_copy_group(r) for r in rows}) >= need:
+            return rows
+        if scanned >= row_limit:
+            return None  # the newest rows were cut and do not fill the page
+        if span is None:
+            # Every email of the period was read. _listing_rows keeps at most
+            # this many rows of the whole period.
+            return rows[: max(500, need * 3)]
+    return None
+
+
 def _copy_group(r: dict[str, Any]) -> tuple[str, str]:
     """Mailbox copies of one message share this key."""
     return (r["internet_message_id"] or r["communication_id"], r["content_fingerprint"] or "")
@@ -1028,15 +1158,32 @@ def _listing(
     yes (the caller's filter requires it), so the candidates come from the label
     index (published_labelled, 0021).
 
-    With migration 0031 the rows come from the set-based functions. Without it,
+    With migration 0039 a list without ``ids`` or ``conversation`` first reads
+    only the newest emails (``_listing_rows_paged``), except the lists
+    ``_paged_skipped`` names. With migration 0031 the rows
+    come from the set-based functions. Without it,
     from the views (``_listing_rows_views``): the answer is the same, more slowly,
     and at most the newest 500 rows are read."""
     auth = authorize(conn, principal)
     if auth.empty:
         return []
     if fast_reads(conn):
-        rows = _listing_rows(
-            conn, auth, filters, extra_where, extra, offset + limit, ids, labels, conversation
+        paged = None
+        if (
+            ids is None
+            and conversation is None
+            and not _paged_skipped(auth, filters)
+            and paged_reads(conn)
+        ):
+            paged = _listing_rows_paged(
+                conn, auth, filters, extra_where, extra, offset + limit, labels
+            )
+        rows = (
+            paged
+            if paged is not None
+            else _listing_rows(
+                conn, auth, filters, extra_where, extra, offset + limit, ids, labels, conversation
+            )
         )
     else:
         if conversation is not None:
@@ -1468,7 +1615,9 @@ def _attach_resolutions(
             " FROM published_action_resolutions WHERE communication_id = ANY(%s::uuid[])",
             ([i["communication_id"] for i in items],),
         ).fetchall()
-    except Exception:  # a database without migration 0026: every item stays open
+    except UndefinedTable, UndefinedFunction:
+        # A database without migration 0026: every item stays open. Nothing else is
+        # caught: a statement stopped by the tool's time budget must end the call.
         conn.rollback()
         return
     if not rows:

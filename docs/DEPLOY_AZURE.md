@@ -298,7 +298,16 @@ cd ~/fs-communication-intelligence && git pull && make azure-migrate AZ_PSQL=psq
 
 It only adds functions (no table changes, a few seconds). The code works before and after: until it is applied, everything keeps using the old, slow way. Still slow after it: counts and lists over all time (several seconds), the Knowledge pages with no period (they read every mention), and anything a reader with reader limits asks without a date, because their limits are checked email by email.
 
-**A tool that takes too long now says so.** Each MCP tool stops a database statement after 40 seconds and answers `too_slow` with advice to ask for a shorter period or add a filter, instead of leaving the AI platform to give up at its own limit with no explanation. Each tool call also logs its name and time (no arguments): `mcp tool email_stats ok in 812 ms`. To see which tools are slow or stopped:
+**A tool that takes too long now says so.** Each MCP tool answers `too_slow`, with advice to ask for a shorter period or add a filter, instead of leaving the AI platform to give up at its own limit (about a minute) with no explanation. A tool call has two limits (2026-11-18):
+
+- **50 seconds of database work in all** (`TOOL_BUDGET_SECONDS`). A tool runs several statements. Each one gets what is left of the 50 seconds, and never more than 40. When nothing is left, the next statement is not sent. Before this, the limit was 40 seconds for each statement, so a tool with several slow statements ran far past a minute.
+- **55 seconds for everything** (`TOOL_CEILING_SECONDS`): the embedding call, opening a database connection, fetching a file for `get_file`, and the Python work. At 55 seconds the tool answers `too_slow`. The work still running is left to finish on its own; a statement it has open is stopped by the first limit.
+
+Inside one transaction a statement can run up to 1 second past the 50. The limit is set for the transaction only, so nothing stays on a reused connection.
+
+Each tool call also logs its name and time (no arguments): `mcp tool email_stats ok in 812 ms`. The outcome is `ok`, `too_slow` or `error`. In the 7 days to 2026-11-18 these lines, and the `search timings` lines below, never reached Application Insights, while the `mcp request` lines from the same code did. The likely cause: tools run in a worker thread, and the Functions Python worker ties a log line to its request through the running task or, in a thread, through thread-local storage that the code must set (Microsoft, [Logging from background threads](https://learn.microsoft.com/azure/azure-functions/functions-reference-python#logging-from-background-threads), read 2026-11-18). Now the `mcp tool` line is logged outside the thread, and the thread is given the request's invocation id for the lines logged inside it. Tested locally with a stand-in for the worker's storage. **Not verified in Azure:** that the lines now arrive, that the Python 3.14 worker uses this storage, and that the calls that ended at the host's 2-minute limit were inside a tool at all. After the deploy, run the query below. If it returns no rows while tools are in use, the cause is something else.
+
+To see which tools are slow or stopped:
 
 ```kusto
 traces | where message startswith "mcp tool" | parse message with "mcp tool " tool " " outcome " in " ms:long " ms" | summarize calls = count(), stopped = countif(outcome == "too_slow"), p50 = percentile(ms, 50), p95 = percentile(ms, 95) by tool | order by p95 desc
@@ -319,6 +328,50 @@ Each search logs its timings to App Insights, with no query text: `search timing
 ```kusto
 traces | where message startswith "search timings" | order by timestamp desc | take 50
 ```
+
+**Stored counts for the Overview and the coverage block (migration 0038, 2026-11-18).** The console Overview counted three whole tables on every load, and every search result's coverage block counted every email (cached 30 minutes per app instance, so the first search on a new instance paid for it). Migration 0038 adds a small table, `ops_counts`, that keeps those counts. The ingestion app asks for a recount on every 5-minute tick of its two timers (and after each backfill window); the database recounts only when a capture or processing run has finished since the last recount and that recount is at least 5 minutes old, so the counts follow a run within about 5 to 10 minutes, the last run of a busy period included. A tick with nothing new counts nothing. A recount has 3 minutes and waits at most 5 seconds for a lock; never more than one a minute. Nothing is written per email.
+
+- **On the Overview:** Published Messages, the failed count, Message States, Labels, Attachments and Failures come from the stored counts, and a line under the heading says when they were taken. Mode, Waiting to Process, the email dates, mailboxes and Recent Runs are still live. A change made without a run (Requeue Failed, a mail rule) shows after the next run that finishes.
+- **In search results:** the coverage block is read from the stored counts and read again after a minute. After a mode change the stored coverage is not used until the next recount.
+- **Before the first recount, or without the migration,** everything is counted live as before, and the Overview shows no line. The code can be deployed before or after the migration.
+
+Apply it signed in as `svc_automation@` (seconds; it only creates the table):
+
+```bash
+cd ~/fs-communication-intelligence && git pull && make azure-migrate AZ_PSQL=psql
+```
+
+The counts appear on the first tick after the migration (the table is empty, so the first call always counts). To fill them at once, in `psql` on the database as the migrating login:
+
+```sql
+SELECT ci.refresh_ops_counts(changed => true);
+SELECT name, refreshed_at FROM ci.ops_counts;
+```
+
+The first line answers `t` and the second lists six rows. Later the same line recounts only when the counts are at least a minute old (`changed => true` skips the check for a finished run, nothing else); it answers `f` otherwise. A recount that fails never fails the run: the ingestion log has `counts not refreshed: <error type>` and the old counts stay.
+
+Tested locally on the synthetic fixtures only. Not verified in Azure:
+
+- **How long a recount takes on the real data.** It runs the same six counts the pages ran, at most once per 5 minutes while runs keep finishing instead of once per load; the planning estimate is 8 to 10 seconds added to the tick that recounts, which is a guess until measured. An idle tick only checks `ops_runs` for a finished run.
+- **That the migrating login can read the six counting views.** The recount runs as the login that applied the migration. Locally a login with no superuser and read access to the schema is enough. If the `SELECT ci.refresh_ops_counts(changed => true);` above fails with permission denied, the views belong to another login: ask before changing any grant.
+
+**A list page reads about a page of emails (migration 0039, 2026-11-18).** Since 0031 a list (`list_email`, the console's Messages, the action items and risks of `list_actionable`) read every published email of its period and then kept the newest the reader may see. With no period, that was every email, for page one as for page ten. Migration 0039 adds `ci.published_page`: it hands back only the newest emails, 200 for a normal page (three times the page, at least 200, at most 20,000). Who may read what is still checked in the same database statement, before anything leaves the database, exactly as before. Page N costs the emails up to that page, not the whole period.
+
+Some lists skip this and read the old way from the start, at exactly today's cost: readers who see only risks, readers whose only access is their own mailbox, readers with reader limits, and lists filtered by property or entity. Every other list makes one read of the newest `max(200, 3 x need)` emails (with a mailbox filter and no start date, one per look-back period: 3, 30 and 365 days, then all), and when that does not fill the page it reads the old way. So a narrow list (a rare label, one person's action items) costs today's cost plus at most one read of `max(200, 3 x need)` rows, and the skipped cases cost exactly today's (Cody, 2026-11-18: ship this, measure which narrow lists people use before doing more).
+
+Apply it signed in as `svc_automation@` (seconds; it only adds a function):
+
+```bash
+cd ~/fs-communication-intelligence && git pull && make azure-migrate AZ_PSQL=psql
+```
+
+The code works before and after: until it is applied, lists read as since 0031. To see what a page costs on the real data, run this read-only check in `psql` on the database after the deploy:
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM ci.published_page(NULL, NULL, NULL, NULL, 200);
+```
+
+Verified locally on the synthetic fixtures (13 emails): every list gives the same emails, in the same order, with and without the migration and through the old views, for every kind of reader, including with pages shrunk to 2 to 4 emails so that every path runs; a 25-email list asks the database for 200 emails in one statement. Not verified: every timing. The fixtures are too small to time anything, and the date index the function relies on has not been checked on the real data.
 
 **Console page loading.** The console sends its page, script, stylesheet and API replies compressed (about 280 KB of script and styles becomes about 80 KB), and stored files as they are. The page names its script and stylesheet with a version taken from their contents, so the browser keeps them for a year and downloads them again only after a deploy changes them; the page itself is never cached. The label names are kept in the browser from the last visit and refreshed in the background, so a page's data is no longer requested only after the label list arrives. The first visit after a quiet period still waits for the console app to start.
 
@@ -370,6 +423,33 @@ az functionapp config appsettings set -g fs-communication-intelligence -n func-f
 ```
 
 More workers than about 16 do not help once embeddings are the limit. Mail that failed before this change: **Requeue failed** in Schedule & Runs (or `ci process --retry-failed`). A retried email is classified again, so the retry costs one more chat call.
+
+**An index for the per-email policy lookups (migration 0037, 2026-11-18).** For every email, processing asks the `policy_decisions` table about that one email version. The table had no index for that, so each question read the whole table: 2.2 million rows and 1.3 million full reads on the dev server on 2026-11-18. Migration 0037 adds the index (`policy_decisions_version`). The code is the same before and after.
+
+Building it blocks writes to that table, which means processing waits; reading and search continue. So do one of these, signed in as `svc_automation@`:
+
+- **Simplest:** in the console's Schedule & Runs, turn processing off and wait for the running pass to end. Apply the migration, then turn processing back on:
+
+```bash
+cd ~/fs-communication-intelligence && git pull && make azure-migrate AZ_PSQL=psql
+```
+
+- **Without stopping processing:** build the index by hand first, in `psql` on the database. This form does not block writes, and takes longer:
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS policy_decisions_version ON ci.policy_decisions (version_id, check_name);
+SELECT indisvalid FROM pg_index WHERE indexrelid = 'ci.policy_decisions_version'::regclass;
+```
+
+  The second line must answer `t`. If it answers `f`, the build was interrupted: run `DROP INDEX CONCURRENTLY ci.policy_decisions_version;` and build it again. Then apply the migration as above; it finds the index and changes nothing (migration 0027 was applied the same way). The migration checks this itself: if an index of that name is invalid, or is not on `(version_id, check_name)`, it stops with an error and is not recorded as applied (tested locally).
+
+Apply 0037 to the dev database only after it is merged, from a checkout that has it: `db/migrate.py` refuses to run from a checkout that lacks a migration the database already has.
+
+If the migration cannot get its lock within 30 seconds, because a processing transaction is still open, it stops with a lock timeout error and changes nothing. Run it again once processing is off. Not measured: how long the build takes on 2.2 million rows, and how much faster processing gets. To check afterwards that the full reads have stopped, run this twice, some minutes apart while mail is processed; `seq_scan` should stay the same and `idx_scan` should rise:
+
+```sql
+SELECT seq_scan, idx_scan FROM pg_stat_user_tables WHERE schemaname = 'ci' AND relname = 'policy_decisions';
+```
 
 ## 10. Connect Claude, ChatGPT and Copilot Studio
 
@@ -483,7 +563,7 @@ It needs database migration 0033 (the link signing key, made inside the database
 
 A web page at `https://func-fs-ci-adm-dev-1026.azurewebsites.net/` for console admins (you, for now):
 
-- **Overview:** mode, schedule, backlog, message states and reasons, labels, attachment extraction, failures, and recent runs. Also **Requeue Failed**.
+- **Overview:** mode, schedule, backlog, message states and reasons, labels, attachment extraction, failures, and recent runs. Also **Requeue Failed**. Once migration 0038 is applied, the published and failed counts and the charts are as of the last recount, within about 10 minutes of the last capture or processing run, and a line under the heading gives the time (see Search speed, "Stored counts").
 - **Schedule & Runs:** how often capture runs, its look-back, active hours, weekdays only, processing on/off, and **Run Capture Now** (look back up to 93 days). Below that, every run with its counts.
 - **Connections** (under Lab): how to connect Claude, ChatGPT and Copilot Studio, with the MCP URL, sign-in URLs, scope and each platform's client ID ready to copy (§10). Needs `scripts/azure/7-connections-page.sh` once.
 - **Mailboxes:** filter, approve or unapprove, exclude or un-exclude (with a reason), approve all enrolled, change mode, and exclude a person or domain in every mailbox.

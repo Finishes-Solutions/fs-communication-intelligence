@@ -24,13 +24,16 @@ import functools
 import json
 import logging
 import time as time_module
-from collections.abc import Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
+from contextvars import ContextVar
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, TypedDict
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
+import anyio
+import anyio.to_thread
 import httpx
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
@@ -44,7 +47,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from ci_core.db import Connection, pooled
 from ci_core.settings import Settings
 from ci_processing.embedding import Embedder
-from ci_retrieval import exports, file_links, files, knowledge, reports, risk_access
+from ci_retrieval import budget, exports, file_links, files, knowledge, reports, risk_access
 from ci_retrieval import search as retrieval
 from ci_retrieval.broker import CALLBACK_PATH, CONSENT_PATH, BasicClientId, EntraBroker
 from ci_retrieval.entra import EntraAccessToken, EntraTokenVerifier
@@ -96,10 +99,17 @@ Connector = Callable[[], AbstractContextManager[Connection]]
 
 
 # Agent platforms give up on a tool call after about a minute (Claude: 60 s,
-# seen 2026-11-13), while the search role may run one statement for two. A
-# statement that passes this limit is stopped and the tool answers TOO_SLOW, so
-# the agent hears why and can narrow the request instead of waiting for nothing.
+# seen 2026-11-13), while the search role may run one statement for two. A tool
+# call therefore has two limits, and answers TOO_SLOW at either, so the agent
+# hears why and can narrow the request instead of waiting for nothing:
+# - TOOL_BUDGET_SECONDS for its database work as a whole (ci_retrieval.budget:
+#   each statement gets what is left, at most TOOL_STATEMENT_TIMEOUT);
+# - TOOL_CEILING_SECONDS for everything (the embedding call, opening a
+#   connection, fetching a file, Python work): the answer is sent then, and the
+#   thread still working is left to finish on its own.
 TOOL_STATEMENT_TIMEOUT = "40s"
+TOOL_BUDGET_SECONDS = 50.0
+TOOL_CEILING_SECONDS = 55.0
 TOO_SLOW = {
     "error": "too_slow",
     "note": "This request took too long and was stopped. Nothing is wrong with the"
@@ -107,37 +117,92 @@ TOO_SLOW = {
     " property) and try again.",
 }
 
+# The Azure Functions invocation a request belongs to: (the worker's thread-local
+# storage, the invocation id), from the ASGI scope (_RequestLog). The worker ties
+# a log line to its invocation through the running asyncio task or, in a thread,
+# through this storage; a tool's thread has neither until _in_invocation sets it.
+# https://learn.microsoft.com/azure/azure-functions/functions-reference-python
+# ("Logging from background threads", read 2026-11-18).
+_invocation: ContextVar[tuple[Any, str] | None] = ContextVar("ci_mcp_invocation", default=None)
+
 
 @contextmanager
 def _search_connection() -> Iterator[Connection]:
     """A pooled connection (ci_core.db.ConnectionPool): reused across tool calls,
     with the tools' statement limit (it stays on the connection: in this app only
-    tools use the pool)."""
+    tools use the pool). The limit of a whole tool call is added by build_server."""
     with pooled("ci_search") as conn:
         conn.execute("SELECT set_config('statement_timeout', %s, false)", (TOOL_STATEMENT_TIMEOUT,))
         conn.commit()
         yield conn
 
 
-def _guarded(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Logs how long a tool took (name and milliseconds only, never arguments) and
-    turns a stopped statement into TOO_SLOW."""
+def _within_budget(lend: Connector) -> Connector:
+    """The connector, whichever it is, with its statements held to the running
+    tool call's time budget (ci_retrieval.budget)."""
+
+    @contextmanager
+    def connector() -> Iterator[Connection]:
+        with lend() as conn, budget.budgeted(conn):
+            yield conn
+
+    return connector
+
+
+@contextmanager
+def _in_invocation() -> Iterator[None]:
+    """Lines logged in this thread belong to the request's invocation while the
+    block runs. The value is put back afterwards: threads are reused."""
+    found = _invocation.get()
+    if found is None:
+        yield
+        return
+    storage, invocation_id = found
+    missing = object()
+    before = getattr(storage, "invocation_id", missing)
+    storage.invocation_id = invocation_id
+    try:
+        yield
+    finally:
+        if before is missing:
+            del storage.invocation_id
+        else:
+            storage.invocation_id = before
+
+
+def _guarded(fn: Callable[..., Any]) -> Callable[..., Awaitable[Any]]:
+    """Runs a tool in a worker thread within the two time limits, answers TOO_SLOW
+    when either is passed, and logs how long the call took (name and milliseconds
+    only, never arguments). The line is logged here, on the event loop, where the
+    Azure Functions worker knows which invocation it belongs to."""
 
     @functools.wraps(fn)
-    def run(*args: Any, **kwargs: Any) -> Any:
+    async def run(*args: Any, **kwargs: Any) -> Any:
         started = time_module.monotonic()
-        outcome = "ok"
+        outcome = "error"  # also a call cancelled from outside (the client went away)
+
+        def call() -> Any:
+            spent = budget.current.set(budget.Budget(TOOL_BUDGET_SECONDS))
+            try:
+                with _in_invocation():
+                    return fn(*args, **kwargs)
+            finally:
+                budget.current.reset(spent)
+
         try:
-            return fn(*args, **kwargs)
-        except QueryCanceled:
+            with anyio.move_on_after(TOOL_CEILING_SECONDS) as scope:
+                result = await anyio.to_thread.run_sync(call, abandon_on_cancel=True)
+            if scope.cancelled_caught:
+                outcome = "too_slow"
+                return dict(TOO_SLOW)
+            outcome = "ok"
+            return result
+        except QueryCanceled, budget.ToolBudgetSpent:
             outcome = "too_slow"
             return dict(TOO_SLOW)
         except ArgumentError as exc:
             outcome = "bad_argument"
             return {"error": str(exc)}
-        except Exception:
-            outcome = "error"
-            raise
         finally:
             log.info(
                 "mcp tool %s %s in %d ms",
@@ -166,6 +231,7 @@ def build_server(
     ``fetch_file`` reads a stored original through such a link (default: over
     HTTPS from the console), for get_file to return it inside the answer when it
     is at most ``inline_max_bytes``."""
+    connector = _within_budget(connector)
     server: MCPServer[Any] = MCPServer(
         name="FS Communication Intelligence",
         instructions="Finishes Solutions email evidence, limited to what the signed-in "
@@ -1154,9 +1220,16 @@ class _RequestLog:
             k == b"authorization" and v[:7].lower() == b"bearer "
             for k, v in scope.get("headers", [])
         )
+        # Under Azure Functions the scope names the invocation (azure.functions
+        # _http_asgi); tools pass it to their thread so its log lines are kept.
+        storage = scope.get("azure_functions.thread_local_storage")
+        invocation_id = scope.get("azure_functions.invocation_id")
+        named = storage is not None and bool(invocation_id)
+        previous = _invocation.set((storage, str(invocation_id)) if named else None)
         try:
             await self.app(scope, receive, sending)
         finally:
+            _invocation.reset(previous)
             log.info(
                 "mcp request %s %s -> %s (bearer token: %s)",
                 scope.get("method"),
